@@ -900,6 +900,31 @@ def _pattern_has_regex_newline(pattern: str) -> bool:
     return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
 
 
+def _pattern_needs_multiline(pattern: str) -> bool:
+    """Return True when rg must run in ``-U``/``--multiline`` mode.
+
+    Broader than :func:`_pattern_has_regex_newline`, which answers a
+    *semantic* question (does this regex intend to match a newline?) and
+    deliberately excludes an even-backslash ``\\n``, a literal
+    backslash-then-n search.
+
+    rg does not make that distinction. In line-oriented mode it rejects
+    ANY ``\n`` two-character sequence in the pattern outright::
+
+        rg: the literal "\n" is not allowed in a regex
+
+    That is a hard exit-2 error, not a zero-match result, so a literal
+    backslash-n search used to fail on this host. Under ``-U`` the same
+    pattern parses and keeps its literal meaning, because multiline mode
+    changes what a newline may *match*, not what ``\\`` *means*.
+
+    Trade-off: patterns containing a literal backslash-n now run in
+    multiline mode, where ``.`` also matches a newline. Only patterns
+    that already could not run at all are affected.
+    """
+    return _pattern_has_regex_newline(pattern) or "\\n" in pattern
+
+
 def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
     """Return True for rg's hard error when multiline mode is required."""
     if not error:
@@ -1190,6 +1215,28 @@ class ShellFileOperations(FileOperations):
 
         arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _escape_pattern_arg(self, arg: str) -> str:
+        """Escape a REGEX/GLOB argument for the shell without path translation.
+
+        ``_escape_shell_arg`` runs its input through ``_bash_safe_path``,
+        which on Windows rewrites every backslash to a forward slash so
+        bash does not eat ``\\U`` in a native path like ``C:\\Users\\x``.
+        That is correct for paths and *wrong* for patterns: a regex is not
+        a path, and its backslashes are semantic.
+
+        Applying the path translator to a pattern silently corrupts it.
+        ``def register\\(`` becomes ``def register/(`` and ripgrep rejects
+        it with ``error: unclosed group``; ``\\d+`` becomes ``/d+`` and
+        matches nothing while reporting no error at all. Both failure
+        modes were observed in production on this host.
+
+        Single quotes already stop bash from interpreting backslashes, so
+        the only work here is quoting. The trade-off: a caller that passes
+        a *path* to this helper loses the MSYS rewrite. Pattern and glob
+        arguments are the only call sites, and neither is a path.
+        """
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _escape_native_tool_arg(self, arg: str) -> str:
@@ -2987,10 +3034,10 @@ class ShellFileOperations(FileOperations):
             extra = len(per_file) - cap
             return shown + (f" (+{extra} more)" if extra > 0 else "")
 
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = f" --glob {self._escape_pattern_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"{self._escape_pattern_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -3007,7 +3054,7 @@ class ShellFileOperations(FileOperations):
         # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"{self._escape_pattern_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -3021,7 +3068,7 @@ class ShellFileOperations(FileOperations):
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+                f"{self._escape_pattern_arg(pattern)} {self._escape_native_tool_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
@@ -3087,7 +3134,7 @@ class ShellFileOperations(FileOperations):
             )
             prune_expr = f" \\( {prune_terms} \\) -prune -o"
 
-        cmd = f"find {self._escape_shell_arg(path)}{prune_expr}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        cmd = f"find {self._escape_shell_arg(path)}{prune_expr}{hidden_filter_expr} -type f -name {self._escape_pattern_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
@@ -3095,7 +3142,7 @@ class ShellFileOperations(FileOperations):
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{prune_expr}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(path)}{prune_expr}{hidden_filter_expr} -type f -name {self._escape_pattern_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -3157,7 +3204,7 @@ class ShellFileOperations(FileOperations):
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)}"
+            f"rg --files --sortr=modified -g {self._escape_pattern_arg(glob_pattern)}"
             f"{exclusion_args} "
             f"{self._escape_native_tool_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
@@ -3169,7 +3216,7 @@ class ShellFileOperations(FileOperations):
         if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)}"
+                f"rg --files -g {self._escape_pattern_arg(glob_pattern)}"
                 f"{exclusion_args} "
                 f"{self._escape_native_tool_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
@@ -3235,7 +3282,7 @@ class ShellFileOperations(FileOperations):
         # error ("the literal \"\\n\" is not allowed") and burn a turn. When
         # the pattern clearly wants to cross lines, enable -U/--multiline
         # up front and note it in the result.
-        multiline = _pattern_has_regex_newline(pattern)
+        multiline = _pattern_needs_multiline(pattern)
         if multiline:
             cmd_parts.append("--multiline")
 
@@ -3249,7 +3296,7 @@ class ShellFileOperations(FileOperations):
 
         # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--glob", self._escape_pattern_arg(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -3258,7 +3305,7 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")  # Count per file
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_pattern_arg(pattern))
         # rg is a native Windows binary when installed via winget/cargo/choco:
         # it needs the C:/... path form, not the MSYS /c/... form (which
         # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
@@ -3298,7 +3345,13 @@ class ShellFileOperations(FileOperations):
         _ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
-        ) if multiline else None
+        ) if multiline and _pattern_has_regex_newline(pattern) else None
+        # The advisory describes newline SEMANTICS, so it keys off the
+        # semantic predicate rather than the broader `multiline` switch.
+        # A literal backslash-n search also runs under -U (rg refuses to
+        # parse it otherwise, see `_pattern_needs_multiline`), but its
+        # meaning is unchanged, so mentioning line boundaries there would
+        # be actively misleading.
         # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in stdout.strip().split('\n') if f]
@@ -3405,7 +3458,7 @@ class ShellFileOperations(FileOperations):
         
         # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--include", self._escape_pattern_arg(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -3418,7 +3471,7 @@ class ShellFileOperations(FileOperations):
         # ``.*`` to exclude the entire search. Anchor relative paths at the
         # shell's live cwd; quoting $PWD separately keeps user paths escaped
         # while working across local, container, and remote backends.
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_pattern_arg(pattern))
         is_absolute = path.startswith(("/", "\\\\")) or bool(
             re.match(r"^[A-Za-z]:[\\/]", path)
         )
@@ -3467,7 +3520,7 @@ class ShellFileOperations(FileOperations):
             grep_parts.append("-l")
         elif output_mode == "count":
             grep_parts.append("-c")
-        grep_parts.append(self._escape_shell_arg(pattern))
+        grep_parts.append(self._escape_pattern_arg(pattern))
 
         prune_terms = " -o ".join(
             f"-path {self._escape_shell_arg(item)}" for item in protected_paths
@@ -3479,7 +3532,7 @@ class ShellFileOperations(FileOperations):
             "-type f",
         ]
         if file_glob:
-            find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
+            find_parts.extend(["-name", self._escape_pattern_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+"])
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd = (

@@ -971,7 +971,7 @@ def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance
         _forced_releases.append(entry)
         del _forced_releases[:-_FORCED_RELEASE_HISTORY]
     try:
-        path = _get_hermes_home() / "cron" / "inflight_forced_releases.jsonl"
+        path = _get_hermes_home() / "cron" / "runtime" / "inflight_forced_releases.jsonl"
         _ensure_cron_dir(path.parent)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -1495,7 +1495,7 @@ atexit.register(_shutdown_parallel_pool)
 # Per-fire usage audit log for cron token spend instrumentation.
 # Resolves through _get_hermes_home() so profile-scoped paths work correctly.
 def _usage_audit_path() -> Path:
-    return _get_hermes_home() / "cron" / "usage_audit.jsonl"
+    return _get_hermes_home() / "cron" / "runtime" / "usage_audit.jsonl"
 
 
 def _utcnow_iso_ms() -> str:
@@ -4369,9 +4369,40 @@ def _run_job_script(
         # shutil.which returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
         # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        #
+        # HERMES-LOCAL: a bare shutil.which("bash") is WRONG on any host
+        # that has WSL installed.  Windows ships C:\Windows\System32\bash.exe
+        # (the WSL launcher) and it precedes Git for Windows on PATH, so
+        # which() hands back a *Linux* bash that cannot understand the
+        # native Windows path we pass as argv[1].  MSYS/WSL argv handling
+        # eats the backslashes and the run dies with the misleading
+        # "/bin/bash: C:Users...script.sh: No such file or directory"
+        # (exit 127) — the script exists, the interpreter is simply the
+        # wrong one.  tools.environments.local._find_bash() already solves
+        # exactly this: it probes Hermes' portable Git, then the known Git
+        # for Windows install locations, and only then falls back to PATH,
+        # verifying each candidate actually starts.  Reuse that resolver
+        # instead of re-deriving a weaker one here.
+        _bash = None
+        try:
+            from tools.environments.local import _find_bash as _find_bash_exe
+
+            _candidate = _find_bash_exe()
+            # _find_bash() never returns the WSL launcher on a healthy host,
+            # but guard anyway: System32\bash.exe is never a valid
+            # interpreter for a native-path cron script.
+            if _candidate and os.path.basename(
+                os.path.dirname(_candidate)
+            ).lower() not in {"system32", "sysnative"}:
+                _bash = _candidate
+        except Exception:
+            # Never let a resolver import problem take down a cron fire;
+            # fall through to the historical PATH lookup below.
+            _bash = None
+        if _bash is None:
+            _bash = shutil.which("bash") or (
+                "/bin/bash" if os.path.isfile("/bin/bash") else None
+            )
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
@@ -4380,6 +4411,7 @@ def _run_job_script(
         )
         argv = [_bash, str(path)]
         env_overlay: dict[str, str] = {}
+
     else:
         python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
         if env_overlay:

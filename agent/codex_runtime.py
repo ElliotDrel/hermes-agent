@@ -286,9 +286,13 @@ def _record_codex_app_server_compaction(
 
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
-        compressor.compression_count = getattr(
-            compressor, "compression_count", 0
-        ) + 1
+        increment = getattr(compressor, "_increment_compression_count", None)
+        if callable(increment):
+            increment()
+        else:
+            compressor.compression_count = getattr(
+                compressor, "compression_count", 0
+            ) + 1
         compressor.last_compression_rough_tokens = approx_tokens or 0
         # The app server has already completed a real compaction boundary. Its
         # usage update (when supplied) is therefore the same real-vs-real

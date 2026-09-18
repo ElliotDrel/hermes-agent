@@ -1656,6 +1656,20 @@ def _real_profile_cdp() -> tuple:
             # close it so nothing holds the dir open before we overlay + relaunch.
             _agent_browser_close_session(_REAL_PROFILE_SESSION)
 
+        # agent-browser sessions are process-local. A later Hermes tool process
+        # can still reuse the copied Chrome directly through the port Chrome
+        # published in its own profile directory. Returning here avoids an
+        # unsafe snapshot overlay while that browser has SQLite files open.
+        try:
+            with open(os.path.join(copy_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+                published_port = fh.readline().strip()
+            direct_cdp = f"http://127.0.0.1:{published_port}"
+            if published_port.isdigit() and _cdp_http_ready(direct_cdp):
+                _real_profile_cdp_cache["cdp"] = direct_cdp
+                return direct_cdp, None
+        except OSError:
+            pass
+
         # No live browser owns the dir now — safe to (re)snapshot + overlay.
         snap_dir, err = snapshot_real_profile(browser)
         if err or not snap_dir:
@@ -1712,7 +1726,6 @@ def _real_profile_cdp() -> tuple:
             "--disable-prompt-on-repost",
             "--disable-sync",
             "--disable-features=Translate",
-            "--no-startup-window",
         ]
         # Drive the copy headlessly by default. Real-profile browsing is a
         # background capability — the agent tweets / fills forms / scrapes on
@@ -1735,7 +1748,7 @@ def _real_profile_cdp() -> tuple:
             _has_display or not sys.platform.startswith("linux")
         )
         if not _want_headed:
-            chrome_argv.append("--headless=new")
+            chrome_argv.extend(["--no-startup-window", "--headless=new"])
         try:
             chrome_proc = subprocess.Popen(
                 chrome_argv,
@@ -1806,6 +1819,19 @@ def _real_profile_cdp() -> tuple:
         except (subprocess.SubprocessError, OSError) as e:
             return None, f"browser.use_real_profile is on, but the launch failed: {e}"
         if proc.returncode != 0:
+            # agent-browser is only a convenience session wrapper. The browser
+            # we launched owns the copied profile and has already published a
+            # direct CDP endpoint, which browser-use can consume itself. Do not
+            # discard a healthy copied Chrome because the wrapper's daemon
+            # attached to another stale port or could not attach at all.
+            direct_cdp = f"http://127.0.0.1:{port}"
+            if _cdp_http_ready(direct_cdp):
+                _real_profile_cdp_cache["cdp"] = direct_cdp
+                logger.warning(
+                    "agent-browser could not attach to the real-profile copy; "
+                    "using Chrome's direct CDP endpoint at %s", direct_cdp,
+                )
+                return direct_cdp, None
             tail = (proc.stderr or proc.stdout or "").strip().splitlines()
             reason = tail[-1] if tail else f"exit {proc.returncode}"
             return None, (

@@ -31,7 +31,17 @@ from typing import Any, Dict, Iterator, List, Optional
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
-NOTEPAD_FILE = get_hermes_home().resolve() / "cron" / "notepad.db"
+NOTEPAD_FILE = get_hermes_home().resolve() / "cron" / "runtime" / "notepad.db"
+_IMPORT_NOTEPAD_FILE = NOTEPAD_FILE
+
+
+def _notepad_file() -> Path:
+    """Resolve runtime storage while honoring tests that override the path."""
+    if NOTEPAD_FILE != _IMPORT_NOTEPAD_FILE:
+        return NOTEPAD_FILE
+    from cron.jobs import _current_cron_store
+
+    return _current_cron_store().runtime_dir / "notepad.db"
 MAX_VALUE_BYTES = 16 * 1024
 MAX_KEY_CHARS = 128
 MAX_JOB_TOTAL_BYTES = 64 * 1024
@@ -41,8 +51,9 @@ _lock = threading.RLock()
 def _connect() -> sqlite3.Connection:
     from cron.jobs import _ensure_cron_dir
 
-    _ensure_cron_dir(NOTEPAD_FILE.parent)
-    return sqlite3.connect(NOTEPAD_FILE, timeout=5)
+    path = _notepad_file()
+    _ensure_cron_dir(path.parent)
+    return sqlite3.connect(path, timeout=5)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -157,7 +168,7 @@ def clear_notepad(job_id: str) -> int:
     Called from ``cron.jobs.remove_job`` so deleted jobs don't orphan their
     rows. No-ops without creating the DB when no notepad file exists yet.
     """
-    if not NOTEPAD_FILE.exists():
+    if not _notepad_file().exists():
         return 0
     with _transaction() as conn:
         cur = conn.execute(

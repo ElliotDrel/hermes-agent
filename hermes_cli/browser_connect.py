@@ -853,10 +853,22 @@ def _processes_holding_profile(src: str):
             argv0 = (cmd[0].lower() if cmd else "")
             if not any(b in argv0 for b in browser_bins):
                 continue
-        # Binding: the exact user-data-dir must appear in the cmdline
-        # (--user-data-dir=<src>), normalized for case/separators.
+        # Binding: an explicit user-data-dir must be this exact path. Chrome's
+        # normal default-profile root omits --user-data-dir entirely, however;
+        # when the requested source is Chrome's standard data directory, that
+        # root is still the profile holder. A custom user-data-dir always wins
+        # and must match exactly, so a separate Chrome profile is never killed.
+        explicit_user_data_dir = any(
+            str(arg).lower().startswith("--user-data-dir") for arg in cmd
+        )
+        is_default_chrome_root = (
+            name in ("chrome", "chrome.exe", "google chrome")
+            and norm == os.path.normcase(os.path.normpath(real_profile_data_dir("chrome")))
+            and not explicit_user_data_dir
+        )
         if norm not in os.path.normcase(os.path.normpath(joined)) and \
-           f"--user-data-dir={src}".lower() not in joined.lower():
+           f"--user-data-dir={src}".lower() not in joined.lower() and \
+           not is_default_chrome_root:
             continue
         yield proc
 

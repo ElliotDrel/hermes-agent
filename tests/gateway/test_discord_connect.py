@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -70,6 +71,43 @@ _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "draft",
+        "Draft",
+        "DRAFT",
+        "draft:",
+        "Draft: finish this later",
+        "drafts",
+        "drafts: finish this later",
+        "/draft",
+        "/Draft: finish this later",
+        "/drafts",
+        "/drafts: finish this later",
+    ],
+)
+def test_draft_marker_matches_supported_forms(content):
+    """Draft markers are case-insensitive, singular/plural, and slash-optional."""
+    assert discord_platform._is_discord_draft_message(content)
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["drafting", "redraft", "/drafting", "draft-note", "draftsman", "/draftsman"]
+)
+def test_draft_marker_does_not_match_unrelated_words(content):
+    assert not discord_platform._is_discord_draft_message(content)
+
+
+@pytest.mark.asyncio
+async def test_draft_message_is_dropped_before_discord_dispatch():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    message = SimpleNamespace(content="/Draft: pick this up tomorrow", id=123)
+
+    assert await adapter._handle_message(message) is False
 
 
 @pytest.fixture(autouse=True)
@@ -503,6 +541,152 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     recovered_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
     assert recovered_entry["last_success_at"] >= recovered_entry["last_attempt_at"]
     assert recovered_entry["summary"] == summary
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_stops_a_stalled_sync_at_the_short_cap(
+    tmp_path, monkeypatch, caplog
+):
+    """A stuck first command-sync attempt must not occupy the gateway for 10m.
+
+    This deliberately patches the shared command-sync cap to 10ms. Before the
+    fix, the production code ignores that cap for the outer wait and uses a
+    hard-coded 600 seconds, so this test's 200ms safety bound expires first.
+    After the fix, the inner wait expires at the configured short cap and
+    emits the existing timeout warning.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        discord_platform, "_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS", 0.01
+    )
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: []),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    never_finishes = asyncio.Event()
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", never_finishes.wait)
+    caplog.set_level(logging.WARNING, logger="plugins.platforms.discord.adapter")
+
+    await asyncio.wait_for(adapter._run_post_connect_initialization(), timeout=0.2)
+
+    assert "Slash command sync timed out" in caplog.text
+
+
+def test_command_sync_policy_reads_startup_from_discord_config(monkeypatch):
+    monkeypatch.delenv("DISCORD_COMMAND_SYNC_POLICY", raising=False)
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"command_sync_policy": "startup"},
+        )
+    )
+
+    assert adapter._get_discord_command_sync_policy() == "startup"
+
+
+@pytest.mark.asyncio
+async def test_startup_command_sync_runs_once_per_gateway_process_and_again_after_restart(tmp_path, monkeypatch):
+    """The startup policy must survive adapter replacement, but reset on restart."""
+    monkeypatch.setattr(discord_platform, "_DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS", set())
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_POLICY", "startup")
+    summary = {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+
+    def make_adapter(home):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+        adapter._client = SimpleNamespace(
+            tree=SimpleNamespace(get_commands=lambda: []),
+            application_id=999,
+            user=SimpleNamespace(id=999),
+        )
+        sync = AsyncMock(return_value=summary)
+        monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+        return adapter, sync
+
+    # First gateway process: initial connection syncs; later reconnect does not.
+    first_home = tmp_path / "first-process"
+    first_adapter, first_sync = make_adapter(first_home)
+    await first_adapter._run_post_connect_initialization()
+    # Remove the persisted success state so this asserts the in-process guard,
+    # rather than the existing fingerprint-based skip behavior.
+    (first_home / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME).unlink()
+    await first_adapter._run_post_connect_initialization()
+    assert first_sync.await_count == 1
+
+    # An adapter rebuild in the same gateway process must not sync again.
+    replacement_adapter, replacement_sync = make_adapter(first_home)
+    await replacement_adapter._run_post_connect_initialization()
+    assert replacement_sync.await_count == 0
+
+    # A real gateway restart starts a new Python process. Resetting the
+    # module-level process state models that boundary for this unit test.
+    discord_platform._DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS.clear()
+    restarted_adapter, restarted_sync = make_adapter(tmp_path / "restarted-process")
+    await restarted_adapter._run_post_connect_initialization()
+    assert restarted_sync.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_command_sync_does_not_consume_unknown_key_when_application_id_missing(tmp_path, monkeypatch):
+    """Regression: a torn-down client has no application_id, so the startup
+    guard used to consume the literal ``"unknown"`` key. A later reconnect with
+    a live client then resolved the real application ID, found it unclaimed,
+    and issued a SECOND command sync in the same gateway process -- which is
+    exactly the burst the ``startup`` policy exists to prevent.
+    """
+    monkeypatch.setattr(discord_platform, "_DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS", set())
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_POLICY", "startup")
+    summary = {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+    home = tmp_path / "process"
+
+    def make_adapter(app_id):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+        adapter._client = SimpleNamespace(
+            tree=SimpleNamespace(get_commands=lambda: []),
+            application_id=app_id,
+            user=SimpleNamespace(id=app_id) if app_id is not None else None,
+        )
+        sync = AsyncMock(return_value=summary)
+        monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+        return adapter, sync
+
+    # A forced reconnect can run post-connect init while the client is torn
+    # down, so no application ID resolves. That attempt must not sync and must
+    # not claim the startup slot on behalf of the real application.
+    torn_down_adapter, torn_down_sync = make_adapter(None)
+    await torn_down_adapter._run_post_connect_initialization()
+    assert torn_down_sync.await_count == 0
+    assert discord_platform._DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS == set()
+
+    # The first attempt with a resolvable application ID is the real startup
+    # sync; it runs once and claims the slot.
+    live_adapter, live_sync = make_adapter(999)
+    await live_adapter._run_post_connect_initialization()
+    assert live_sync.await_count == 1
+
+    (home / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME).unlink()
+    later_adapter, later_sync = make_adapter(999)
+    await later_adapter._run_post_connect_initialization()
+    assert later_sync.await_count == 0
 
 
 @pytest.mark.asyncio

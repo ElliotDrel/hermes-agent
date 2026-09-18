@@ -4211,6 +4211,32 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     return normalized
 
 
+def _allow_auxiliary_provider_discovery_fallback() -> bool:
+    """Return whether auto auxiliary routing may try implicit providers.
+
+    ``auxiliary.allow_provider_discovery_fallback: false`` is the strict,
+    fail-closed policy: after the selected main model and configured fallback
+    chain both fail, the auxiliary task stops instead of discovering another
+    authenticated provider. The default preserves the historical convenience
+    behavior for configurations that have not opted into this constraint.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        return bool(
+            cfg_get(
+                load_config_readonly(),
+                "auxiliary",
+                "allow_provider_discovery_fallback",
+                default=True,
+            )
+        )
+    except Exception:
+        # A config-read failure must retain the established default rather than
+        # silently disabling recovery for existing users.
+        return True
+
+
 def _get_provider_chain() -> List[tuple]:
     """Return the ordered provider detection chain.
 
@@ -6323,6 +6349,13 @@ def _resolve_auto_route(
         task, main_provider or "auto", reason="main provider unavailable")
     if fb_client is not None:
         return fb_client, fb_model, fb_label
+
+    if not _allow_auxiliary_provider_discovery_fallback():
+        logger.warning(
+            "Auxiliary auto-detect: configured provider and fallback chain unavailable; "
+            "strict policy forbids implicit provider discovery."
+        )
+        return None, None, ""
 
     # ── Step 3: aggregator / fallback chain ──────────────────────────────
     tried = []

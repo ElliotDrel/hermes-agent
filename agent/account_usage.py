@@ -27,6 +27,7 @@ class AccountUsageWindow:
     label: str
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
     detail: Optional[str] = None
 
 
@@ -90,6 +91,35 @@ def _format_reset(dt: Optional[datetime]) -> str:
     else:
         rel = f"in {minutes}m"
     return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
+
+
+def _quota_window_label(window: Any, fallback: str) -> str:
+    """Name known subscription windows from the duration OpenAI reports.
+
+    Codex's ``primary_window`` and ``secondary_window`` are positional API
+    fields, not stable semantics. The live service can expose a weekly primary
+    window while omitting the five-hour secondary window, so label from the
+    provider's duration rather than the field position.
+    """
+    raw_duration = window.get("limit_window_seconds") if isinstance(window, dict) else None
+    try:
+        duration = int(raw_duration)
+    except (TypeError, ValueError):
+        return fallback
+    if 4 * 60 * 60 <= duration <= 6 * 60 * 60:
+        return "5-hour"
+    if 6 * 24 * 60 * 60 <= duration <= 8 * 24 * 60 * 60:
+        return "Weekly"
+    return fallback
+
+
+def _quota_window_duration(window: Any) -> Optional[int]:
+    raw_duration = window.get("limit_window_seconds") if isinstance(window, dict) else None
+    try:
+        duration = int(raw_duration)
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
 
 
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
@@ -525,16 +555,17 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key, fallback_label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
         windows.append(
             AccountUsageWindow(
-                label=label,
+                label=_quota_window_label(window, fallback_label),
                 used_percent=float(used),
                 reset_at=_parse_dt(window.get("reset_at")),
+                duration_seconds=_quota_window_duration(window),
             )
         )
     details: list[str] = []
@@ -772,12 +803,12 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     payload = response.json() or {}
     windows: list[AccountUsageWindow] = []
     mapping = (
-        ("five_hour", "Current session"),
-        ("seven_day", "Current week"),
-        ("seven_day_opus", "Opus week"),
-        ("seven_day_sonnet", "Sonnet week"),
+        ("five_hour", "5-hour", 5 * 60 * 60),
+        ("seven_day", "Weekly", 7 * 24 * 60 * 60),
+        ("seven_day_opus", "Opus week", 7 * 24 * 60 * 60),
+        ("seven_day_sonnet", "Sonnet week", 7 * 24 * 60 * 60),
     )
-    for key, label in mapping:
+    for key, label, duration_seconds in mapping:
         window = payload.get(key) or {}
         util = window.get("utilization")
         if util is None:
@@ -788,6 +819,7 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
                 label=label,
                 used_percent=used,
                 reset_at=_parse_dt(window.get("resets_at")),
+                duration_seconds=duration_seconds,
             )
         )
     details: list[str] = []

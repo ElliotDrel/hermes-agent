@@ -611,12 +611,36 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+
+            # The final assistant response is now part of the session context.
+            # ``last_total_tokens`` is provider-reported prompt + completion
+            # usage for that completed final request, while ``context_length``
+            # follows any active fallback model. Expose both to output-transform
+            # plugins without making them re-count the persisted transcript.
+            _context_used_tokens = None
+            _context_window_tokens = None
+            _compaction_count = None
+            _compressor = getattr(agent, "context_compressor", None)
+            if _compressor is not None:
+                _used = int(getattr(_compressor, "last_total_tokens", 0) or 0)
+                _window = int(getattr(_compressor, "context_length", 0) or 0)
+                _compactions = int(getattr(_compressor, "compression_count", 0) or 0)
+                if _used > 0:
+                    _context_used_tokens = _used
+                if _window > 0:
+                    _context_window_tokens = _window
+                if _compactions > 0:
+                    _compaction_count = _compactions
+
             _transform_results = _invoke_hook(
                 "transform_llm_output",
                 response_text=final_response,
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                context_used_tokens=_context_used_tokens,
+                context_window_tokens=_context_window_tokens,
+                compaction_count=_compaction_count,
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:

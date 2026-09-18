@@ -17250,6 +17250,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "profile": self._handle_profile_command,
             "update": self._handle_update_command,
             "version": self._handle_version_command,
+            # /rename touches nothing the running turn owns: it reads session
+            # history from the DB, runs the title model off-thread, writes only
+            # the session title, and renames the Discord thread. Mid-run it may
+            # miss messages the in-flight turn has not flushed to the session DB
+            # yet, which is acceptable for a durable-topic title.
+            "rename": self._handle_rename_command,
         }
 
     async def _dispatch_busy_slash_command(
@@ -18634,6 +18640,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "title":
             return await self._handle_title_command(event)
+
+        if canonical == "rename":
+            return await self._handle_rename_command(event)
 
         if canonical == "resume":
             return await self._handle_resume_command(event)

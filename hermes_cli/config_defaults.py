@@ -1124,6 +1124,10 @@ DEFAULT_CONFIG = {
         # OPENROUTER_API_KEY is present. Default false keeps the historical
         # paid fallback for users who want it.
         "free_only": False,
+        # Opt-in strict routing: when false, an auto auxiliary task stops after
+        # the selected main provider and any configured fallback chain fail.
+        # It never discovers OpenRouter, Nous, custom, or API-key providers.
+        "allow_provider_discovery_fallback": True,
         # Override the auxiliary auto-chain's OpenRouter fallback model
         # (default: google/gemini-3.6-flash, a PAID model). Set e.g.
         # "nvidia/nemotron-3-ultra-550b-a55b:free" together with
@@ -2386,6 +2390,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "auto_thread_archive_duration": 1440,  # Minutes before Hermes auto-created threads archive. Valid: 60, 1440, 4320, 10080.
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
         "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)

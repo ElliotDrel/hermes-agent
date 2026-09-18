@@ -295,7 +295,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
-| `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
+| `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"startup"` runs either sync mode only once during each gateway process's first successful Discord connection (including after a gateway restart), then skips ordinary Discord reconnects. `"off"` skips sync entirely. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
@@ -336,6 +336,7 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  command_sync_policy: safe       # safe, bulk, startup, or off
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
@@ -409,6 +410,21 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+
+#### `discord.command_sync_policy`
+
+**Type:** string — **Default:** `"safe"`
+
+Controls publication of Discord slash commands. `safe` diffs and reconciles commands whenever Discord reports the bot ready; `bulk` uses Discord's legacy full `tree.sync()` operation; `off` never syncs automatically.
+
+Use `startup` to sync once on the first successful Discord connection in each gateway process. A manual gateway restart creates a new process and performs that one sync; ordinary Discord websocket reconnects within the same process do not. This is the recommended setting when Discord command-management rate limits are a concern.
+
+```yaml
+discord:
+  command_sync_policy: startup
+```
+
+`DISCORD_COMMAND_SYNC_POLICY` overrides this setting when set.
 
 #### `discord.reactions`
 

@@ -57,6 +57,20 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     return f"[{escaped_label}](<{escaped_url}>)"
 
 
+_DISCORD_DRAFT_MESSAGE_RE = re.compile(r"^/?drafts?(?=$|[:\s])", re.IGNORECASE)
+
+
+def _is_discord_draft_message(content: str) -> bool:
+    """Return whether a Discord post is an explicitly private draft marker.
+
+    Drafts are ordinary Discord messages kept for the sender, but must never
+    become Hermes input.  The marker is case-insensitive and supports singular
+    or plural forms, with an optional leading slash: ``draft``, ``drafts``,
+    ``draft:``, ``/draft``, and ``/drafts:``.
+    """
+    return bool(_DISCORD_DRAFT_MESSAGE_RE.match((content or "").strip()))
+
+
 class _Snowflake:
     """Minimal object exposing ``.id`` — satisfies discord.py's Snowflake
     protocol for ``channel.history(before=...)`` without constructing a
@@ -70,7 +84,11 @@ class _Snowflake:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
-_DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
+_DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "startup", "off"}
+# Per-process guard for ``startup`` sync. Adapter instances can be replaced by
+# the gateway after a failed connection; process scope is what makes this
+# policy skip those rebuilds while a gateway restart naturally resets it.
+_DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS: set[str] = set()
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
@@ -1076,6 +1094,10 @@ class DiscordAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
+        # Parent-channel cooldowns after Discord rejects auto-thread creation.
+        # Keep these process-local: Discord's retry_after is a runtime signal,
+        # not durable configuration, and a fresh gateway gets a fresh attempt.
+        self._auto_thread_rate_limit_until: Dict[str, float] = {}
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
@@ -2415,12 +2437,41 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
                 return
 
+            app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
+            if sync_policy == "startup":
+                if app_id is None:
+                    # A forced reconnect can run post-connect init against a
+                    # torn-down client, where no application ID resolves.
+                    # Claiming a placeholder key here would let the real
+                    # application ID look unclaimed on the next reconnect and
+                    # issue a SECOND sync in this process. Defer instead: the
+                    # reconnect that carries a live client performs the one
+                    # allowed startup sync. Trade-off: if the client never
+                    # exposes an application ID, no automatic sync happens in
+                    # this process, which is the safe direction for a policy
+                    # whose entire purpose is suppressing sync bursts.
+                    logger.info(
+                        "[%s] Deferring Discord slash command sync: application ID not resolved yet",
+                        self.name,
+                    )
+                    return
+                startup_key = str(app_id)
+                if startup_key in _DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS:
+                    logger.info(
+                        "[%s] Skipping Discord slash command sync: startup sync already ran in this gateway process",
+                        self.name,
+                    )
+                    return
+                # Consume the process-local startup attempt before issuing any
+                # REST calls. A rate-limited first attempt must not turn later
+                # websocket reconnects into another command-sync burst.
+                _DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS.add(startup_key)
+
             if sync_policy == "bulk":
                 synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
-            app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
             fingerprint = self._desired_command_sync_fingerprint()
             skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
             if skip_reason:
@@ -2435,11 +2486,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
 
             try:
-                # Discord's per-app command-management bucket is small, and
-                # discord.py can otherwise sit inside one long retry sleep
-                # before surfacing the 429. Keep the whole sync bounded and
-                # persist Discord's retry-after when it refuses the batch.
-                summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
+                # A startup sync is best-effort. It must not hold the gateway
+                # for ten minutes when Discord silently parks a rate-limit
+                # bucket. Use the same short cap as rate-limit waits; the
+                # process-scoped startup guard prevents reconnect retries.
+                summary = await asyncio.wait_for(
+                    self._safe_sync_slash_commands(),
+                    timeout=_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
+                )
             except Exception as e:
                 if not self._is_discord_rate_limit(e):
                     raise
@@ -3133,7 +3187,14 @@ class DiscordAdapter(BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _get_discord_command_sync_policy(self) -> str:
-        raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
+        raw = str(
+            self._config_value(
+                "command_sync_policy",
+                "safe",
+                env_key="DISCORD_COMMAND_SYNC_POLICY",
+            )
+            or ""
+        ).strip().lower()
         if raw in _DISCORD_COMMAND_SYNC_POLICIES:
             return raw
         if raw:
@@ -5929,6 +5990,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_title(interaction: discord.Interaction, name: str = ""):
             await self._run_simple_slash(interaction, f"/title {name}".strip())
 
+        @tree.command(name="rename", description="Set a title, or generate one from this thread")
+        @discord.app_commands.describe(title="Custom thread title. Leave empty to generate one.")
+        async def slash_rename(interaction: discord.Interaction, title: str = ""):
+            await self._run_simple_slash(interaction, f"/rename {title}".strip())
+
         @tree.command(name="resume", description="Resume a previously-named session")
         @discord.app_commands.describe(name="Session name to resume. Leave empty to list sessions.")
         async def slash_resume(interaction: discord.Interaction, name: str = ""):
@@ -6001,7 +6067,7 @@ class DiscordAdapter(BasePlatformAdapter):
             interaction: discord.Interaction,
             name: str,
             message: str = "",
-            auto_archive_duration: int = 1440,
+            auto_archive_duration: int = 10080,
         ):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
@@ -6452,7 +6518,7 @@ class DiscordAdapter(BasePlatformAdapter):
         interaction: discord.Interaction,
         name: str,
         message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = 10080,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
@@ -6602,6 +6668,27 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return 32 * 1024 * 1024
         return max(0, value)
+
+    def _discord_auto_thread_archive_duration(self) -> int:
+        """Return the configured archive duration for Hermes-created threads."""
+        configured = self.config.extra.get("auto_thread_archive_duration")
+        if configured is None or configured == "":
+            return 1440
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[Discord] Invalid auto_thread_archive_duration %r; using 1440",
+                configured,
+            )
+            return 1440
+        if value not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            logger.warning(
+                "[Discord] Invalid auto_thread_archive_duration %s; using 1440",
+                value,
+            )
+            return 1440
+        return value
 
     @staticmethod
     def _is_discord_voice_message_attachment(att: Any) -> bool:
@@ -6958,6 +7045,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
                 content = getattr(msg, "clean_content", msg.content) or ""
+                if _is_discord_draft_message(content):
+                    return None
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
@@ -7144,7 +7233,7 @@ class DiscordAdapter(BasePlatformAdapter):
         *,
         name: str,
         message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = 10080,
     ) -> Dict[str, Any]:
         """Create a thread in the current Discord channel.
 
@@ -7245,13 +7334,29 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
+        parent_channel_id = str(getattr(getattr(message, "channel", None), "id", ""))
+        now = time.monotonic()
+        blocked_until = self._auto_thread_rate_limit_until.get(parent_channel_id, 0.0)
+        if blocked_until > now:
+            logger.warning(
+                "[%s] Auto-thread creation cooling down for parent channel %s (%.2fs remaining)",
+                self.name,
+                parent_channel_id or "unknown",
+                blocked_until - now,
+            )
+            return None
+        if blocked_until:
+            self._auto_thread_rate_limit_until.pop(parent_channel_id, None)
 
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
 
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=self._discord_auto_thread_archive_duration(),
+                )
                 try:
                     setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                 except Exception:
@@ -7259,13 +7364,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
+                if self._is_discord_rate_limit(direct_error):
+                    retry_after = self._extract_discord_retry_after(direct_error) or 60.0
+                    self._auto_thread_rate_limit_until[parent_channel_id] = time.monotonic() + retry_after
+                    logger.warning(
+                        "[%s] Auto-thread creation rate limited for %.2fs; skipping fallback and retry",
+                        self.name,
+                        retry_after,
+                    )
+                    return None
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
                     )
                     thread = await seed_msg.create_thread(
                         name=thread_name,
-                        auto_archive_duration=1440,
+                        auto_archive_duration=self._discord_auto_thread_archive_duration(),
                         reason=reason,
                     )
                     try:
@@ -7275,6 +7389,25 @@ class DiscordAdapter(BasePlatformAdapter):
                     return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
+                    if self._is_discord_rate_limit(fallback_error):
+                        retry_after = self._extract_discord_retry_after(fallback_error) or 60.0
+                        self._auto_thread_rate_limit_until[parent_channel_id] = time.monotonic() + retry_after
+                        delete_seed = getattr(seed_msg, "delete", None)
+                        if delete_seed is not None:
+                            try:
+                                await delete_seed()
+                            except Exception:
+                                logger.debug(
+                                    "[%s] Could not remove auto-thread seed after rate limit",
+                                    self.name,
+                                    exc_info=True,
+                                )
+                        logger.warning(
+                            "[%s] Auto-thread fallback rate limited for %.2fs; removed seed and skipping retry",
+                            self.name,
+                            retry_after,
+                        )
+                        return None
                     if attempt == 0:
                         # Brief backoff before the second attempt — most failures
                         # in this path are transient connect errors that recover
@@ -7296,22 +7429,43 @@ class DiscordAdapter(BasePlatformAdapter):
         name: str,
         *,
         only_if_current_name: Optional[str] = None,
+        prefer_connector_created: bool = False,
+        parent_chat_id: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> bool:
         """Best-effort Discord thread rename.
 
         ``only_if_current_name`` prevents overwriting human-renamed or
-        pre-existing threads.  This is intentionally a no-op on mismatch.
+        pre-existing threads. ``prefer_connector_created`` and
+        ``parent_chat_id`` are relay-lane hints and are intentionally ignored
+        by the native Discord adapter. This is intentionally a no-op on a
+        current-name mismatch.
+
+        ``raise_on_error`` opts a caller into the real Discord exception
+        instead of a bare ``False``. The default stays best-effort because the
+        auto-title and relay lanes fire on their own schedule and must never
+        fail a turn over a cosmetic rename. ``/rename`` is user-initiated and
+        opts in, so it can report the actual cause (rate limit, permissions)
+        rather than an unfalsifiable "Discord would not rename this thread".
+        The trade-off fails toward noisier user-facing errors on exactly the
+        one path where the user asked for the rename and is waiting on it.
         """
         if not self._client or not DISCORD_AVAILABLE:
+            if raise_on_error:
+                raise RuntimeError("The Discord adapter is not connected.")
             return False
 
         try:
             thread_id_int = int(str(thread_id))
         except (TypeError, ValueError):
+            if raise_on_error:
+                raise ValueError(f"Invalid Discord thread id: {thread_id!r}")
             return False
 
         cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
         if not cleaned:
+            if raise_on_error:
+                raise ValueError("The requested thread name is empty.")
             return False
         # Discord thread names are budgeted in UTF-16 code units (emoji count
         # double) — truncate with the UTF-16 helpers, not code-point slices.
@@ -7324,7 +7478,15 @@ class DiscordAdapter(BasePlatformAdapter):
             if thread is None:
                 thread = await self._client.fetch_channel(thread_id_int)
         except Exception:
-            logger.debug("[%s] Failed to resolve Discord thread %s for rename", self.name, thread_id, exc_info=True)
+            # WARNING, not DEBUG: a swallowed rename failure was previously
+            # invisible at the default log level, which made a live /rename
+            # failure impossible to diagnose from the logs alone.
+            logger.warning(
+                "[%s] Failed to resolve Discord thread %s for rename",
+                self.name, thread_id, exc_info=True,
+            )
+            if raise_on_error:
+                raise
             return False
 
         current_name = getattr(thread, "name", None)
@@ -7333,12 +7495,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 "[%s] Discord semantic thread rename skipped for %s: current name %r != expected %r",
                 self.name, thread_id, current_name, only_if_current_name,
             )
+            if raise_on_error:
+                raise RuntimeError(
+                    f"The thread is currently named {current_name!r}, not "
+                    f"{only_if_current_name!r}; skipping the rename."
+                )
             return False
         if current_name == cleaned:
             return True
 
         edit = getattr(thread, "edit", None)
         if edit is None:
+            if raise_on_error:
+                raise RuntimeError(f"Discord channel {thread_id} cannot be renamed.")
             return False
         try:
             await edit(name=cleaned, reason="Hermes semantic session title")
@@ -7348,7 +7517,12 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return True
         except Exception:
-            logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
+            logger.warning(
+                "[%s] Failed to rename Discord thread %s to %r",
+                self.name, thread_id, cleaned, exc_info=True,
+            )
+            if raise_on_error:
+                raise
             return False
 
     async def create_handoff_thread(
@@ -7400,7 +7574,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if create is not None:
                 thread = await create(
                     name=thread_name,
-                    auto_archive_duration=1440,
+                    auto_archive_duration=self._discord_auto_thread_archive_duration(),
                     reason=reason,
                 )
                 return str(thread.id)
@@ -7418,7 +7592,7 @@ class DiscordAdapter(BasePlatformAdapter):
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
                 name=thread_name,
-                auto_archive_duration=1440,
+                auto_archive_duration=self._discord_auto_thread_archive_duration(),
                 reason=reason,
             )
             return str(thread.id)
@@ -8081,6 +8255,13 @@ class DiscordAdapter(BasePlatformAdapter):
         recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
+        if _is_discord_draft_message(getattr(message, "content", "")):
+            logger.debug(
+                "[%s] Ignoring explicitly marked Discord draft message %s",
+                self.name,
+                getattr(message, "id", "unknown"),
+            )
+            return False
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
@@ -8529,7 +8710,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if message.reference:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                candidate_reply_text = getattr(message.reference.resolved, "content", None) or None
+                if not _is_discord_draft_message(candidate_reply_text or ""):
+                    reply_to_text = candidate_reply_text
 
         event = MessageEvent(
             text=event_text,
@@ -10404,6 +10587,17 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
     seeded_extra = {}
+    # Command-sync policy must be per-adapter because multiplexed profiles can
+    # target different Discord applications. Preserve an explicit public
+    # ``discord.command_sync_policy`` value in ``extra`` so the adapter does
+    # not silently fall back to its reconnect-permitting ``safe`` default.
+    command_sync_policy = (
+        discord_cfg["command_sync_policy"]
+        if "command_sync_policy" in discord_cfg
+        else platform_extra_cfg.get("command_sync_policy")
+    )
+    if command_sync_policy is not None:
+        seeded_extra["command_sync_policy"] = command_sync_policy
     # Authorization gate keys are ALWAYS seeded into PlatformConfig.extra so
     # every adapter carries its own profile's allow/deny lists (issue #72348).
     # The os.environ writes below remain first-writer-wins for legacy env-only
@@ -10454,6 +10648,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    auto_thread_archive_duration = discord_cfg.get("auto_thread_archive_duration")
+    if auto_thread_archive_duration is not None:
+        seeded_extra["auto_thread_archive_duration"] = auto_thread_archive_duration
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     backfill_cfg = discord_cfg.get("missed_message_backfill")

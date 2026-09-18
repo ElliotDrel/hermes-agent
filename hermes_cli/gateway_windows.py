@@ -487,8 +487,9 @@ def _build_gateway_vbs_script(
     command_line = subprocess.list2cmdline(prog_args)
 
     repo_root = _preserve_hermes_home_path(Path(__file__).resolve().parent.parent)
+    venv_site_packages = _preserve_hermes_home_path(venv_dir / "Lib" / "site-packages")
     static_pythonpath = os.pathsep.join(
-        [repo_root, *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath]]
+        [repo_root, venv_site_packages, *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath]]
     )
 
     lines = [

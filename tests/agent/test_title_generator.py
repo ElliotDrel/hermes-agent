@@ -8,6 +8,7 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    _TITLE_PROMPT_TEMPLATE,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -16,8 +17,17 @@ from hermes_state import SessionDB
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
 
+    def test_prompt_requires_title_case(self):
+        assert "title case" in _TITLE_PROMPT_TEMPLATE.lower()
 
-
+    def test_prompt_uses_durable_goal_editorial_rules(self):
+        prompt = _TITLE_PROMPT_TEMPLATE.lower()
+        assert "umbrella goal" in prompt
+        assert "5–10 words" in prompt
+        assert "product change, decision, problem, or question" in prompt
+        assert "prefer shorter, concrete words" in prompt
+        assert "& or +" in prompt
+        assert "user's opening message" not in prompt
 
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}

@@ -77,7 +77,9 @@ def _db_path() -> Path:
         pass
     if EXECUTIONS_FILE is not None:
         return Path(EXECUTIONS_FILE)
-    return get_hermes_home().resolve() / "cron" / "executions.db"
+    from cron.jobs import _current_cron_store
+
+    return _current_cron_store().runtime_dir / "executions.db"
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:

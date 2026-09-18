@@ -2540,13 +2540,14 @@ class ContextCompressor(ContextEngine):
         self._proactive_prune_rearm_tokens = 0
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
-        """Bind the current session row so durable cooldowns can round-trip."""
+        """Bind the current session row so durable compaction state can round-trip."""
         self._session_db = session_db
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
+        self.compression_count = 0
         self._fallback_compression_streak = 0
         self._ineffective_compression_count = 0
         self._prellm_skip_count = 0
@@ -2554,9 +2555,51 @@ class ContextCompressor(ContextEngine):
         self._structural_no_op_backoff_until = 0.0
         self._proactive_prune_rearm_tokens = 0
         self.get_active_compression_failure_cooldown()
+        self._load_compression_count()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
         self._load_proactive_prune_rearm_tokens()
+
+    @staticmethod
+    def _compression_count_meta_key(session_id: str) -> str:
+        return f"context_compressor:compression_count:{session_id}"
+
+    def _load_compression_count(self) -> None:
+        """Restore the lifetime compaction count for the bound session."""
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        getter = getattr(session_db, "get_meta", None)
+        if not session_id or not callable(getter):
+            return
+        try:
+            value = getter(self._compression_count_meta_key(session_id))
+            self.compression_count = max(0, int(value or 0))
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            logger.debug("compression count lookup failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression count lookup failed (non-sqlite): %s", exc)
+
+    def _persist_compression_count(self) -> None:
+        """Persist the exact completed-compaction total for the bound session."""
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        setter = getattr(session_db, "set_meta", None)
+        if not session_id or not callable(setter):
+            return
+        try:
+            setter(
+                self._compression_count_meta_key(session_id),
+                str(max(0, int(self.compression_count))),
+            )
+        except sqlite3.Error as exc:
+            logger.debug("compression count persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression count persist failed (non-sqlite): %s", exc)
+
+    def _increment_compression_count(self) -> None:
+        """Record one completed compaction and persist it before returning."""
+        self.compression_count += 1
+        self._persist_compression_count()
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
@@ -2564,9 +2607,26 @@ class ContextCompressor(ContextEngine):
         boundary_reason = kwargs.get("boundary_reason")
         old_session_id = kwargs.get("old_session_id")
         session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
+        previous_compaction_count = self.compression_count
         previous_fallback_streak = self._fallback_compression_streak
         previous_ineffective_count = self._ineffective_compression_count
         if boundary_reason == "compression" and old_session_id:
+            count_getter = getattr(session_db, "get_meta", None)
+            if callable(count_getter):
+                try:
+                    stored_count = count_getter(
+                        self._compression_count_meta_key(str(old_session_id))
+                    )
+                    previous_compaction_count = max(
+                        previous_compaction_count,
+                        int(stored_count or 0),
+                    )
+                except (TypeError, ValueError, sqlite3.Error) as exc:
+                    logger.debug("compression parent count lookup failed: %s", exc)
+                except Exception as exc:
+                    logger.debug(
+                        "compression parent count lookup failed (non-sqlite): %s", exc,
+                    )
             getter = getattr(session_db, "get_compression_fallback_streak", None)
             if callable(getter):
                 try:
@@ -2599,6 +2659,10 @@ class ContextCompressor(ContextEngine):
                     )
         self.bind_session_state(session_db, session_id)
         if boundary_reason == "compression":
+            # A rotation is one logical conversation. Carry the visible lifetime
+            # total onto the child row before the next response footer renders.
+            self.compression_count = previous_compaction_count
+            self._persist_compression_count()
             # Rotation creates a fresh child row before this callback. Preserve
             # the logical conversation's streak until boundary bookkeeping
             # persists the updated value onto the child row.
@@ -8161,7 +8225,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 _merge_summary_into_tail = False
             compressed.append(msg)
 
-        self.compression_count += 1
+        self._increment_compression_count()
 
         compressed = self._sanitize_tool_pairs(compressed)
 

@@ -278,6 +278,25 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_discord_command_sync_policy_from_top_level_yaml_reaches_platform_extra(self, tmp_path, monkeypatch):
+        """The documented ``discord:`` setting must reach the adapter's config.
+
+        Without this bridge, the adapter falls back to ``safe`` even when users
+        explicitly configure ``startup``. That turns ordinary reconnects into
+        additional eligible command-sync attempts.
+        """
+        (tmp_path / "config.yaml").write_text(
+            "discord:\n  command_sync_policy: startup\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.delenv("DISCORD_COMMAND_SYNC_POLICY", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["command_sync_policy"] == "startup"
+
     def test_shipped_template_does_not_enable_auto_reset(self, tmp_path, monkeypatch):
         """A fresh install seeded from cli-config.yaml.example must not
         auto-reset sessions.

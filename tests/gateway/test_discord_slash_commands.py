@@ -142,6 +142,30 @@ async def test_registers_native_thread_slash_command(adapter):
 
 
 @pytest.mark.asyncio
+async def test_registers_native_rename_slash_command(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["rename"]
+    interaction = SimpleNamespace()
+    await command(interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/rename")
+
+
+@pytest.mark.asyncio
+async def test_registers_native_rename_slash_command_with_custom_title(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["rename"]
+    interaction = SimpleNamespace()
+    await command(interaction, "Launch Plan")
+
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/rename Launch Plan")
+
+
+@pytest.mark.asyncio
 async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter):
     class UnknownInteraction(Exception):
         status = 404
@@ -425,6 +449,22 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     assert "<@" not in name, f"role/user mention leaked: {name!r}"
     assert "<#" not in name, f"channel mention leaked: {name!r}"
     assert name == "please help"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_uses_configured_archive_duration(adapter):
+    adapter.config.extra["auto_thread_archive_duration"] = 10080
+    thread = SimpleNamespace(id=999, name="help")
+    message = SimpleNamespace(
+        content="please help",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    assert message.create_thread.await_args.kwargs["auto_archive_duration"] == 10080
 
 
 @pytest.mark.asyncio

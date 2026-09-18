@@ -30,7 +30,9 @@ _PROCESS_ID = uuid.uuid4().hex
 def _connect() -> sqlite3.Connection:
     from cron.jobs import _ensure_cron_dir
 
-    path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+    # Keep the execution ledger with scheduler-owned state rather than beside
+    # the declarative cron manifest at the profile root.
+    path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "runtime" / "executions.db")
     _ensure_cron_dir(path.parent)
     return sqlite3.connect(path, timeout=5)
 

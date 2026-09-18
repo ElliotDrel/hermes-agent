@@ -1,8 +1,10 @@
 """
 Cron job storage and management.
 
-Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+Durable cron definitions are kept outside this module. Scheduler-generated
+state lives in ~/.hermes/cron/runtime/ so it can be ignored as one unit.
+Jobs are stored in ~/.hermes/cron/runtime/jobs.json.
+Output is saved to ~/.hermes/cron/runtime/output/{job_id}/{timestamp}.md.
 """
 
 import contextlib
@@ -82,16 +84,19 @@ HERMES_DIR = get_hermes_home().resolve()
 # surface for existing callers/tests. Cross-profile callers must scope paths
 # with use_cron_store() instead of mutating them process-wide.
 CRON_DIR = HERMES_DIR / "cron"
-JOBS_FILE = CRON_DIR / "jobs.json"
+# Keep generated scheduler state in one place. The parent cron directory is
+# reserved for a portable declarative manifest maintained by the workspace.
+RUNTIME_DIR = CRON_DIR / "runtime"
+JOBS_FILE = RUNTIME_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
 # gateway process and the (separate) ``hermes cron status`` process share it
 # so status can tell whether the ticker THREAD is alive, not just whether the
 # gateway PROCESS exists — a ticker that dies silently inside a live gateway
 # would otherwise report healthy (#32612, #32895).
-TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
+TICKER_HEARTBEAT_FILE = RUNTIME_DIR / "ticker_heartbeat"
 # Last tick that completed WITHOUT raising. Distinguishing this from the plain
 # heartbeat lets status detect a ticker that is alive but failing every tick.
-TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
+TICKER_SUCCESS_FILE = RUNTIME_DIR / "ticker_last_success"
 # Default ticker loop interval (seconds). The single source of truth shared by
 # the in-process ticker (cron/scheduler_provider.py) and the staleness
 # threshold in `hermes cron status` (hermes_cli/cron.py), so the two never
@@ -114,13 +119,14 @@ _fire_fence_locks_guard = threading.Lock()
 # legitimate critical section (field updates only) while keeping the ticker's
 # worst-case stall well under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
-OUTPUT_DIR = CRON_DIR / "output"
+OUTPUT_DIR = RUNTIME_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
 
 @dataclass(frozen=True)
 class _CronStorePaths:
     cron_dir: Path
+    runtime_dir: Path
     jobs_file: Path
     output_dir: Path
 
@@ -135,7 +141,28 @@ _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
 # re-pointing of the module surface (monkeypatched CRON_DIR/JOBS_FILE/
 # OUTPUT_DIR — the documented escape hatch existing tests/embedders use)
 # is distinguishable from the constants merely being stale.
-_IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+_IMPORT_STORE = _CronStorePaths(CRON_DIR, RUNTIME_DIR, JOBS_FILE, OUTPUT_DIR)
+
+
+def _store_paths(
+    cron_dir: Path,
+    jobs_file: Optional[Path] = None,
+    output_dir: Optional[Path] = None,
+    runtime_dir: Optional[Path] = None,
+) -> _CronStorePaths:
+    """Build a store path set while preserving old test/embedder overrides.
+
+    Existing callers that point ``JOBS_FILE`` directly under a temporary cron
+    directory keep that flat layout. Production and profile-scoped stores use
+    the dedicated ``runtime`` directory.
+    """
+    if runtime_dir is None:
+        runtime_dir = jobs_file.parent if jobs_file is not None else cron_dir / "runtime"
+    if jobs_file is None:
+        jobs_file = runtime_dir / "jobs.json"
+    if output_dir is None:
+        output_dir = runtime_dir / "output"
+    return _CronStorePaths(cron_dir, runtime_dir, jobs_file, output_dir)
 
 
 def _current_cron_store() -> _CronStorePaths:
@@ -159,14 +186,20 @@ def _current_cron_store() -> _CronStorePaths:
     override = _cron_store_override.get()
     if override is not None:
         return override
-    live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
-    if live_constants != _IMPORT_STORE:
-        return live_constants
+    if (
+        CRON_DIR != _IMPORT_STORE.cron_dir
+        or JOBS_FILE != _IMPORT_STORE.jobs_file
+        or OUTPUT_DIR != _IMPORT_STORE.output_dir
+    ):
+        # Test and embedder compatibility: a caller that points the three
+        # historical public paths at a flat temporary store keeps using it.
+        return _store_paths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    live_constants = _IMPORT_STORE
     home = get_hermes_home().resolve()
     if home == HERMES_DIR:
         return live_constants
     cron_dir = home / "cron"
-    return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
+    return _store_paths(cron_dir)
 
 
 @contextlib.contextmanager
@@ -174,11 +207,7 @@ def use_cron_store(home: Union[str, Path]):
     """Route cron storage to ``home`` without mutating process globals."""
     cron_dir = Path(home).expanduser().resolve() / "cron"
     token = _cron_store_override.set(
-        _CronStorePaths(
-            cron_dir=cron_dir,
-            jobs_file=cron_dir / "jobs.json",
-            output_dir=cron_dir / "output",
-        )
+        _store_paths(cron_dir)
     )
     try:
         yield
@@ -266,7 +295,7 @@ def _job_running_in_this_process(job_id: str) -> bool:
 
 def _jobs_lock_file() -> Path:
     """Return the advisory lock path for the current cron directory."""
-    return _current_cron_store().cron_dir / ".jobs.lock"
+    return _current_cron_store().runtime_dir / ".jobs.lock"
 
 
 @contextlib.contextmanager
@@ -761,12 +790,60 @@ def _ensure_cron_dir(cron_dir: Path) -> None:
     cron_dir.mkdir(parents=True, exist_ok=True)
 
 
+_LEGACY_RUNTIME_NAMES = (
+    "jobs.json",
+    "output",
+    "state",
+    "suggestions.json",
+    "notepad.db",
+    "ticker_heartbeat",
+    "ticker_last_success",
+    "ticker_last_error",
+    "catch_up_occurrences",
+    "usage_audit.jsonl",
+    "inflight_forced_releases.jsonl",
+)
+
+
+def _migrate_legacy_runtime(store: _CronStorePaths) -> None:
+    """Move scheduler-owned root files into ``runtime`` without data loss.
+
+    A running pre-layout gateway continues to use the legacy root until it is
+    manually restarted. The first new-process access performs this migration.
+    If both source and destination exist, leave the legacy source untouched
+    and log instead of choosing which durable runtime data to discard.
+    """
+    if store.runtime_dir == store.cron_dir:
+        return
+    _ensure_cron_dir(store.runtime_dir)
+    names = set(_LEGACY_RUNTIME_NAMES)
+    names.update(path.name for path in store.cron_dir.glob("*.db*"))
+    for name in names:
+        source = store.cron_dir / name
+        destination = store.runtime_dir / name
+        if not source.exists() or destination.exists():
+            if source.exists() and destination.exists():
+                logger.warning(
+                    "Leaving legacy cron runtime artifact at %s because %s already exists",
+                    source,
+                    destination,
+                )
+            continue
+        try:
+            os.replace(source, destination)
+        except OSError as exc:
+            logger.warning("Could not move cron runtime artifact %s: %s", source, exc)
+
+
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()
     _ensure_cron_dir(store.cron_dir)
+    _migrate_legacy_runtime(store)
+    _ensure_cron_dir(store.runtime_dir)
     _ensure_cron_dir(store.output_dir)
     _secure_dir(store.cron_dir)
+    _secure_dir(store.runtime_dir)
     _secure_dir(store.output_dir)
 
 
@@ -1321,7 +1398,7 @@ def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str
     _persisted_error_recoveries_recent.append(entry)
     del _persisted_error_recoveries_recent[:-_PERSISTED_ERROR_RECOVERY_HISTORY]
     try:
-        path = _current_cron_store().cron_dir / "persisted_error_recoveries.jsonl"
+        path = _current_cron_store().runtime_dir / "persisted_error_recoveries.jsonl"
         _ensure_cron_dir(path.parent)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -1480,12 +1557,12 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     """
     store = _current_cron_store()
     try:
-        _atomic_write_epoch(store.cron_dir / "ticker_heartbeat")
+        _atomic_write_epoch(store.runtime_dir / "ticker_heartbeat")
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(store.cron_dir / "ticker_last_success")
+            _atomic_write_epoch(store.runtime_dir / "ticker_last_success")
         except Exception:
             pass
 
@@ -1509,7 +1586,7 @@ def get_ticker_heartbeat_age() -> Optional[float]:
     ``hermes cron status`` must report per-profile liveness (#69377).
     """
     store = _current_cron_store()
-    return _epoch_file_age(store.cron_dir / "ticker_heartbeat")
+    return _epoch_file_age(store.runtime_dir / "ticker_heartbeat")
 
 
 def get_ticker_success_age() -> Optional[float]:
@@ -1520,12 +1597,12 @@ def get_ticker_success_age() -> Optional[float]:
     ``hermes cron status`` must report per-profile liveness (#69377).
     """
     store = _current_cron_store()
-    return _epoch_file_age(store.cron_dir / "ticker_last_success")
+    return _epoch_file_age(store.runtime_dir / "ticker_last_success")
 
 
 def record_catch_up_occurrence() -> None:
     """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    path = _current_cron_store().runtime_dir / "catch_up_occurrences"
     try:
         try:
             value = int(path.read_text(encoding="utf-8").strip())
@@ -1549,7 +1626,7 @@ def record_ticker_error(message: str) -> None:
     Best-effort: a write failure must never disrupt the tick loop.
     """
     store = _current_cron_store()
-    path = store.cron_dir / "ticker_last_error"
+    path = store.runtime_dir / "ticker_last_error"
     try:
         ensure_dirs()
         fd, tmp_path = tempfile.mkstemp(
@@ -1573,7 +1650,7 @@ def record_ticker_error(message: str) -> None:
 
 def get_catch_up_occurrence_count() -> int:
     """Return the profile-local stale-schedule catch-up count."""
-    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    path = _current_cron_store().runtime_dir / "catch_up_occurrences"
     try:
         return max(0, int(path.read_text(encoding="utf-8").strip()))
     except (OSError, ValueError):
@@ -1584,7 +1661,7 @@ def clear_ticker_error() -> None:
     """Remove the last-tick-error marker after a successful tick. Best-effort."""
     store = _current_cron_store()
     try:
-        (store.cron_dir / "ticker_last_error").unlink()
+        (store.runtime_dir / "ticker_last_error").unlink()
     except OSError:
         pass
 
@@ -1593,7 +1670,7 @@ def get_ticker_last_error() -> Optional[str]:
     """Return the most recent recorded tick error message, or None."""
     store = _current_cron_store()
     try:
-        raw = (store.cron_dir / "ticker_last_error").read_text(encoding="utf-8")
+        raw = (store.runtime_dir / "ticker_last_error").read_text(encoding="utf-8")
     except Exception:
         return None
     lines = raw.splitlines()

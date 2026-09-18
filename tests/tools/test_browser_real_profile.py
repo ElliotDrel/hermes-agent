@@ -302,6 +302,87 @@ class TestRealProfileCdpLaunch:
         assert "--cdp" in captured["argv"]
         self._reset()
 
+    def test_headed_launch_opens_a_window(self, tmp_path):
+        """A headed real-profile launch must not suppress Chrome's startup window."""
+        import tools.browser_tool as bt
+        self._reset()
+        captured = {}
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["chrome_argv"] = argv
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt, "_agent_browser_get_cdp", side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_is_headed_mode", return_value=True):
+            cdp, err = bt._real_profile_cdp()
+
+        assert err is None
+        assert cdp == "http://127.0.0.1:41000"
+        assert "--headless=new" not in captured["chrome_argv"]
+        assert "--no-startup-window" not in captured["chrome_argv"]
+        self._reset()
+
+    def test_falls_back_to_direct_cdp_when_agent_browser_attach_fails(self, tmp_path):
+        """The copy remains usable when agent-browser cannot attach its session."""
+        import tools.browser_tool as bt
+        self._reset()
+        proc = Mock(return_value=None, returncode=1, stdout="", stderr="attach failed")
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=None), \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_is_headed_mode", return_value=True):
+            cdp, err = bt._real_profile_cdp()
+
+        assert err is None
+        assert cdp == "http://127.0.0.1:41000"
+        self._reset()
+
+    def test_reuses_published_direct_cdp_without_agent_browser_session(self, tmp_path):
+        """A new tool process reuses a healthy copy without resnapshotting it."""
+        import tools.browser_tool as bt
+        self._reset()
+        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=None), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", side_effect=AssertionError("must not snapshot")):
+            cdp, err = bt._real_profile_cdp()
+
+        assert err is None
+        assert cdp == "http://127.0.0.1:41000"
+        self._reset()
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt
@@ -928,6 +1009,35 @@ class TestReviewRound3:
         assert len(matched) == 1
         assert matched[0].info["name"] == "chrome.exe"
         assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
+
+    def test_processes_holding_default_chrome_profile_without_user_data_arg(self, tmp_path, monkeypatch):
+        """Default Chrome omits --user-data-dir but still locks its standard profile."""
+        import hermes_cli.browser_connect as bc
+
+        class FakeProc:
+            def __init__(self, name, cmdline):
+                self.info = {"name": name, "cmdline": cmdline}
+
+        ud = str(tmp_path / "Google" / "Chrome" / "User Data")
+        procs = [
+            FakeProc("chrome.exe", ["chrome.exe", "--profile-directory=Profile 1"]),
+            FakeProc("chrome.exe", ["chrome.exe", "--user-data-dir=C:\\Other"]),
+        ]
+
+        class FakePsutil:
+            NoSuchProcess = type("E", (Exception,), {})
+            AccessDenied = type("E2", (Exception,), {})
+
+            def process_iter(self, attrs=None):
+                return iter(procs)
+
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "psutil", FakePsutil())
+        monkeypatch.setattr(bc, "real_profile_data_dir", lambda browser: ud)
+
+        matched = list(bc._processes_holding_profile(ud))
+        assert len(matched) == 1
+        assert matched[0].info["cmdline"] == ["chrome.exe", "--profile-directory=Profile 1"]
 
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         import tools.browser_tool as bt

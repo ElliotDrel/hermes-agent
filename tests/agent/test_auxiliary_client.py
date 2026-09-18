@@ -4169,6 +4169,32 @@ class TestCompressionFallbackContextFilter:
         assert _task_minimum_context_length(None) is None
 
 
+class TestAuxiliaryDiscoveryFallbackPolicy:
+    def test_disabled_discovery_stops_after_configured_fallbacks(self):
+        """A strict policy must never consult hard-coded providers after Terra/Opus."""
+        from agent.auxiliary_client import _resolve_auto_route
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
+            patch(
+                "agent.auxiliary_client._allow_auxiliary_provider_discovery_fallback",
+                return_value=False,
+            ),
+            patch(
+                "agent.auxiliary_client._get_provider_chain",
+                side_effect=AssertionError("hard-coded discovery must not run"),
+            ),
+        ):
+            client, model, provider = _resolve_auto_route(
+                main_runtime={"provider": "openai-codex", "model": "gpt-5.6-terra"},
+                task="compression",
+            )
+
+        assert (client, model, provider) == (None, None, "")
+
+
 class TestCustomEndpointApiKeyInheritance:
     """Issue #9318: when an auxiliary task uses provider=custom with an
     explicit base_url but empty api_key, the custom_key fallback chain must
