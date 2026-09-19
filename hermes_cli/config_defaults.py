@@ -2138,6 +2138,14 @@ DEFAULT_CONFIG = {
     },
 
     "updates": {
+        # Maintained forks select the newest published calendar-version release
+        # instead of rebasing onto an arbitrary upstream/main tip. Only stable
+        # release tags are supported by the maintained-fork workflow.
+        "channel": "stable",
+        # "skip" preserves upstream's conservative fork behavior. "rebase"
+        # records recovery state, rebases main onto the selected release, and
+        # pauses with exit 3 until the PATCH.md audit is complete.
+        "fork_strategy": "skip",
         # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
         "check": True,
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,

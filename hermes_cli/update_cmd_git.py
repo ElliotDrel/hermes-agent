@@ -264,20 +264,48 @@ def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, i
     return True
 
 
-def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None) -> bool:
-    """Offer to add ``upstream``, compare origin/main vs upstream/main, ff-pull when strictly behind, then push origin.
+def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None):
+    """Sync a fork with upstream, or run the opt-in maintained-fork rebase.
 
-    Returns True only when origin/main was actually verified against upstream/main; False when the check never
-    happened, so the caller never reports "up to date" on an origin-only compare. Fetches only upstream/main:
-    a bare fetch drags in thousands of auto-generated branches.
-
-    See #97052.
+    ``updates.fork_strategy: rebase`` selects a stable release tag and returns
+    ``ForkSyncResult``. The upstream default remains the conservative main-tip
+    comparison path below and returns a bool for compatibility.
     """
     from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
     ):
         return False
+
+    try:
+        from hermes_cli.config import load_config
+        update_config = (load_config() or {}).get("updates", {})
+        fork_strategy = str(update_config.get("fork_strategy", "skip")).lower() if isinstance(update_config, dict) else "skip"
+        update_channel = str(update_config.get("channel", "stable")).lower() if isinstance(update_config, dict) else "stable"
+    except Exception as exc:
+        logger.debug("Could not read maintained-fork update settings: %s", exc)
+        fork_strategy, update_channel = "skip", "stable"
+
+    if fork_strategy == "rebase":
+        from hermes_cli.fork_update import ForkUpdateError, start_fork_rebase
+        print(f"\n→ Resolving the latest {update_channel} Hermes release...")
+        try:
+            result = start_fork_rebase(git_cmd, cwd, channel=update_channel)
+        except ForkUpdateError as exc:
+            print(f"  ✗ Maintained-fork update refused: {exc}")
+            raise
+        if result.paused:
+            print("\n⚠ Maintained-fork update paused.")
+            for conflict in result.conflicts:
+                print(f"  conflict: {conflict}")
+            if result.detail:
+                print(f"  {result.detail}")
+        elif result.changed:
+            print(f"  ✓ Rebased main onto {result.target_ref} and lease-pushed origin/main")
+        else:
+            print(f"  ✓ Fork is up to date with {result.target_ref}")
+        return result
+
     print("\n→ Fetching upstream...")
     try:
         subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
