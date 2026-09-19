@@ -88,6 +88,20 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as a supported sync
   policy. Keep active while Discord command limits remain operationally tight.
 
+### HERMES-FORK-004: Discord auto-thread rate-limit cooldown
+
+- **Intent:** Stop failed auto-thread creation from producing false notices,
+  immediate retries, and repeated requests against a cooling-down bucket.
+- **Behavior:** A Discord thread-create 429 records a parent-channel cooldown
+  from `retry_after`, suppresses seed fallback and retry, and removes any false
+  seed message created before a fallback 429.
+- **Touchpoints:** `plugins/platforms/discord/adapter.py` and focused Discord
+  channel-control tests.
+- **Verification:** Focused regressions cover direct and fallback 429s plus
+  suppression of additional attempts during the cooldown.
+- **Upstream disposition:** Candidate for upstreaming as safer native Discord
+  rate-limit handling. Keep active until upstream provides equivalent behavior.
+
 ## Retired patches
 
 None.

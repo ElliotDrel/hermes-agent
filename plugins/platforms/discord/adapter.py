@@ -1026,6 +1026,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
+        # Parent-channel cooldowns from Discord's retry_after. This stays
+        # process-local because a server rate-limit signal is not config state.
+        self._auto_thread_rate_limit_until: Dict[str, float] = {}
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
@@ -5086,6 +5089,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
+        parent_channel_id = str(getattr(getattr(message, "channel", None), "id", ""))
+        blocked_until = self._auto_thread_rate_limit_until.get(parent_channel_id, 0.0)
+        now = time.monotonic()
+        if blocked_until > now:
+            logger.warning("[%s] Auto-thread creation cooling down for parent channel %s (%.2fs remaining)", self.name, parent_channel_id or "unknown", blocked_until - now)
+            return None
+        if blocked_until:
+            self._auto_thread_rate_limit_until.pop(parent_channel_id, None)
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
         for attempt in range(2):
@@ -5094,6 +5105,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
+                if self._is_discord_rate_limit(direct_error):
+                    retry_after = self._extract_discord_retry_after(direct_error) or 60.0
+                    self._auto_thread_rate_limit_until[parent_channel_id] = time.monotonic() + retry_after
+                    logger.warning("[%s] Auto-thread creation rate limited for %.2fs; skipping fallback and retry", self.name, retry_after)
+                    return None
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
@@ -5102,6 +5118,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
+                    if self._is_discord_rate_limit(fallback_error):
+                        retry_after = self._extract_discord_retry_after(fallback_error) or 60.0
+                        self._auto_thread_rate_limit_until[parent_channel_id] = time.monotonic() + retry_after
+                        delete_seed = getattr(seed_msg, "delete", None)
+                        if delete_seed is not None:
+                            try:
+                                await delete_seed()
+                            except Exception:
+                                logger.debug("[%s] Could not remove auto-thread seed after rate limit", self.name, exc_info=True)
+                        logger.warning("[%s] Auto-thread fallback rate limited for %.2fs; removed seed and skipping retry", self.name, retry_after)
+                        return None
                     if attempt == 0:
                         # Brief backoff: most failures here are transient connect errors.
                         await asyncio.sleep(0.75)
