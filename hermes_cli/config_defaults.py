@@ -685,6 +685,10 @@ DEFAULT_CONFIG = {
         # ":free" — a PAID lane is never used for background aux traffic even with
         # OPENROUTER_API_KEY set.
         "free_only": False,
+        # Opt-in strict routing: when false, an auto auxiliary task stops after
+        # the selected main provider and configured fallback chain fail. It never
+        # discovers OpenRouter, Nous, custom, or API-key providers.
+        "allow_provider_discovery_fallback": True,
         # Override the auto-chain's OpenRouter fallback model (default google/gemini-3.6-flash,
         # PAID). Pair e.g. "nvidia/nemotron-3-ultra-550b-a55b:free" with free_only: true. A one-time
         # WARNING is logged whenever a non-":free" model is engaged.

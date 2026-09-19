@@ -4236,12 +4236,25 @@ def _try_main_provider_route(
     return client, resolved or main_model, resolved_provider
 
 
+def _allow_auxiliary_provider_discovery_fallback() -> bool:
+    """Return whether automatic auxiliary routing may discover implicit providers."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        return bool(cfg_get(
+            load_config_readonly(), "auxiliary", "allow_provider_discovery_fallback", default=True,
+        ))
+    except Exception:
+        return True
+
+
 def _discovery_chain_allowed(main_provider: str, task: Optional[str] = None) -> bool:
-    """The built-in discovery chain is a convenience for installs with NO selected main provider.
-    Once the user picked one, every auxiliary route must be a provider they configured (main,
-    ``auxiliary.<task>``, ``fallback_providers``); guessing "whatever else is logged in" bills an
-    account they never pointed this session at (xAI OAuth session with a dead token → every
-    compression silently charged to a Nous Portal balance)."""
+    """Allow implicit auxiliary discovery only when configuration and route policy permit it."""
+    if not _allow_auxiliary_provider_discovery_fallback():
+        logger.warning(
+            "Auxiliary auto-detect: configured provider and fallback chain unavailable; "
+            "strict policy forbids implicit provider discovery."
+        )
+        return False
     if (main_provider or "").strip().lower() in {"", "auto"}:
         return True
     logger.warning(
