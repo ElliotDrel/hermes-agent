@@ -160,6 +160,27 @@ async def test_request_restart_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_request_restart_forwards_after_turn_timeout_override():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._await_active_work_before_restart = AsyncMock(return_value=True)
+
+    assert runner.request_restart(
+        detached=False,
+        via_service=True,
+        after_turn_timeout=120.0,
+    ) is True
+    await runner._restart_task
+
+    runner._await_active_work_before_restart.assert_awaited_once_with(
+        after_turn_timeout=120.0
+    )
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_restart_defers_stop_until_active_turn_finishes():
     """Regression for #77184: requesting turn must not enter the drain set."""
     runner, _adapter = make_restart_runner()

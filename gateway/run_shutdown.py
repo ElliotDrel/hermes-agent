@@ -1411,7 +1411,9 @@ class GatewayShutdownMixin:
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 
-    async def _await_active_work_before_restart(self) -> bool:
+    async def _await_active_work_before_restart(
+        self, *, after_turn_timeout: Optional[float] = None
+    ) -> bool:
         """Wait for in-flight work before ``stop()`` so the requesting turn isn't force-interrupted.
 
         Wedged turns are excluded (restart is their remedy). True when drained to zero, False when the
@@ -1427,7 +1429,11 @@ class GatewayShutdownMixin:
                 "and proceeding to stop()/drain which will interrupt them", active,
             )
             return False
-        timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
+        timeout = float(
+            getattr(self, "_restart_after_turn_timeout", 0.0)
+            if after_turn_timeout is None
+            else after_turn_timeout
+        )
         if timeout <= 0:
             logger.info(
                 "Restart requested with %d active work unit(s); "
@@ -1471,7 +1477,13 @@ class GatewayShutdownMixin:
         logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self,
+        *,
+        detached: bool = False,
+        via_service: bool = False,
+        after_turn_timeout: Optional[float] = None,
+    ) -> bool:
         if self._restart_task_started:
             return False
         self._restart_requested = True
@@ -1482,7 +1494,9 @@ class GatewayShutdownMixin:
         self._draining = True
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
+            await self._await_active_work_before_restart(
+                after_turn_timeout=after_turn_timeout
+            )
             # Detached helper only AFTER the after-turn wait, or its drain_timeout+5 deadline fires mid-turn.
             if detached:
                 with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart helper: %s"):

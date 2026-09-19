@@ -5017,7 +5017,11 @@ async def _start_gateway_start_control_socket(runner):
         # a truthful liveness/identity query for updater and fleet consumers. Strictly non-fatal: a bind
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
-        from gateway.control_socket import GatewayControlServer, pause_for_update_wait_budget
+        from gateway.control_socket import (
+            GatewayControlServer,
+            UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
+            pause_for_update_wait_budget,
+        )
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5037,7 +5041,13 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    accepted_box.append(
+                        runner.request_restart(
+                            detached=False,
+                            via_service=True,
+                            after_turn_timeout=UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
+                        )
+                    )
                 finally:
                     _done.set()
 

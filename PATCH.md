@@ -46,16 +46,17 @@ history when upstream makes the behavior unnecessary.
   ledger. Gateway `/update` reports that exit as an intentional judgment
   handoff rather than a failure, explains what remains, and tells the user to
   start a thread from the completion message and ask the agent to run the
-  audit. On Windows, the gateway pause acknowledgement covers active-turn,
-  normal-drain, and cron-drain budgets so a busy gateway cannot trigger an
-  early process-tree kill that also terminates its detached updater. Conflicts
-  remain as an active Git rebase and resume through the `hermes update
-  --continue` command; `--abort` restores the recorded backup without deleting
-  it.
+  audit. On Windows, update pause uses the same graceful drain, interruption,
+  and resume-pending path as `/restart`, while capping the update-specific
+  after-turn wait at two minutes; its acknowledgement also covers normal and
+  cron drain budgets so a busy gateway cannot trigger an early process-tree
+  kill that also terminates its detached updater. Conflicts remain as an active
+  Git rebase and resume through the `hermes update --continue` command; `--abort`
+  restores the recorded backup without deleting it.
 - **Touchpoints:** `hermes_cli/fork_update.py`, `hermes_cli/update_cmd.py`,
   `hermes_cli/subcommands/update.py`, `hermes_cli/config_defaults.py`,
-  `gateway/control_socket.py`, `gateway/run.py`, `gateway/run_notifications.py`,
-  and the focused updater, control-socket, and gateway-notification tests.
+  `gateway/control_socket.py`, `gateway/run.py`, `gateway/run_shutdown.py`,
+  `gateway/run_notifications.py`, and the focused updater, control-socket, and gateway-notification tests.
 - **Verification:** Isolated repositories exercise stable-tag selection while
   ignoring a newer untagged upstream commit, shallow-checkout history repair,
   clean rebase, conflict pause, resolved continuation, abort restoration,

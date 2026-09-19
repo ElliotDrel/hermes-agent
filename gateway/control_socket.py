@@ -34,6 +34,11 @@ _MAX_REQUEST_BYTES = 64 * 1024
 _MAX_RESPONSE_BYTES = 512 * 1024
 _DEFAULT_CLIENT_TIMEOUT = 2.0
 
+# An update must free the checkout promptly enough to remain interactive. It
+# still uses the ordinary restart drain path, but it does not inherit the
+# 30-minute after-turn allowance intended for a user-requested /restart.
+UPDATE_PAUSE_AFTER_TURN_TIMEOUT = 120.0
+
 
 def _home_hash(home: Path) -> str:
     return hashlib.sha256(os.path.normcase(str(Path(home).expanduser().resolve(strict=False))).encode("utf-8")).hexdigest()[:16]
@@ -345,7 +350,10 @@ def pause_for_update_wait_budget(
     before it falls back to a Windows process-tree kill, otherwise that kill can
     also terminate the detached updater it spawned.
     """
-    after_turn = max(0.0, float(restart_after_turn_timeout))
+    after_turn = min(
+        max(0.0, float(restart_after_turn_timeout)),
+        UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
+    )
     restart_drain = max(0.0, float(restart_drain_timeout))
     cron_drain = max(0.0, float(cron_drain_timeout))
     return after_turn + max(restart_drain, cron_drain)
