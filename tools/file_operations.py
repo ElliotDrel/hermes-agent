@@ -354,6 +354,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         from tools.environments.local import _bash_safe_path
         return "'" + _bash_safe_path(arg).replace("'", "'\"'\"'") + "'"
 
+    def _escape_pattern_arg(self, arg: str) -> str:
+        """Quote a regex or glob without applying Windows path translation.
+
+        ``_escape_shell_arg`` correctly translates real paths for Git Bash, but
+        a regex/glob's backslashes are syntax. Rewriting ``\\d`` or ``\\("` to
+        forward slashes corrupts the search before ripgrep receives it.
+        """
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Quote a path for a NATIVE Windows binary (rg, node, git ...): those don't
         understand the MSYS ``/c/...`` form and Hermes disables MSYS argument

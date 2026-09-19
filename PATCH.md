@@ -246,6 +246,19 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as Windows Chrome profile
   hardening. Keep active while the real-profile browser workflow depends on it.
 
+### HERMES-FORK-015: Windows-safe search pattern transport
+
+- **Intent:** Preserve regex, glob, and literal backslash patterns when search
+  commands cross the Windows shell boundary.
+- **Behavior:** Search pattern arguments are quoted/escaped for Windows without
+  changing their meaning, and literal `\\n` stays distinct from a real newline
+  unless multiline search is actually required.
+- **Touchpoints:** `tools/file_operations.py` and focused Windows pattern tests.
+- **Verification:** Focused regressions cover backslashes, quoting, globs,
+  literal newline escapes, and multiline detection.
+- **Upstream disposition:** Candidate for upstreaming as cross-platform search
+  correctness. Keep active until upstream preserves the same pattern semantics.
+
 ## Retired patches
 
 None.
