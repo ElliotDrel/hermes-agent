@@ -4238,6 +4238,50 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    async def _run_update_slash(self, interaction: discord.Interaction) -> None:
+        """Run ``/update`` in the current or a dedicated Discord thread.
+
+        A channel invocation creates the thread before dispatching the command.
+        If Discord cannot create it, no update starts. This keeps progress,
+        restart recovery, and the PATCH.md audit handoff in one conversation.
+        """
+        if isinstance(getattr(interaction, "channel", None), discord.Thread):
+            await self._run_simple_slash(interaction, "/update", "Update initiated~")
+            return
+        if not await self._check_slash_authorization(interaction, "/update"):
+            return
+        deferred_response = await self._defer_unless_expired(
+            interaction,
+            "[Discord] /update: interaction expired before defer. Creating the update thread anyway.",
+        )
+        result = await self._create_thread(
+            interaction,
+            name="Hermes update",
+            auto_archive_duration=1440,
+            reason="Hermes /update conversation",
+        )
+        if not result.get("success"):
+            if deferred_response:
+                await interaction.edit_original_response(
+                    content=(
+                        "Could not create an update thread, so Hermes was not "
+                        f"updated: {result.get('error', 'unknown error')}"
+                    )
+                )
+            return
+        thread_id = str(result["thread_id"])
+        thread_name = str(result.get("thread_name") or "Hermes update")
+        try:
+            self._threads.mark(thread_id)
+        except Exception as exc:
+            logger.debug("Discord update thread tracking failed: %s", exc)
+        if deferred_response:
+            try:
+                await interaction.edit_original_response(content=f"Update started in <#{thread_id}>")
+            except Exception as exc:
+                logger.debug("Discord update thread link response failed: %s", exc)
+        await self._dispatch_thread_session(interaction, thread_id, thread_name, "/update")
+
     def _slash_proxy(self, name: str, args: tuple, template: str, followup: Optional[str], *,
                      strip: bool = True, prefix: str = "slash_"):
         """Build a slash callback rendering ``template`` from its args via ``_run_simple_slash``;
@@ -4282,6 +4326,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         for name, description, args, template, followup in _NATIVE_SLASH_COMMANDS:
             if template is None:
                 self._register_thread_slash(tree, name, description)
+                continue
+            if name == "update":
+                tree.command(name=name, description=description)(self._run_update_slash)
                 continue
             tree.command(name=name, description=description)(
                 self._slash_proxy(name, args, template, followup, strip=name != "insights")
@@ -5030,7 +5077,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _create_thread(
         self, interaction: discord.Interaction, *, name: str, message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = 1440, reason: str | None = None,
     ) -> Dict[str, Any]:
         """Create a thread in the current channel; falls back to seed message + create_thread on rejection (e.g. permissions)."""
         name = (name or "").strip()
@@ -5048,7 +5095,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if parent_channel is None:
             return {"error": "Could not determine a parent text channel for the new thread."}
         display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
-        reason = f"Requested by {display_name} via /thread"
+        reason = reason or f"Requested by {display_name} via /thread"
         starter_message = (message or "").strip()
         try:
             thread = await parent_channel.create_thread(
