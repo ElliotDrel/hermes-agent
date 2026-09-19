@@ -420,6 +420,28 @@ class GatewayNotificationsMixin:
         except RuntimeError:
             logger.debug("Skipping update notification watcher: no running event loop")
 
+    @staticmethod
+    def _fork_update_audit_handoff_message(exit_code: int) -> Optional[str]:
+        """Explain the intentional exit-3 boundary for PATCH.md fork updates."""
+        patch_ledger = Path(__file__).resolve().parent.parent / "PATCH.md"
+        if exit_code != 3 or not patch_ledger.is_file():
+            return None
+        return (
+            "🟡 **Hermes stopped at the PATCH.md handoff.**\n\n"
+            "This checkout uses the PATCH.md fork workflow, so exit code 3 is "
+            "an intentional handoff, not an update failure. The updater has done "
+            "as much mechanical Git work as it can safely perform, but the update "
+            "is not complete until an agent resumes any paused rebase, resolves "
+            "conflicts if present, and reviews every local customization to decide "
+            "whether it still belongs on the new stable release.\n\n"
+            "**What to do next:** Start a thread from this message and ask the "
+            "agent:\n"
+            "> Continue the Hermes fork update. Use the `hermes-fork-update` "
+            "skill to resume any paused rebase and audit every active `PATCH.md` "
+            "entry.\n\n"
+            "Do not run `/update` again until the agent completes that audit."
+        )
+
     @classmethod
     def _update_paths(cls) -> "GatewayNotificationsMixin._UpdatePaths":
         from gateway.run import _hermes_home
@@ -583,9 +605,12 @@ class GatewayNotificationsMixin:
                 await _flush_buffer()
                 with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
                     exit_code = self._update_exit_code(paths)
+                    audit_handoff = self._fork_update_audit_handoff_message(exit_code)
                     await target.send(
-                        "✅ Hermes update finished." if exit_code == 0
-                        else "❌ Hermes update failed (exit code {}).".format(exit_code)
+                        audit_handoff if audit_handoff else (
+                            "✅ Hermes update finished." if exit_code == 0
+                            else "❌ Hermes update failed (exit code {}).".format(exit_code)
+                        )
                     )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 self._clear_update_markers(paths, session_key)
@@ -661,7 +686,13 @@ class GatewayNotificationsMixin:
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
                 from tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
-                if output:
+                audit_handoff = self._fork_update_audit_handoff_message(exit_code)
+                if audit_handoff:
+                    if output:
+                        msg = f"{audit_handoff}\n\n**Last updater output:**\n```\n{output[-1800:]}\n```"
+                    else:
+                        msg = audit_handoff
+                elif output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
                     status = "✅ Hermes update finished." if exit_code == 0 else "❌ Hermes update failed."

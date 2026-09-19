@@ -208,6 +208,41 @@ class TestWatchUpdateProgress:
         assert "update finished" in all_sent.lower()
 
     @pytest.mark.asyncio
+    async def test_exit_three_streams_patch_audit_handoff(self, tmp_path):
+        """The live watcher must treat the fork audit boundary as expected."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "discord",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": "agent:main:discord:channel:111",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text(
+            "Deterministic fork update complete; PATCH.md audit required.\n"
+        )
+        (hermes_home / ".update_exit_code").write_text("3")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.DISCORD: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.01,
+                stream_interval=0.01,
+                timeout=1.0,
+            )
+
+        sent_text = "\n".join(call.args[1] for call in mock_adapter.send.call_args_list)
+        assert "intentional handoff" in sent_text
+        assert "Start a thread from this message" in sent_text
+        assert "hermes-fork-update" in sent_text
+        assert "update failed" not in sent_text.lower()
+
+    @pytest.mark.asyncio
     async def test_detects_and_forwards_prompt(self, tmp_path):
         """Detects .update_prompt.json and sends it to the user."""
         runner = _make_runner()
@@ -397,4 +432,3 @@ class TestCmdUpdateGatewayMode:
 
         assert len(calls) == 1
         assert "Restore" in calls[0]
-

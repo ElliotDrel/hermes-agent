@@ -43,17 +43,21 @@ history when upstream makes the behavior unnecessary.
   and rebases onto the release commit rather than untagged `upstream/main`.
   It pushes with an explicit force-with-lease, completes the normal post-update
   pipeline, then exits `3` until the `hermes-fork-update` skill audits this
-  ledger. Conflicts remain as an active Git rebase and resume through
-  `hermes update --continue`; `--abort` restores the recorded backup without
-  deleting it.
+  ledger. Gateway `/update` reports that exit as an intentional judgment
+  handoff rather than a failure, explains what remains, and tells the user to
+  start a thread from the completion message and ask the agent to run the
+  audit. Conflicts remain as an active Git rebase and resume through the
+  `hermes update --continue` command; `--abort` restores the recorded backup
+  without deleting it.
 - **Touchpoints:** `hermes_cli/fork_update.py`, `hermes_cli/update_cmd.py`,
-  `hermes_cli/subcommands/update.py`, `hermes_cli/config_defaults.py`, and the
-  focused updater tests.
+  `hermes_cli/subcommands/update.py`, `hermes_cli/config_defaults.py`,
+  `gateway/run_notifications.py`, and the focused updater and gateway-notification tests.
 - **Verification:** Isolated repositories exercise stable-tag selection while
   ignoring a newer untagged upstream commit, shallow-checkout history repair,
   clean rebase, conflict pause, resolved continuation, abort restoration,
   ancestry checks, explicit lease push, and the exit-`3` boundary before
-  post-update work.
+  post-update work. Gateway notification regressions cover both live streaming
+  and restart-recovery delivery of the PATCH.md audit handoff.
 - **Upstream disposition:** Candidate for upstreaming after the local workflow
   proves stable. Keep active until official Hermes offers an equivalent
   resumable maintained-fork contract.

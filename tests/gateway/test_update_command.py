@@ -492,6 +492,34 @@ class TestSendUpdateNotification:
         assert not output_path.exists()
         assert not exit_code_path.exists()
 
+    @pytest.mark.asyncio
+    async def test_exit_three_is_patch_audit_handoff_not_failure(self, tmp_path):
+        """PATCH.md fork updates explain the intentional judgment boundary."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text(
+            "Deterministic fork update complete; PATCH.md audit required."
+        )
+        (hermes_home / ".update_exit_code").write_text("3")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.DISCORD: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            delivered = await runner._send_update_notification()
+
+        assert delivered is True
+        sent_text = mock_adapter.send.call_args.args[1]
+        assert "intentional handoff" in sent_text
+        assert "not an update failure" in sent_text
+        assert "Start a thread from this message" in sent_text
+        assert "hermes-fork-update" in sent_text
+        assert "❌" not in sent_text
+
 
 # ---------------------------------------------------------------------------
 # /update in help and known_commands
