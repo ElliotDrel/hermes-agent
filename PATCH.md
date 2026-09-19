@@ -157,6 +157,95 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as a safer continuation
   contract. Keep active while Discord delivery can create implicit threads.
 
+### HERMES-FORK-009: Strict auxiliary provider routing
+
+- **Intent:** Let an installation keep auxiliary work on its explicitly chosen
+  provider chain instead of silently discovering unrelated credentials.
+- **Behavior:** Setting `auxiliary.allow_provider_discovery_fallback: false`
+  stops automatic auxiliary routing after the main provider and configured
+  fallbacks fail, without probing OpenRouter, Nous, custom, or API-key lanes.
+- **Touchpoints:** `agent/auxiliary_client.py`, the auxiliary configuration
+  default, and focused routing tests.
+- **Verification:** Focused regressions cover both strict routing and the
+  backward-compatible discovery default.
+- **Upstream disposition:** Candidate for upstreaming as an explicit provider
+  isolation control. Keep active while auxiliary discovery is otherwise
+  implicit.
+
+### HERMES-FORK-010: Dedicated cron runtime storage
+
+- **Intent:** Separate mutable cron runtime state from user-authored job
+  definitions so backups, inspection, and upgrades handle each correctly.
+- **Behavior:** Cron ledgers, incidents, suggestions, notepad state, telemetry,
+  and related mutable data live beneath `cron/runtime/`; existing files migrate
+  automatically and backup discovery follows the new layout.
+- **Touchpoints:** Cron storage modules, scheduler backup paths,
+  `hermes_cli/backup.py`, and focused migration/storage tests.
+- **Verification:** Focused tests cover legacy migration and the relocated
+  execution and usage-audit data.
+- **Upstream disposition:** Candidate for upstreaming as a clearer persistent
+  state boundary. Keep active while runtime files otherwise share the job root.
+
+### HERMES-FORK-011: Native Windows Bash resolution for cron
+
+- **Intent:** Run shell-script cron jobs with Git Bash on Windows instead of
+  accidentally invoking the incompatible WSL launcher.
+- **Behavior:** Cron resolves Bash through Hermes' verified local environment
+  helper and rejects System32/Sysnative candidates before launching native
+  Windows script paths.
+- **Touchpoints:** `cron/scheduler.py` and the focused Windows Bash-resolution
+  regressions.
+- **Verification:** Focused tests cover Git Bash selection, WSL-launcher
+  rejection, and the missing-interpreter error.
+- **Upstream disposition:** Candidate for upstreaming as a Windows reliability
+  fix. Keep active until upstream uses the same verified interpreter contract.
+
+### HERMES-FORK-012: Semantic session titles and manual rename
+
+- **Intent:** Produce concise T3-style conversation titles and let a Discord
+  user deliberately regenerate or replace the active session/thread title.
+- **Behavior:** Title generation follows the customized semantic prompt;
+  `/rename [title]` regenerates or sets the title, updates session metadata,
+  renames the Discord thread, works during an active run, and surfaces native
+  rename failures instead of silently hiding them.
+- **Touchpoints:** Title generation, gateway slash and mid-run dispatch,
+  command metadata, the Discord adapter, and focused title/rename tests.
+- **Verification:** Focused regressions cover generated and explicit titles,
+  active-run dispatch, native command registration, metadata persistence,
+  thread rename, and diagnostic error propagation.
+- **Upstream disposition:** Candidate for upstreaming as a richer session-title
+  workflow. Keep active while the workspace relies on this naming contract.
+
+### HERMES-FORK-013: Seven-day Discord thread retention
+
+- **Intent:** Keep manually created Discord work threads available for a week
+  while allowing auto-created gateway threads to use an explicit duration.
+- **Behavior:** Manual `/thread` and Discord-tool creation default to 10080
+  minutes; gateway auto-threads and handoff threads read the validated
+  `discord.auto_thread_archive_duration` setting, retaining the upstream
+  one-day default when it is not configured.
+- **Touchpoints:** Discord adapter, Discord tool schema/handler, configuration
+  defaults, and focused archive-duration regressions.
+- **Verification:** Focused tests cover manual defaults and configured
+  auto-thread creation.
+- **Upstream disposition:** Candidate for upstreaming as configurable thread
+  lifecycle policy. Keep active while week-long manual retention is desired.
+
+### HERMES-FORK-014: Safe Windows Chrome profile attachment
+
+- **Intent:** Reuse real Chrome profiles on Windows without corrupting a live
+  default profile and recover reliably when wrapper-based attachment fails.
+- **Behavior:** Default-profile launches detect Chrome processes even when no
+  explicit user-data-dir flag is present; copied profiles reuse a verified
+  DevTools endpoint, launch visibly when requested, and fall back to direct CDP
+  after agent-browser attachment fails.
+- **Touchpoints:** Browser connection discovery, real-profile launch/attach
+  logic, and focused real-profile tests.
+- **Verification:** Focused regressions cover default-profile holder detection,
+  surviving-copy attachment, headed launch, and direct-CDP recovery.
+- **Upstream disposition:** Candidate for upstreaming as Windows Chrome profile
+  hardening. Keep active while the real-profile browser workflow depends on it.
+
 ## Retired patches
 
 None.

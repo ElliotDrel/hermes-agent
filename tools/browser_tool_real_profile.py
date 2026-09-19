@@ -118,7 +118,7 @@ _REAL_PROFILE_CHROME_FLAGS = (
     "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
     "--disable-hang-monitor", "--disable-popup-blocking", "--disable-prompt-on-repost",
-    "--disable-sync", "--disable-features=Translate", "--no-startup-window",
+    "--disable-sync", "--disable-features=Translate",
 )
 
 
@@ -169,7 +169,7 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
-        chrome_argv.append("--headless=new")
+        chrome_argv.extend(("--no-startup-window", "--headless=new"))
     try:
         chrome_proc = subprocess.Popen(chrome_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        stdin=subprocess.DEVNULL, start_new_session=True, env=browser_env)
@@ -211,7 +211,18 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
         return None, _RP + "the real-profile browser took too long to start. Retry, or turn the toggle off."
     except (subprocess.SubprocessError, OSError) as e:
         return None, f"{_RP}the launch failed: {e}"
+    direct_cdp = f"http://127.0.0.1:{port}"
     if proc.returncode != 0:
+        # agent-browser is a convenience session wrapper. Chrome owns the
+        # copied profile and has already published a direct CDP endpoint that
+        # browser-use can consume. Keep the verified copy usable when the
+        # wrapper cannot attach rather than discarding it.
+        if _cdp_http_ready(direct_cdp):
+            _bt.logger.warning(
+                "agent-browser could not attach to the real-profile copy; using Chrome's direct CDP endpoint at %s",
+                direct_cdp,
+            )
+            return direct_cdp, None
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"
     cdp = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
