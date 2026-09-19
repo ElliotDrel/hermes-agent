@@ -90,7 +90,7 @@ def test_create_rejects_non_snowflake_discord_thread_target(cron_env):
     )
 
     assert result["success"] is False
-    assert "numeric Discord channel and thread IDs" in result["error"]
+    assert "numeric IDs for an existing thread" in result["error"]
 
 
 def test_create_rejects_non_snowflake_discord_origin_thread(cron_env, monkeypatch):
@@ -109,7 +109,7 @@ def test_create_rejects_non_snowflake_discord_origin_thread(cron_env, monkeypatc
     )
 
     assert result["success"] is False
-    assert "numeric Discord thread ID" in result["error"]
+    assert "cannot target a Discord parent channel" in result["error"]
 
 
 def test_create_allows_discord_attachment_with_explicit_thread_target(cron_env):
