@@ -471,6 +471,19 @@ def apply_llm_output_transform(
     if platform is None:
         platform = getattr(agent, "platform", None) or ""
     transformed, pre_transform = False, None
+    compressor = getattr(agent, "context_compressor", None)
+    context_used_tokens = context_window_tokens = compaction_count = None
+    if compressor is not None:
+        try:
+            used = int(getattr(compressor, "last_total_tokens", 0) or 0)
+            window = int(getattr(compressor, "context_length", 0) or 0)
+            count = int(getattr(compressor, "compression_count", 0) or 0)
+            context_used_tokens = used if used > 0 else None
+            context_window_tokens = window if window > 0 else None
+            compaction_count = count if count > 0 else None
+        except (TypeError, ValueError):
+            pass
+    # Metadata uses the upstream pre-persistence seam; transformed footers replay in history.
     # First hook to return a string wins; None/empty leaves the text unchanged.
     for _hook_result in _invoke_hook_safely(
         "transform_llm_output", logger,
@@ -478,6 +491,9 @@ def apply_llm_output_transform(
         session_id=agent.session_id or "",
         model=agent.model,
         platform=platform,
+        context_used_tokens=context_used_tokens,
+        context_window_tokens=context_window_tokens,
+        compaction_count=compaction_count,
         turn_id=turn_id,  # per-turn identity for the hook callback gate
     ):
         if isinstance(_hook_result, str) and _hook_result:
