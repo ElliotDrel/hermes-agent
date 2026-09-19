@@ -143,6 +143,20 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as more accurate account
   usage parsing. Keep active while the footer consumes recognized durations.
 
+### HERMES-FORK-008: Explicit Discord cron continuation targets
+
+- **Intent:** Prevent an agent-created continuable cron job from silently
+  opening a dedicated thread beneath a normal Discord channel.
+- **Behavior:** `attach_to_session=true` requires an existing explicit numeric
+  Discord thread target, while ordinary parent-channel delivery must remain
+  non-continuable.
+- **Touchpoints:** `tools/cronjob_tools.py` and focused Discord cron-target
+  validation tests.
+- **Verification:** Focused regressions cover create, update, explicit-thread,
+  origin-thread, invalid-ID, and non-Discord cases.
+- **Upstream disposition:** Candidate for upstreaming as a safer continuation
+  contract. Keep active while Discord delivery can create implicit threads.
+
 ## Retired patches
 
 None.

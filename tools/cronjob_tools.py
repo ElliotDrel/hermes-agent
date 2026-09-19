@@ -557,6 +557,39 @@ def _with_guidance(result: Dict[str, Any], job: Dict[str, Any], deliver: Optiona
     return result
 
 
+def _is_discord_snowflake(value: Any) -> bool:
+    """Return whether value has the numeric shape of a Discord snowflake."""
+    text = str(value or "").strip()
+    return text.isdigit() and len(text) >= 17
+
+
+def _validate_discord_continuation_target(
+    deliver: Optional[str], attach_to_session: Optional[bool], origin: Optional[Dict[str, str]],
+) -> Optional[str]:
+    """Require explicit existing Discord threads for continuable cron delivery."""
+    if attach_to_session is not True:
+        return None
+    for part in [x.strip() for x in str(deliver or "origin").split(",") if x.strip()]:
+        lower = part.lower()
+        if lower == "origin":
+            if (origin or {}).get("platform", "").lower() != "discord":
+                continue
+            thread_id = (origin or {}).get("thread_id")
+            if thread_id and _is_discord_snowflake(thread_id):
+                continue
+        elif not lower.startswith("discord:"):
+            continue
+        else:
+            fields = part.split(":")
+            if len(fields) == 3 and all(_is_discord_snowflake(x) for x in fields[1:]):
+                continue
+        return (
+            "attach_to_session=True cannot target a Discord parent channel. "
+            "Use deliver='discord:<parent_channel_id>:<thread_id>' with numeric IDs for an existing thread, "
+            "or set attach_to_session=False for a normal channel post."
+        )
+    return None
+
 def _action_create(a: Dict[str, Any]) -> str:
     prompt, script = a["prompt"], a["script"]
     deliver = _normalize_deliver_param(a["deliver"])
@@ -596,11 +629,15 @@ def _action_create(a: Dict[str, Any]) -> str:
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
 
+    resolved_deliver, origin = _resolve_cron_context_deliver(deliver), _origin_from_env()
+    attachment_error = _validate_discord_continuation_target(resolved_deliver, a["attach_to_session"], origin)
+    if attachment_error:
+        return tool_error(attachment_error, success=False)
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
-            deliver=_resolve_cron_context_deliver(deliver), origin=_origin_from_env(), skills=canonical_skills,
+            deliver=resolved_deliver, origin=origin, skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
             script=_normalize_optional_job_value(script), context_from=context_from,
@@ -850,6 +887,11 @@ def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
             return tool_error(error, success=False)
     if not updates:
         return tool_error("No updates provided.", success=False)
+    attachment_error = _validate_discord_continuation_target(
+        updates.get("deliver", job.get("deliver")), updates.get("attach_to_session", job.get("attach_to_session")), job.get("origin"),
+    )
+    if attachment_error:
+        return tool_error(attachment_error, success=False)
     updated = update_job(job["id"], updates)
     _notify_provider_jobs_changed_safe()
     # An update can switch modes or delivery — echo the same guidance as create.
@@ -1085,7 +1127,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
+                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). On Discord, attachment requires an existing explicit thread target: deliver='discord:<parent_channel_id>:<thread_id>'; for a normal channel post, set false. Broadcast targets are never attached; no effect when deliver='local'."
             },
         },
         "required": ["action"]
