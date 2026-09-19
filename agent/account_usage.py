@@ -29,6 +29,7 @@ class AccountUsageWindow:
     label: str
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
     detail: Optional[str] = None
 
 
@@ -85,6 +86,29 @@ def _format_reset(dt: Optional[datetime]) -> str:
         days, hours = divmod(hours, 24)
         return f"in {days}d {hours}h ({stamp})"
     return f"in {hours}h {minutes}m ({stamp})" if hours else f"in {minutes}m ({stamp})"
+
+
+def _quota_window_label(window: Any, fallback: str) -> str:
+    """Name known provider windows from their reported duration."""
+    raw = window.get("limit_window_seconds") if isinstance(window, dict) else None
+    try:
+        duration = int(raw)
+    except (TypeError, ValueError):
+        return fallback
+    if 4 * 60 * 60 <= duration <= 6 * 60 * 60:
+        return "5-hour"
+    if 6 * 24 * 60 * 60 <= duration <= 8 * 24 * 60 * 60:
+        return "Weekly"
+    return fallback
+
+
+def _quota_window_duration(window: Any) -> Optional[int]:
+    raw = window.get("limit_window_seconds") if isinstance(window, dict) else None
+    try:
+        duration = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
 
 
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
@@ -358,7 +382,7 @@ def _usage_windows(
         used = float(used)
         if fraction and used <= 1:
             used *= 100
-        windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
+        windows.append(AccountUsageWindow(label=_quota_window_label(window, label), used_percent=used, reset_at=_parse_dt(window.get(reset_key)), duration_seconds=_quota_window_duration(window)))
     return windows
 
 
@@ -509,7 +533,7 @@ def _fetch_anthropic_account_usage(
                "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
     windows = _usage_windows(
-        payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
+        payload, (("five_hour", "5-hour"), ("seven_day", "Weekly"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
     )
     details: list[str] = []
