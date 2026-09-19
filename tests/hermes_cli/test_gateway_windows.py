@@ -336,6 +336,7 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert ", 0, False" in content  # hidden window, detached/async
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
+    assert r"C:\venv\Lib\site-packages" in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
 

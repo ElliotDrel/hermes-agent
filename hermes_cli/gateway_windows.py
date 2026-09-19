@@ -345,7 +345,9 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
     command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
-    static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
+    # Keep local virtual-environment packages importable in hidden startup launches.
+    venv_site_packages = _preserve_hermes_home_path(venv_dir / 'Lib' / 'site-packages')
+    static_pythonpath = os.pathsep.join([venv_site_packages, *_launcher_pythonpath_entries(extra_pythonpath)])
     q = _quote_vbs_string
     lines = [
         f"' {_TASK_DESCRIPTION}",

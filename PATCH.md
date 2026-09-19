@@ -116,6 +116,20 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as richer output-hook
   metadata. Keep active while the workspace footer consumes these fields.
 
+### HERMES-FORK-006: Windows gateway venv dependencies
+
+- **Intent:** Let the Windows gateway import dependencies installed in the
+  Hermes project virtual environment, including local speech transcription.
+- **Behavior:** The generated VBS launcher places both the source root and the
+  venv `Lib/site-packages` directory on `PYTHONPATH` before starting the uv
+  base interpreter.
+- **Touchpoints:** `hermes_cli/gateway_windows.py` and its focused VBS launcher
+  regression.
+- **Verification:** The launcher test confirms the generated environment
+  includes the venv package directory.
+- **Upstream disposition:** Candidate for upstreaming as a Windows uv/venv
+  launcher correction. Keep active while the gateway uses this process shape.
+
 ## Retired patches
 
 None.
