@@ -35,7 +35,7 @@ async def test_rename_sets_visible_discord_thread_and_session_title():
     result = await runner._handle_rename_command(_event())
     assert result == "Renamed this thread from **Old Thread Title** to **Launch Plan**."
     runner._session_db.set_session_title.assert_awaited_once_with("session-1", "Launch Plan")
-    adapter.rename_thread.assert_awaited_once_with("thread-1", "Launch Plan")
+    adapter.rename_thread.assert_awaited_once_with("thread-1", "Launch Plan", raise_on_error=True)
 
 
 @pytest.mark.asyncio
@@ -48,18 +48,18 @@ async def test_rename_rejects_non_thread_context():
 
 
 @pytest.mark.asyncio
-async def test_bare_rename_uses_current_title_generator_api():
-    """The upstream generator accepts text, not the old fork's removed history helpers."""
+async def test_bare_rename_uses_conversation_aware_regeneration_api():
+    """Bare /rename keeps the first goal and assistant technical context available."""
     runner, adapter = _runner()
     runner._session_db.get_messages.return_value = [
         {"role": "user", "content": "Repair Discord slash-command publishing."},
         {"role": "assistant", "content": "Ignored for title input."},
     ]
-    with patch("agent.title_generator.generate_title", return_value="Repair Discord Command Publishing") as generate:
+    with patch("agent.title_generator.generate_regenerated_title", return_value="Repair Discord Command Publishing") as generate:
         result = await runner._handle_rename_command(_event("/rename"))
     assert "Repair Discord Command Publishing" in result
     generate.assert_called_once()
-    adapter.rename_thread.assert_awaited_once_with("thread-1", "Repair Discord Command Publishing")
+    adapter.rename_thread.assert_awaited_once_with("thread-1", "Repair Discord Command Publishing", raise_on_error=True)
 
 
 @pytest.mark.asyncio
