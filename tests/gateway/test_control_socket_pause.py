@@ -19,6 +19,7 @@ import pytest
 from gateway.control_socket import (
     GatewayControlServer,
     pause_gateway_for_update,
+    pause_for_update_wait_budget,
     query_gateway_control,
 )
 
@@ -46,6 +47,14 @@ def test_pause_verb_dispatches_and_returns_ack(tmp_path):
     assert response["result"]["drain_timeout"] == 30.0
     assert response["id"] == 7
     assert calls == [1]
+
+
+def test_pause_wait_budget_covers_after_turn_and_cron_drain():
+    assert pause_for_update_wait_budget(
+        restart_after_turn_timeout=1800.0,
+        restart_drain_timeout=0.0,
+        cron_drain_timeout=30.0,
+    ) == 1830.0
 
 
 def test_unknown_verb_still_lists_pause(tmp_path):
