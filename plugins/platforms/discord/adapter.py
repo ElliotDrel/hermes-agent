@@ -87,7 +87,7 @@ class _Snowflake:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
-_DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
+_DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "startup", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
@@ -1063,6 +1063,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # off the connect path so a slow Bot API call (e.g. a set_my_commands stall for certain tokens)
         # cannot blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
+        # The initial patch keeps one sync per adapter. Later maintenance commits
+        # refine this to an application-keyed process guard.
+        self._startup_command_sync_completed = False
         # WS liveness probe: REST 200 can't prove Gateway events still arrive, so sample WS
         # ready/open/ACK + heartbeat latency; consecutive failures -> retryable-fatal. 0 disables.
         self._liveness_interval_seconds = self._finite_positive_config_float(
@@ -2012,6 +2015,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
                 return
+            if sync_policy == "startup":
+                if self._startup_command_sync_completed:
+                    logger.info("[%s] Skipping Discord slash command sync: startup sync already ran", self.name)
+                    return
+                # Claim before any REST request. A failed first attempt must not
+                # turn reconnects into a command-management burst.
+                self._startup_command_sync_completed = True
             if sync_policy == "bulk":
                 synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))

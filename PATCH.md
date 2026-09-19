@@ -74,6 +74,20 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in personal
   draft convention. Keep active while Elliot relies on the marker contract.
 
+### HERMES-FORK-003: Startup-only Discord command sync
+
+- **Intent:** Prevent ordinary Discord reconnects from repeatedly consuming
+  the application command-management rate-limit bucket.
+- **Behavior:** `discord.command_sync_policy: startup` permits one slash-command
+  synchronization per Discord application in each gateway process, then skips
+  reconnect-time syncs until the gateway restarts.
+- **Touchpoints:** `plugins/platforms/discord/adapter.py`, focused Discord
+  connection tests, and Discord configuration documentation.
+- **Verification:** Focused tests cover initial sync, reconnect suppression,
+  adapter replacement, and the fresh-process boundary.
+- **Upstream disposition:** Candidate for upstreaming as a supported sync
+  policy. Keep active while Discord command limits remain operationally tight.
+
 ## Retired patches
 
 None.

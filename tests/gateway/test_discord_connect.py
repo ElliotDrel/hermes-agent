@@ -542,6 +542,60 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     assert recovered_entry["summary"] == summary
 
 
+def test_command_sync_policy_reads_startup_from_discord_config(monkeypatch):
+    monkeypatch.delenv("DISCORD_COMMAND_SYNC_POLICY", raising=False)
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"command_sync_policy": "startup"},
+        )
+    )
+
+    assert adapter._get_discord_command_sync_policy() == "startup"
+
+
+@pytest.mark.asyncio
+async def test_startup_command_sync_runs_once_per_gateway_process_and_again_after_restart(tmp_path, monkeypatch):
+    """The startup policy must skip reconnects but run for a new gateway process."""
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_POLICY", "startup")
+    summary = {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+
+    def make_adapter(home):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+        adapter._client = SimpleNamespace(
+            tree=SimpleNamespace(get_commands=lambda: []),
+            application_id=999,
+            user=SimpleNamespace(id=999),
+        )
+        sync = AsyncMock(return_value=summary)
+        monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+        return adapter, sync
+
+    # First gateway process: initial connection syncs; later reconnect does not.
+    first_home = tmp_path / "first-process"
+    first_adapter, first_sync = make_adapter(first_home)
+    await first_adapter._run_post_connect_initialization()
+    # Remove the persisted success state so this asserts the in-process guard,
+    # rather than the existing fingerprint-based skip behavior.
+    (first_home / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME).unlink()
+    await first_adapter._run_post_connect_initialization()
+    assert first_sync.await_count == 1
+
+    # A new adapter models a manually restarted gateway process and syncs once.
+    restarted_adapter, restarted_sync = make_adapter(tmp_path / "restarted-process")
+    await restarted_adapter._run_post_connect_initialization()
+    assert restarted_sync.await_count == 1
+
+
 @pytest.mark.asyncio
 async def test_safe_sync_reads_permission_attrs_from_existing_command():
     """Regression: AppCommand.to_dict() in discord.py does NOT include
