@@ -1,6 +1,6 @@
 """Regression coverage for the Discord-only /rename thread workflow."""
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -45,6 +45,21 @@ async def test_rename_rejects_non_thread_context():
         platform=Platform.DISCORD, user_id="user-1", chat_id="channel-1",
     ))
     assert await runner._handle_rename_command(event) == "`/rename` can only be used inside a Discord thread."
+
+
+@pytest.mark.asyncio
+async def test_bare_rename_uses_current_title_generator_api():
+    """The upstream generator accepts text, not the old fork's removed history helpers."""
+    runner, adapter = _runner()
+    runner._session_db.get_messages.return_value = [
+        {"role": "user", "content": "Repair Discord slash-command publishing."},
+        {"role": "assistant", "content": "Ignored for title input."},
+    ]
+    with patch("agent.title_generator.generate_title", return_value="Repair Discord Command Publishing") as generate:
+        result = await runner._handle_rename_command(_event("/rename"))
+    assert "Repair Discord Command Publishing" in result
+    generate.assert_called_once()
+    adapter.rename_thread.assert_awaited_once_with("thread-1", "Repair Discord Command Publishing")
 
 
 @pytest.mark.asyncio
