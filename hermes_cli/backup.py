@@ -1119,7 +1119,7 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
 # directories (recursive); missing entries are skipped. Pairing data lives in platform JSON blobs
 # outside state.db, so it is listed explicitly — ``hermes update`` snapshots this set (#15733).
 _QUICK_STATE_FILES = (
-    "state.db", "config.yaml", ".env", "auth.json", "cron/jobs.json", "cron/executions.db",
+    "state.db", "config.yaml", ".env", "auth.json", "cron/runtime/jobs.json", "cron/runtime/executions.db",
     "gateway_state.json", "channel_directory.json", "channel_aliases.json", "processes.json",
     "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user stores, destroyed if the update flow replaces the file and the post-update
@@ -1369,7 +1369,7 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
 
 
 # Kept in sync with ``_QUICK_STATE_FILES`` and ``cron/jobs.py``'s ``JOBS_FILE``.
-_CRON_JOBS_REL = "cron/jobs.json"
+_CRON_JOBS_REL = "cron/runtime/jobs.json"
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:
@@ -1398,7 +1398,7 @@ def restore_cron_jobs_if_emptied(snapshot_id: str, hermes_home: Optional[Path] =
     Conservative: restores only when the snapshot had MORE jobs than the live file (a user who
     deleted jobs is never second-guessed); an unreadable live file is left so corruption surfaces.
 
-    Config-version migrations have been observed to leave ``cron/jobs.json`` valid-but-empty after an
+    Config-version migrations have been observed to leave ``cron/runtime/jobs.json`` valid-but-empty after an
     update, silently dropping every scheduled job (issue #34600). The desktop scheduler can also overwrite
     the file with its own small set of internally-tracked crons, causing partial loss (issue 52144).
     """

@@ -37,7 +37,8 @@ def _read_jsonl(path: Path) -> list[dict]:
 class TestUsageAuditPath:
     def test_resolves_through_get_hermes_home(self, tmp_hermes_home):
         p = scheduler._usage_audit_path()
-        assert p == tmp_hermes_home / "cron" / "usage_audit.jsonl"
+        assert p == tmp_hermes_home / "cron" / "runtime" / "usage_audit.jsonl"
+
 
 
 
@@ -88,7 +89,7 @@ class TestWriteUsageAudit:
         scheduler._write_usage_audit({"k": "v"})
 
         assert target.exists() and target.is_dir()
-        assert (target / "usage_audit.jsonl").exists()
+        assert (target / "runtime" / "usage_audit.jsonl").exists()
 
     def test_appends_multiple_records(self, tmp_hermes_home):
         scheduler._write_usage_audit({"i": 1})

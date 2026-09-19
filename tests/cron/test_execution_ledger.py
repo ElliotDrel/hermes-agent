@@ -149,8 +149,8 @@ def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path
     assert executions.list_executions() == [worker_row]
     current_home["path"] = tmp_path / "default"
     assert executions.list_executions() == [default_row]
-    assert (tmp_path / "default" / "cron" / "executions.db").is_file()
-    assert (tmp_path / "worker" / "cron" / "executions.db").is_file()
+    assert (tmp_path / "default" / "cron" / "runtime" / "executions.db").is_file()
+    assert (tmp_path / "worker" / "cron" / "runtime" / "executions.db").is_file()
 
 
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
@@ -224,7 +224,7 @@ def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
 def test_quick_backup_includes_execution_ledger():
     from hermes_cli.backup import _QUICK_STATE_FILES
 
-    assert "cron/executions.db" in _QUICK_STATE_FILES
+    assert "cron/runtime/executions.db" in _QUICK_STATE_FILES
 
 
 def test_failed_execution_keeps_error(monkeypatch, tmp_path):

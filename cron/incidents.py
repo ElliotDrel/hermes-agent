@@ -52,7 +52,8 @@ def _db_path() -> Path:
     for override in (_executions.EXECUTIONS_FILE, EXECUTIONS_FILE):
         if override is not None:
             return Path(override)
-    return get_hermes_home().resolve() / "cron" / "executions.db"
+    from cron.jobs import _current_cron_store
+    return _current_cron_store().runtime_dir / "executions.db"
 
 
 def _connect() -> sqlite3.Connection:
