@@ -5159,6 +5159,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             pass
         return thread
 
+    def _discord_auto_thread_archive_duration(self) -> int:
+        """Return the validated configured retention for Hermes-created auto threads."""
+        try:
+            value = int(self.config.extra.get("auto_thread_archive_duration", 1440))
+        except (TypeError, ValueError):
+            value = 1440
+        return value if value in VALID_THREAD_AUTO_ARCHIVE_MINUTES else 1440
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
@@ -5181,7 +5189,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         last_fallback_error: Exception | None = None
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=self._discord_auto_thread_archive_duration())
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
@@ -5194,7 +5202,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
                     )
-                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
+                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=self._discord_auto_thread_archive_duration(), reason=reason)
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
@@ -5296,7 +5304,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(name=thread_name, auto_archive_duration=self._discord_auto_thread_archive_duration(), reason=reason)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5309,7 +5317,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return None
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
+                name=thread_name, auto_archive_duration=self._discord_auto_thread_archive_duration(), reason=reason,
             )
             return str(thread.id)
         except Exception as fallback_error:
@@ -7141,6 +7149,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())
+    # Thread retention is adapter-scoped because multiplexed profiles may differ.
+    if "auto_thread_archive_duration" in discord_cfg:
+        seeded_extra["auto_thread_archive_duration"] = discord_cfg["auto_thread_archive_duration"]
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
         seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
