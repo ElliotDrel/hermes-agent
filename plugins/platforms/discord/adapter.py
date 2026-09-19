@@ -2027,10 +2027,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 getattr(self._client, "application_id", None)
                 or getattr(getattr(self._client, "user", None), "id", None)
             )
+            if sync_policy == "bulk":
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
+                return
+            fingerprint = self._desired_command_sync_fingerprint()
             if sync_policy == "startup":
-                # Claim only a resolved application ID. A torn-down client must
-                # not reserve a placeholder that lets its later live reconnect
-                # make another eligible sync attempt.
+                # Keep the process-level burst guard, but do not convert a bounded
+                # timeout into a permanent failure. A later reconnect may resume an
+                # incomplete reconciliation after its persisted retry window.
                 if app_id is None:
                     logger.info(
                         "[%s] Deferring Discord slash command sync: application ID not resolved yet",
@@ -2038,20 +2043,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     )
                     return
                 startup_key = str(app_id)
-                if startup_key in _DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS:
+                entry = self._read_command_sync_state().get(startup_key)
+                incomplete = (
+                    isinstance(entry, dict)
+                    and entry.get("fingerprint") == fingerprint
+                    and float(entry.get("last_attempt_at") or 0) > float(entry.get("last_success_at") or 0)
+                )
+                if startup_key in _DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS and not incomplete:
                     logger.info(
-                        "[%s] Skipping Discord slash command sync: startup sync already ran in this gateway process",
+                        "[%s] Skipping Discord slash command sync: startup sync already completed in this gateway process",
                         self.name,
                     )
                     return
-                # Claim before any REST request. A rate-limited first attempt
-                # must not turn reconnects into a command-management burst.
                 _DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS.add(startup_key)
-            if sync_policy == "bulk":
-                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
-                logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
-                return
-            fingerprint = self._desired_command_sync_fingerprint()
             skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
             if skip_reason:
                 logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
@@ -2093,9 +2097,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["recreated"], summary["created"], summary["deleted"],
             )
         except asyncio.TimeoutError:
+            # The recorded attempt has no success timestamp, so the startup guard
+            # permits one later reconnect to resume the remaining diff.
             logger.warning(
-                "[%s] Slash command sync timed out — Discord rate-limit bucket "
-                "may be saturated; will retry on next reconnect",
+                "[%s] Slash command sync timed out; reconciliation remains pending and will resume on reconnect",
                 self.name,
             )
         except asyncio.CancelledError:
