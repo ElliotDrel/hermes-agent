@@ -270,6 +270,22 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as cross-platform search
   correctness. Keep active until upstream preserves the same pattern semantics.
 
+### HERMES-FORK-016: Discord update thread anchoring
+
+- **Intent:** Keep the full Discord update lifecycle and its follow-up patch
+  audit conversation in one dedicated thread.
+- **Behavior:** Native Discord `/update` reuses the current thread or creates a
+  `Hermes update` thread before starting; progress, restart recovery, and the
+  eventual judgment handoff target that thread. If Discord cannot create the
+  thread, the update does not start and the interaction reports the error.
+- **Touchpoints:** Discord slash-command dispatch and focused Discord slash
+  regressions.
+- **Verification:** Focused tests cover native command wiring,
+  creation-before-dispatch, existing-thread reuse, and fail-closed behavior.
+- **Upstream disposition:** Candidate for upstreaming as a safer Discord update
+  conversation contract. Keep active while the update audit requires agent
+  follow-up after gateway restart.
+
 ## Retired patches
 
 None.

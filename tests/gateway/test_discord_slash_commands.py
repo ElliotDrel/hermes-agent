@@ -114,6 +114,75 @@ def adapter():
     return adapter
 
 
+@pytest.mark.asyncio
+async def test_registers_native_update_slash_command(adapter):
+    adapter._run_update_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["update"](interaction)
+
+    adapter._run_update_slash.assert_awaited_once_with(interaction)
+
+
+@pytest.mark.asyncio
+async def test_update_slash_creates_thread_before_dispatch(adapter):
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+    adapter._create_thread = AsyncMock(return_value={
+        "success": True, "thread_id": "555", "thread_name": "Hermes update",
+    })
+    adapter._dispatch_thread_session = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    adapter._create_thread.assert_awaited_once_with(
+        interaction,
+        name="Hermes update",
+        auto_archive_duration=1440,
+        reason="Hermes /update conversation",
+    )
+    interaction.edit_original_response.assert_awaited_once_with(content="Update started in <#555>")
+    adapter._dispatch_thread_session.assert_awaited_once_with(
+        interaction, "555", "Hermes update", "/update"
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_slash_does_not_start_when_thread_creation_fails(adapter):
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+    adapter._create_thread = AsyncMock(return_value={"error": "missing permission"})
+    adapter._dispatch_thread_session = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    adapter._dispatch_thread_session.assert_not_awaited()
+    message = interaction.edit_original_response.await_args.kwargs["content"]
+    assert "was not updated" in message
+    assert "missing permission" in message
+
+
+@pytest.mark.asyncio
+async def test_update_slash_reuses_existing_thread(adapter):
+    interaction = SimpleNamespace(channel=_FakeThreadChannel(channel_id=555, name="existing-thread"))
+    adapter._run_simple_slash = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/update", "Update initiated~")
+
+
 # ------------------------------------------------------------------
 # /thread slash command registration
 # ------------------------------------------------------------------
