@@ -161,7 +161,11 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
             agent._emit_status(COMPACTION_STATUS)
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
-        compressor.compression_count = getattr(compressor, "compression_count", 0) + 1
+        increment = getattr(compressor, "_increment_compression_count", None)
+        if callable(increment):
+            increment()
+        else:
+            compressor.compression_count = getattr(compressor, "compression_count", 0) + 1
         compressor.last_compression_rough_tokens = approx_tokens or 0
         # Codex owns this summary: a prior Hermes deterministic-fallback flag must not leak into it.
         record_boundary = getattr(type(compressor), "record_completed_compaction", None)

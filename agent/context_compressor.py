@@ -1906,14 +1906,46 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._consecutive_timeout_failures = self._fallback_compression_streak = 0
+        self.compression_count = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
+        self._load_compression_count()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
         self._load_anti_thrash_recovery_deadline()
         self._load_proactive_prune_rearm_tokens()
+
+    @staticmethod
+    def _compression_count_meta_key(session_id: str) -> str:
+        return f"context_compressor:compression_count:{session_id}"
+
+    def _load_compression_count(self) -> None:
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        getter = getattr(session_db, "get_meta", None)
+        if not session_id or not callable(getter):
+            return
+        try:
+            self.compression_count = max(0, int(getter(self._compression_count_meta_key(session_id)) or 0))
+        except Exception as exc:
+            logger.debug("compression count lookup failed: %s", exc)
+
+    def _persist_compression_count(self) -> None:
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        setter = getattr(session_db, "set_meta", None)
+        if not session_id or not callable(setter):
+            return
+        try:
+            setter(self._compression_count_meta_key(session_id), str(max(0, int(self.compression_count))))
+        except Exception as exc:
+            logger.debug("compression count persist failed: %s", exc)
+
+    def _increment_compression_count(self) -> None:
+        self.compression_count += 1
+        self._persist_compression_count()
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
@@ -1921,9 +1953,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         boundary_reason = kwargs.get("boundary_reason")
         old_session_id = kwargs.get("old_session_id")
         session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
+        previous_compaction_count = self.compression_count
         previous_fallback_streak = self._fallback_compression_streak
         previous_ineffective_count = self._ineffective_compression_count
         if boundary_reason == "compression" and old_session_id:
+            count_getter = getattr(session_db, "get_meta", None)
+            if callable(count_getter):
+                try:
+                    previous_compaction_count = max(previous_compaction_count, int(count_getter(self._compression_count_meta_key(str(old_session_id))) or 0))
+                except Exception as exc:
+                    logger.debug("compression parent count lookup failed: %s", exc)
             # Parent row carries the streak/strike state across the rotation.
             def _parent(method: str, label: str, current: int) -> int:
                 found, value = self._durable_read(method, label, int, 0, session_db=session_db, session_id=old_session_id)
@@ -1937,6 +1976,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             )
         self.bind_session_state(session_db, session_id)
         if boundary_reason == "compression":
+            # A rotation is one logical conversation. Carry its visible total
+            # to the child row before any final-output hook can render it.
+            self.compression_count = previous_compaction_count
+            self._persist_compression_count()
             # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
             self._fallback_compression_streak = previous_fallback_streak
             # No later bookkeeping writes the strike counter, so persist it onto the child row now (#54923).
@@ -4576,7 +4619,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # end, and a replay user row there would strip a genuinely pending assistant(tool_calls).
         compressed = self._sanitize_tool_pairs(compressed)
         compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(messages))
-        self.compression_count += 1
+        self._increment_compression_count()
         # Replace historical image payloads with placeholders; multi-MB base64 blobs otherwise
         # exceed body limits.
         # Replace image parts in all compressed messages before the newest image-bearing user turn with a

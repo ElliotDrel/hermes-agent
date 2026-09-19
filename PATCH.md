@@ -102,6 +102,20 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as safer native Discord
   rate-limit handling. Keep active until upstream provides equivalent behavior.
 
+### HERMES-FORK-005: Durable response-footer runtime metadata
+
+- **Intent:** Keep the workspace response footer accurate without asking the
+  model to report its own runtime metadata.
+- **Behavior:** Final-output hooks receive provider-reported context usage and
+  an exact lifetime compaction count that persists across agent rebuilds,
+  gateway restarts, Codex app-server compactions, and compression rotations.
+- **Touchpoints:** `agent/turn_finalizer.py`, `agent/context_compressor.py`,
+  `agent/codex_runtime.py`, and focused persistence regressions.
+- **Verification:** Focused tests cover metadata exposure, durable count reload,
+  compression-boundary carry, and the Codex app-server increment path.
+- **Upstream disposition:** Candidate for upstreaming as richer output-hook
+  metadata. Keep active while the workspace footer consumes these fields.
+
 ## Retired patches
 
 None.

@@ -405,6 +405,18 @@ def _apply_output_hooks(
     """Fire ``transform_llm_output`` then ``post_llm_call`` once per turn after the tool loop.
     Returns ``(final_response, transformed, pre_transform_response)``."""
     transformed, pre_transform = False, None
+    compressor = getattr(agent, "context_compressor", None)
+    context_used_tokens = context_window_tokens = compaction_count = None
+    if compressor is not None:
+        try:
+            used = int(getattr(compressor, "last_total_tokens", 0) or 0)
+            window = int(getattr(compressor, "context_length", 0) or 0)
+            count = int(getattr(compressor, "compression_count", 0) or 0)
+            context_used_tokens = used if used > 0 else None
+            context_window_tokens = window if window > 0 else None
+            compaction_count = count if count > 0 else None
+        except (TypeError, ValueError):
+            pass
     # First hook to return a string wins; None/empty leaves the text unchanged.
     for _hook_result in _invoke_hook_safely(
         "transform_llm_output", logger,
@@ -412,6 +424,9 @@ def _apply_output_hooks(
         session_id=agent.session_id or "",
         model=agent.model,
         platform=platform,
+        context_used_tokens=context_used_tokens,
+        context_window_tokens=context_window_tokens,
+        compaction_count=compaction_count,
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True

@@ -210,3 +210,38 @@ class TestCompressionBoundaryCarry:
         # Persisted onto the child row so a restart right after rotation
         # still inherits the armed guard.
         assert db.get_compression_ineffective_count("child") == 1
+
+
+class TestLifetimeCompressionCountPersistence:
+    def test_completed_compactions_survive_agent_recreation(self, tmp_path):
+        """Footer count must remain exact after idle eviction or restart."""
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+
+        first = _compressor(db, "s1")
+        first._increment_compression_count()
+        first._increment_compression_count()
+        assert first.compression_count == 2
+
+        # A fresh compressor models a gateway cache eviction or restart.
+        second = _compressor(db, "s1")
+        assert second.compression_count == 2
+
+    def test_rotation_carries_lifetime_total_to_child_session(self, tmp_path):
+        """A compression-driven session rotation must retain the same total."""
+        db = _db(tmp_path)
+        db.create_session("parent", source="cli")
+        parent = _compressor(db, "parent")
+        parent._increment_compression_count()
+        parent._increment_compression_count()
+
+        db.create_session("child", source="cli", parent_session_id="parent")
+        parent.on_session_start(
+            "child",
+            boundary_reason="compression",
+            old_session_id="parent",
+            session_db=db,
+        )
+
+        assert parent.compression_count == 2
+        assert _compressor(db, "child").compression_count == 2
