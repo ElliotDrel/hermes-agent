@@ -299,13 +299,26 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
     else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
-        # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
-        _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        # Prefer Hermes' Git-Bash resolver. A bare PATH lookup can select the WSL
+        # launcher in System32, which cannot execute a native Windows script path.
+        _bash = None
+        try:
+            from tools.environments.local import _find_bash
+            candidate = _find_bash()
+            parent = os.path.basename(os.path.dirname(candidate or "")).lower()
+            if candidate and parent not in {"system32", "sysnative"}:
+                _bash = candidate
+        except Exception:
+            pass
+        if _bash is None:
+            candidate = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+            parent = os.path.basename(os.path.dirname(candidate or "")).lower()
+            if candidate and parent not in {"system32", "sysnative"}:
+                _bash = candidate
         if _bash is None:
             return None, {}, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
-                "On Windows, install Git for Windows (which ships Git Bash) "
-                "or rewrite the script as Python (.py)."
+                f"Cannot run .sh/.bash script {path.name!r}: native Git Bash not found. "
+                "On Windows, install Git for Windows or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
