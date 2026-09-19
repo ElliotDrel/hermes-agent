@@ -332,10 +332,29 @@ def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) ->
     return query_gateway_control(home, "identify", timeout=timeout)
 
 
+def pause_for_update_wait_budget(
+    *,
+    restart_after_turn_timeout: float,
+    restart_drain_timeout: float,
+    cron_drain_timeout: float,
+) -> float:
+    """Maximum gateway lifetime after accepting ``pause-for-update``.
+
+    Restart first waits for active turns, then ``stop()`` applies the larger
+    of the ordinary and cron drain budgets. The updater must cover both phases
+    before it falls back to a Windows process-tree kill, otherwise that kill can
+    also terminate the detached updater it spawned.
+    """
+    after_turn = max(0.0, float(restart_after_turn_timeout))
+    restart_drain = max(0.0, float(restart_drain_timeout))
+    cron_drain = max(0.0, float(cron_drain_timeout))
+    return after_turn + max(restart_drain, cron_drain)
+
+
 def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to drain and exit for an update. Returns the ACK ``{"pausing",
-    "already_stopping", "pid", "drain_timeout"}`` or None when no gateway answers (old gateway without
-    the verb, no/dead socket) — the caller then uses the legacy signal/tree-kill pause path.
+    "already_stopping", "pid", "drain_timeout"}``, whose wait budget covers the complete after-turn plus
+    stop/drain lifecycle, or None when no gateway answers (old gateway without the verb, no/dead socket).
 
     Step 2 of the socket migration (#92091).
     """

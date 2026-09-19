@@ -5017,7 +5017,7 @@ async def _start_gateway_start_control_socket(runner):
         # a truthful liveness/identity query for updater and fleet consumers. Strictly non-fatal: a bind
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
-        from gateway.control_socket import GatewayControlServer
+        from gateway.control_socket import GatewayControlServer, pause_for_update_wait_budget
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5027,11 +5027,11 @@ async def _start_gateway_start_control_socket(runner):
         _main_loop = asyncio.get_running_loop()
 
         def _pause_for_update_handler() -> dict:
-            try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
-            except Exception:
-                _drain = 30.0
+            _drain = pause_for_update_wait_budget(
+                restart_after_turn_timeout=getattr(runner, "_restart_after_turn_timeout", 0.0),
+                restart_drain_timeout=getattr(runner, "_restart_drain_timeout", 30.0),
+                cron_drain_timeout=getattr(runner, "_cron_drain_timeout", 30.0),
+            )
             accepted_box: list[bool] = []
             _done = threading.Event()
 
