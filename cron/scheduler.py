@@ -708,7 +708,7 @@ def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance
         _forced_releases.append(entry)
         del _forced_releases[:-_FORCED_RELEASE_HISTORY]
     try:
-        path = _get_hermes_home() / "cron" / "inflight_forced_releases.jsonl"
+        path = _get_hermes_home() / "cron" / "runtime" / "inflight_forced_releases.jsonl"
         _ensure_cron_dir(path.parent)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -988,7 +988,7 @@ def _shutdown_parallel_pool() -> None:
 atexit.register(_shutdown_parallel_pool)
 # Per-fire usage audit log; resolves via _get_hermes_home() so profile-scoped paths work.
 def _usage_audit_path() -> Path:
-    return _get_hermes_home() / "cron" / "usage_audit.jsonl"
+    return _get_hermes_home() / "cron" / "runtime" / "usage_audit.jsonl"
 
 
 def _utcnow_iso_ms() -> str:
