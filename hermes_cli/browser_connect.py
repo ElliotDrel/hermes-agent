@@ -513,9 +513,24 @@ def _processes_holding_profile(src: str):
         argv0 = cmd[0].lower() if cmd else ""  # some platforms report a generic name
         if not any(b in name or b in argv0 for b in browser_bins):
             continue
-        # Binding: the exact user-data-dir must appear in the cmdline, normalized.
+        # A custom user-data-dir must match exactly. Chrome's standard profile
+        # root omits the flag, so a Chrome process without an explicit root
+        # still holds that default profile. Limit that exception to known
+        # Chrome executables so the consented close command cannot kill another
+        # Chromium profile.
+        explicit_user_data_dir = any(
+            str(arg).lower().startswith("--user-data-dir") for arg in cmd
+        )
+        default_chrome_root = real_profile_data_dir("chrome")
+        is_default_chrome_root = (
+            name in ("chrome", "chrome.exe", "google chrome")
+            and default_chrome_root is not None
+            and norm == os.path.normcase(os.path.normpath(default_chrome_root))
+            and not explicit_user_data_dir
+        )
         if (norm in os.path.normcase(os.path.normpath(joined))
-                or f"--user-data-dir={src}".lower() in joined.lower()):
+                or f"--user-data-dir={src}".lower() in joined.lower()
+                or is_default_chrome_root):
             yield proc
 
 
