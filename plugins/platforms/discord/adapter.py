@@ -88,6 +88,10 @@ class _Snowflake:
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "startup", "off"}
+# Adapter instances can be rebuilt after a failed connection. Startup sync is
+# process-scoped by application ID so reconnects and adapter replacement do not
+# consume Discord's command-management rate-limit bucket again.
+_DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS: set[str] = set()
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
@@ -1066,9 +1070,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # off the connect path so a slow Bot API call (e.g. a set_my_commands stall for certain tokens)
         # cannot blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
-        # The initial patch keeps one sync per adapter. Later maintenance commits
-        # refine this to an application-keyed process guard.
-        self._startup_command_sync_completed = False
+
         # WS liveness probe: REST 200 can't prove Gateway events still arrive, so sample WS
         # ready/open/ACK + heartbeat latency; consecutive failures -> retryable-fatal. 0 disables.
         self._liveness_interval_seconds = self._finite_positive_config_float(
@@ -2018,18 +2020,34 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
                 return
+            app_id = (
+                getattr(self._client, "application_id", None)
+                or getattr(getattr(self._client, "user", None), "id", None)
+            )
             if sync_policy == "startup":
-                if self._startup_command_sync_completed:
-                    logger.info("[%s] Skipping Discord slash command sync: startup sync already ran", self.name)
+                # Claim only a resolved application ID. A torn-down client must
+                # not reserve a placeholder that lets its later live reconnect
+                # make another eligible sync attempt.
+                if app_id is None:
+                    logger.info(
+                        "[%s] Deferring Discord slash command sync: application ID not resolved yet",
+                        self.name,
+                    )
                     return
-                # Claim before any REST request. A failed first attempt must not
-                # turn reconnects into a command-management burst.
-                self._startup_command_sync_completed = True
+                startup_key = str(app_id)
+                if startup_key in _DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS:
+                    logger.info(
+                        "[%s] Skipping Discord slash command sync: startup sync already ran in this gateway process",
+                        self.name,
+                    )
+                    return
+                # Claim before any REST request. A rate-limited first attempt
+                # must not turn reconnects into a command-management burst.
+                _DISCORD_STARTUP_COMMAND_SYNC_APPLICATION_IDS.add(startup_key)
             if sync_policy == "bulk":
                 synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
-            app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
             fingerprint = self._desired_command_sync_fingerprint()
             skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
             if skip_reason:
@@ -2042,8 +2060,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if has_ratelimit_timeout:
                 http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
             try:
-                # The command-management bucket is small and discord.py may sleep long on a 429: bound it.
-                summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
+                # A startup sync is best-effort. Bound the outer wait to the
+                # same short cap as discord.py's rate-limit wait so a stalled
+                # command bucket cannot occupy the gateway for ten minutes.
+                summary = await asyncio.wait_for(
+                    self._safe_sync_slash_commands(),
+                    timeout=_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
+                )
             except Exception as e:
                 if not self._is_discord_rate_limit(e):
                     raise
@@ -2604,7 +2627,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _get_discord_command_sync_policy(self) -> str:
-        raw = _scoped_gate_env("DISCORD_COMMAND_SYNC_POLICY", "safe").lower()
+        raw = str(
+            self._config_value(
+                "command_sync_policy",
+                "safe",
+                env_key="DISCORD_COMMAND_SYNC_POLICY",
+            )
+            or ""
+        ).strip().lower()
         if raw in _DISCORD_COMMAND_SYNC_POLICIES:
             return raw
         if raw:
@@ -7026,6 +7056,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
+    # Keep this profile-scoped setting in adapter config. The process-global
+    # YAML-to-env bridge cannot represent distinct Discord applications served
+    # by one multiplexed gateway.
+    command_sync_policy = (
+        discord_cfg["command_sync_policy"]
+        if "command_sync_policy" in discord_cfg
+        else platform_extra_cfg.get("command_sync_policy")
+    )
+    if command_sync_policy is not None:
+        seeded_extra["command_sync_policy"] = command_sync_policy
 
     def _gate(key: str, env_key: str, *, from_platform_extra: bool, lower: bool = False) -> None:
         value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)

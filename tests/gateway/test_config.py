@@ -267,6 +267,22 @@ class TestGatewayConfigRoundtrip:
 
 class TestLoadGatewayConfig:
 
+    def test_discord_command_sync_policy_from_top_level_yaml_reaches_platform_extra(self, tmp_path, monkeypatch):
+        """The documented ``discord:`` setting must reach the adapter config."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n  command_sync_policy: startup\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.delenv("DISCORD_COMMAND_SYNC_POLICY", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["command_sync_policy"] == "startup"
+
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

@@ -78,13 +78,15 @@ history when upstream makes the behavior unnecessary.
 
 - **Intent:** Prevent ordinary Discord reconnects from repeatedly consuming
   the application command-management rate-limit bucket.
-- **Behavior:** `discord.command_sync_policy: startup` permits one slash-command
-  synchronization per Discord application in each gateway process, then skips
-  reconnect-time syncs until the gateway restarts.
+- **Behavior:** `discord.command_sync_policy: startup` is bridged from YAML and
+  permits one bounded slash-command synchronization per resolved Discord
+  application in each gateway process, then skips reconnect and adapter-rebuild
+  attempts until the gateway restarts; a missing application ID defers safely.
 - **Touchpoints:** `plugins/platforms/discord/adapter.py`, focused Discord
   connection tests, and Discord configuration documentation.
-- **Verification:** Focused tests cover initial sync, reconnect suppression,
-  adapter replacement, and the fresh-process boundary.
+- **Verification:** Focused tests cover YAML propagation, initial sync, missing
+  application IDs, reconnect suppression, adapter replacement, the short outer
+  timeout, and the fresh-process boundary.
 - **Upstream disposition:** Candidate for upstreaming as a supported sync
   policy. Keep active while Discord command limits remain operationally tight.
 
