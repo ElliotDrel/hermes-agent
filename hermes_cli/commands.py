@@ -69,6 +69,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
+    # Discord-only visible thread title workflow.  Dispatch is safe mid-turn: it only reads
+    # persisted history and mutates the session title/thread, never the live agent instance.
+    CommandDef("rename", "Generate or set this Discord thread's title", "Session",
+               gateway_only=True, args_hint="[title]", busy_policy="dispatch"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",

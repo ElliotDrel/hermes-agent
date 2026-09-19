@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+
 import os
 import shlex
 from typing import Optional, Union
@@ -794,6 +795,55 @@ class GatewaySessionCommandsMixin:
         except Exception:
             logger.debug("Failed to rename Telegram topic from /title", exc_info=True)
         return t("gateway.title.set_to", title=sanitized)
+
+    async def _handle_rename_command(self, event: MessageEvent) -> str:
+        """Apply an explicit or regenerated title to the current Discord thread and session together."""
+        source = event.source
+        if source.platform != Platform.DISCORD or source.chat_type != "thread":
+            return "`/rename` can only be used inside a Discord thread."
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+        session_id = (await self.async_session_store.get_or_create_session(source)).session_id
+        previous = await self._session_db.get_session_title(session_id)
+        requested = event.get_command_args().strip()
+        candidate = requested
+        if not candidate:
+            history = await self._session_db.get_messages(session_id, include_compacted=True)
+            from agent.title_generator import format_regenerated_title_context, generate_regenerated_title
+            if not format_regenerated_title_context(history):
+                return "There is not enough conversation context to generate a title yet."
+            candidate = await asyncio.to_thread(generate_regenerated_title, history, previous or "Untitled Conversation")
+            if not candidate:
+                return "I could not generate a better title from this conversation."
+        try:
+            from hermes_state import SessionDB
+            candidate = SessionDB.sanitize_title(candidate)
+        except ValueError as exc:
+            return t("gateway.shared.warn_passthrough", error=exc)
+        if not candidate:
+            return "I could not generate a usable title."
+        if candidate == previous:
+            return f"This thread is already titled **{candidate}**."
+        if not requested and await self._session_db.get_session_title(session_id) != previous:
+            return "The title changed while I was generating a replacement; leaving it alone."
+        if not await self._session_db.set_session_title(session_id, candidate):
+            return "The current session could not be renamed."
+        adapter = self._adapter_for_source(source)
+        try:
+            renamed = bool(await adapter.rename_thread(str(source.thread_id or source.chat_id), candidate)) if adapter else False
+        except Exception as exc:
+            logger.warning("Discord /rename failed", exc_info=True)
+            renamed = False
+            error = exc
+        else:
+            error = None
+        if renamed:
+            return f"Renamed this thread from **{previous or 'Untitled Conversation'}** to **{candidate}**."
+        # Visible Discord title is authoritative. Roll back the session title on failure.
+        with contextlib.suppress(Exception):
+            await self._session_db.set_session_title(session_id, previous or "")
+        detail = f" {type(error).__name__}: {error}." if error else ""
+        return f"Discord did not rename this thread to **{candidate}**. The saved title was restored.{detail}"
 
     # -------------------------------------------------------------- /resume, /sessions
 
