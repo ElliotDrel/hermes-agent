@@ -357,7 +357,7 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 def _create_thread(
     token: str, channel_id: str, name: str, message_id: Optional[str] = None,
-    auto_archive_duration: int = 1440, **_kwargs: Any) -> str:
+    auto_archive_duration: int = 10080, **_kwargs: Any) -> str:
     """Create a thread — anchored to ``message_id`` when given, else standalone public."""
     body: Dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
     path = f"/channels/{channel_id}/threads"
@@ -581,7 +581,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 10080}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:
