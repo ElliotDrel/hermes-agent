@@ -130,6 +130,19 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as a Windows uv/venv
   launcher correction. Keep active while the gateway uses this process shape.
 
+### HERMES-FORK-007: Duration-based quota windows
+
+- **Intent:** Report five-hour and weekly subscription usage from provider
+  semantics instead of unstable positional response fields.
+- **Behavior:** Codex quota windows are labeled from `limit_window_seconds`,
+  Anthropic windows carry explicit durations, and unknown durations retain
+  their fallback labels without entering duration-specific footer segments.
+- **Touchpoints:** `agent/account_usage.py` and focused account-usage tests.
+- **Verification:** Focused regressions cover duration labels, retained
+  fallback behavior, and parsed duration metadata.
+- **Upstream disposition:** Candidate for upstreaming as more accurate account
+  usage parsing. Keep active while the footer consumes recognized durations.
+
 ## Retired patches
 
 None.
