@@ -35,6 +35,7 @@ class ForkSyncResult:
     target_ref: str | None = None
     conflicts: tuple[str, ...] = ()
     detail: str = ""
+    recovery_worktree: str | None = None
 
     def __bool__(self) -> bool:
         return self.verified
@@ -285,6 +286,65 @@ def _conflicted_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...]:
     return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
 
 
+def _create_recovery_worktree(
+    git_cmd: list[str], cwd: Path, *, pre_update_head: str, backup_ref: str
+) -> Path:
+    """Create a clean source tree that can run the gateway during conflicts.
+
+    A paused rebase intentionally leaves ``cwd`` with unmerged Python files,
+    so a restarted gateway cannot import from it.  The recovery worktree is a
+    detached checkout of the verified pre-update commit, sharing the install's
+    existing virtual environment but not its conflicted source files.
+    """
+
+    suffix = backup_ref.rsplit("/", 1)[-1]
+    recovery_root = cwd.parent / f".{cwd.name}-fork-update-runtime-{suffix}"
+    if recovery_root.exists():
+        raise ForkUpdateError(
+            f"Refusing to replace an existing recovery runtime at {recovery_root}"
+        )
+    added = _run(
+        git_cmd,
+        cwd,
+        "worktree",
+        "add",
+        "--detach",
+        str(recovery_root),
+        pre_update_head,
+    )
+    if added.returncode != 0:
+        detail = (added.stderr or added.stdout or "git worktree add failed").strip()
+        raise ForkUpdateError(
+            f"Could not prepare the conflict-safe gateway runtime: {detail}"
+        )
+    return recovery_root
+
+
+def _remove_recovery_worktree(
+    git_cmd: list[str], cwd: Path, state: dict[str, Any]
+) -> None:
+    """Remove the exact updater-owned recovery worktree recorded in state."""
+
+    raw = state.get("recovery_worktree")
+    if not raw:
+        return
+    recovery_root = Path(str(raw))
+    expected_prefix = f".{cwd.name}-fork-update-runtime-pre-update-"
+    if recovery_root.parent != cwd.parent or not recovery_root.name.startswith(
+        expected_prefix
+    ):
+        raise ForkUpdateError(
+            f"Refusing to remove unrecognized recovery runtime {recovery_root}"
+        )
+    removed = _run(git_cmd, cwd, "worktree", "remove", "--force", str(recovery_root))
+    if removed.returncode != 0:
+        detail = (removed.stderr or removed.stdout or "git worktree remove failed").strip()
+        raise ForkUpdateError(
+            f"Could not remove the conflict-safe gateway runtime: {detail}"
+        )
+    state.pop("recovery_worktree", None)
+
+
 def _push_rebased_main(
     git_cmd: list[str], cwd: Path, *, expected_origin_sha: str
 ) -> subprocess.CompletedProcess[str]:
@@ -372,6 +432,21 @@ def start_fork_rebase(
     }
     _write_state(path, state)
 
+    try:
+        recovery_root = _create_recovery_worktree(
+            git_cmd,
+            cwd,
+            pre_update_head=pre_update_head,
+            backup_ref=backup_ref,
+        )
+    except ForkUpdateError as exc:
+        state["status"] = "failed"
+        state["error"] = str(exc)
+        _write_state(path, state)
+        raise
+    state["recovery_worktree"] = str(recovery_root)
+    _write_state(path, state)
+
     rebased = _run(git_cmd, cwd, "rebase", upstream_sha)
     if rebased.returncode != 0:
         if _rebase_in_progress(git_cmd, cwd):
@@ -387,6 +462,7 @@ def start_fork_rebase(
                 target_ref=target_release,
                 conflicts=conflicts,
                 detail="Resolve the rebase, run git rebase --continue, then run hermes update --continue.",
+                recovery_worktree=str(recovery_root),
             )
         state["status"] = "failed"
         state["error"] = (rebased.stderr or rebased.stdout).strip()
@@ -418,6 +494,7 @@ def start_fork_rebase(
             detail="The rebase completed, but the lease-protected push failed. Run hermes update --continue after checking origin/main.",
         )
 
+    _remove_recovery_worktree(git_cmd, cwd, state)
     state["status"] = "post_update"
     state["rebased_head"] = new_head
     state["pushed_at"] = datetime.now(timezone.utc).isoformat()
@@ -453,6 +530,7 @@ def continue_fork_rebase(
             target_ref=state.get("target_release"),
             conflicts=conflicts,
             detail="Git rebase is still active. Resolve conflicts and run git rebase --continue first.",
+            recovery_worktree=state.get("recovery_worktree"),
         )
     if state.get("status") == "post_update":
         return ForkSyncResult(
@@ -500,6 +578,7 @@ def continue_fork_rebase(
             detail="The lease-protected push still fails. Inspect origin/main before retrying.",
         )
 
+    _remove_recovery_worktree(git_cmd, cwd, state)
     state["status"] = "post_update"
     state["rebased_head"] = new_head
     state["pushed_at"] = datetime.now(timezone.utc).isoformat()
@@ -555,5 +634,6 @@ def abort_fork_rebase(
     restored_sha = _rev_parse(git_cmd, cwd, "HEAD")
     if restored_sha != backup_sha:
         raise ForkUpdateError("Git did not restore the recorded backup ref.")
+    _remove_recovery_worktree(git_cmd, cwd, state)
     path.unlink(missing_ok=True)
     return restored_sha
