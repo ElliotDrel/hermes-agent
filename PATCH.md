@@ -58,6 +58,22 @@ history when upstream makes the behavior unnecessary.
   proves stable. Keep active until official Hermes offers an equivalent
   resumable maintained-fork contract.
 
+### HERMES-FORK-002: Discord draft-message exclusion
+
+- **Intent:** Let a user keep visible personal drafts in Discord without those
+  messages becoming Hermes input or conversational context.
+- **Behavior:** Discord messages whose trimmed content begins with the
+  case-insensitive marker `draft`, `drafts`, `/draft`, or `/drafts`, followed
+  by the end of the message, whitespace, or a colon, are ignored before
+  dispatch. The same filter excludes marked messages from history backfill and
+  reply previews without matching unrelated words such as `drafting`.
+- **Touchpoints:** `plugins/platforms/discord/adapter.py` and the focused
+  Discord connection regressions.
+- **Verification:** The focused marker and early-dispatch selection reports
+  `18 passed`; the adapter and test module also pass Python compilation.
+- **Upstream disposition:** Candidate for upstreaming as an opt-in personal
+  draft convention. Keep active while Elliot relies on the marker contract.
+
 ## Retired patches
 
 None.

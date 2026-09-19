@@ -69,6 +69,14 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     return f"[{escaped_label}](<{escaped_url}>)"
 
 
+_DISCORD_DRAFT_MESSAGE_RE = re.compile(r"^/?drafts?(?=$|[:\s])", re.IGNORECASE)
+
+
+def _is_discord_draft_message(content: str) -> bool:
+    """Return whether a Discord post has Elliot's explicit private-draft marker."""
+    return bool(_DISCORD_DRAFT_MESSAGE_RE.match((content or "").strip()))
+
+
 class _Snowflake:
     """``.id``-only Snowflake stand-in for ``channel.history(before=...)``; avoids
     ``discord.Object``, which stubbed discord test doubles cannot build."""
@@ -4833,6 +4841,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
                 content = getattr(msg, "clean_content", msg.content) or ""
+                if _is_discord_draft_message(content):
+                    return None
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
@@ -5664,6 +5674,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
+        if _is_discord_draft_message(getattr(message, "content", "")):
+            logger.debug("[%s] Ignoring explicitly marked Discord draft message %s", self.name, getattr(message, "id", "unknown"))
+            return False
         # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
         #
         # Config (discord.* in config.yaml or DISCORD_* env vars):
@@ -5853,7 +5866,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if message.reference:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                candidate_reply_text = getattr(message.reference.resolved, "content", None) or None
+                if not _is_discord_draft_message(candidate_reply_text or ""):
+                    reply_to_text = candidate_reply_text
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,

@@ -72,6 +72,43 @@ import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "draft",
+        "Draft",
+        "DRAFT",
+        "draft:",
+        "Draft: finish this later",
+        "drafts",
+        "drafts: finish this later",
+        "/draft",
+        "/Draft: finish this later",
+        "/drafts",
+        "/drafts: finish this later",
+    ],
+)
+def test_draft_marker_matches_supported_forms(content):
+    """Draft markers are case-insensitive, singular/plural, and slash-optional."""
+    assert discord_platform._is_discord_draft_message(content)
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["drafting", "redraft", "/drafting", "draft-note", "draftsman", "/draftsman"],
+)
+def test_draft_marker_does_not_match_unrelated_words(content):
+    assert not discord_platform._is_discord_draft_message(content)
+
+
+@pytest.mark.asyncio
+async def test_draft_message_is_dropped_before_discord_dispatch():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    message = SimpleNamespace(content="/Draft: pick this up tomorrow", id=123)
+
+    assert await adapter._handle_message(message) is False
+
+
 @pytest.fixture(autouse=True)
 def _speed_up_command_sync_mutation_pacing(monkeypatch):
     monkeypatch.setattr(
@@ -706,4 +743,3 @@ class TestPrivilegedIntentsRequiredFatal:
         assert "Message Content Intent" in (adapter.fatal_error_message or "")
         assert "discord.com/developers/applications" in (adapter.fatal_error_message or "")
         assert adapter._bot_task is None
-
