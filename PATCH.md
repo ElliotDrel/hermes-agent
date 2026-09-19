@@ -227,7 +227,8 @@ history when upstream makes the behavior unnecessary.
 - **Verification:** Focused regressions cover generated and explicit titles,
   active-run dispatch, native command registration, metadata persistence,
   thread rename, and diagnostic error propagation. The split command architecture
-  is revalidated whenever this maintained workflow is restored after an upstream update.
+  and current upstream title-generator API are revalidated whenever this maintained
+  workflow is restored after an upstream update.
 - **Upstream disposition:** Candidate for upstreaming as a richer session-title
   workflow. Keep active while the workspace relies on this naming contract.
 

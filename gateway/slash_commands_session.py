@@ -809,10 +809,20 @@ class GatewaySessionCommandsMixin:
         candidate = requested
         if not candidate:
             history = await self._session_db.get_messages(session_id, include_compacted=True)
-            from agent.title_generator import format_regenerated_title_context, generate_regenerated_title
-            if not format_regenerated_title_context(history):
+            # The current upstream title generator accepts one text input rather than the
+            # old fork's conversation-aware regeneration helpers. Preserve the latest
+            # user intent in a bounded prompt instead of importing removed symbols.
+            from agent.message_content import flatten_message_text
+            user_turns = [
+                flatten_message_text(message.get("content"))
+                for message in history
+                if isinstance(message, dict) and message.get("role") == "user"
+            ]
+            context = "\n\n".join(text.strip() for text in user_turns if text and text.strip())[-8_000:]
+            if not context:
                 return "There is not enough conversation context to generate a title yet."
-            candidate = await asyncio.to_thread(generate_regenerated_title, history, previous or "Untitled Conversation")
+            from agent.title_generator import generate_title
+            candidate = await asyncio.to_thread(generate_title, context)
             if not candidate:
                 return "I could not generate a better title from this conversation."
         try:
