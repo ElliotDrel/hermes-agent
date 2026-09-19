@@ -92,13 +92,16 @@ history when upstream makes the behavior unnecessary.
   the application command-management rate-limit bucket.
 - **Behavior:** `discord.command_sync_policy: startup` is bridged from YAML and
   permits one bounded slash-command synchronization per resolved Discord
-  application in each gateway process, then skips reconnect and adapter-rebuild
-  attempts until the gateway restarts; a missing application ID defers safely.
+  application in each gateway process. A converged fingerprint suppresses
+  reconnect and adapter-rebuild attempts until the gateway restarts. A timed-out
+  or rate-limited reconciliation is recorded as incomplete and may resume on a
+  later reconnect after Discord's requested cooldown; a missing application ID
+  defers safely.
 - **Touchpoints:** `plugins/platforms/discord/adapter.py`, focused Discord
   connection tests, and Discord configuration documentation.
 - **Verification:** Focused tests cover YAML propagation, initial sync, missing
-  application IDs, reconnect suppression, adapter replacement, the short outer
-  timeout, and the fresh-process boundary.
+  application IDs, converged reconnect suppression, resumable incomplete
+  reconciliation, the short outer timeout, and the fresh-process boundary.
 - **Upstream disposition:** Candidate for upstreaming as a supported sync
   policy. Keep active while Discord command limits remain operationally tight.
 
@@ -207,10 +210,10 @@ history when upstream makes the behavior unnecessary.
 - **Behavior:** Cron resolves Bash through Hermes' verified local environment
   helper and rejects System32/Sysnative candidates before launching native
   Windows script paths.
-- **Touchpoints:** `cron/scheduler.py` and the focused Windows Bash-resolution
-  regressions.
-- **Verification:** Focused tests cover Git Bash selection, WSL-launcher
-  rejection, and the missing-interpreter error.
+- **Touchpoints:** `cron/scheduler_script.py` and the direct Windows
+  Bash-resolution verification harness.
+- **Verification:** A focused direct harness covers Git Bash selection,
+  WSL-launcher rejection, and the missing-interpreter error.
 - **Upstream disposition:** Candidate for upstreaming as a Windows reliability
   fix. Keep active until upstream uses the same verified interpreter contract.
 
