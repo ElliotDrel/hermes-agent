@@ -50,9 +50,12 @@ history when upstream makes the behavior unnecessary.
   and resume-pending path as `/restart`, while capping the update-specific
   after-turn wait at two minutes; its acknowledgement also covers normal and
   cron drain budgets so a busy gateway cannot trigger an early process-tree
-  kill that also terminates its detached updater. Conflicts remain as an active
-  Git rebase and resume through the `hermes update --continue` command; `--abort`
-  restores the recorded backup without deleting it.
+  kill that also terminates its detached updater. Before rebasing, the updater
+  creates a detached recovery worktree at the verified pre-update commit. If a
+  rebase pauses on conflicts, Windows restarts the gateway from that clean tree
+  while the installed checkout retains its active conflict state. Conflicts
+  remain as an active Git rebase and resume through the `hermes update --continue`
+  command; `--abort` restores the recorded backup without deleting it.
 - **Touchpoints:** `hermes_cli/fork_update.py`, `hermes_cli/update_cmd.py`,
   `hermes_cli/subcommands/update.py`, `hermes_cli/config_defaults.py`,
   `gateway/control_socket.py`, `gateway/run.py`, `gateway/run_shutdown.py`,

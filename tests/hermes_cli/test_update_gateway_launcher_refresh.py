@@ -20,6 +20,7 @@ against a faked ``sys.platform``.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -82,11 +83,29 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
 
 
+@pytest.mark.windows_only
+def test_restart_spec_can_boot_from_conflict_recovery_source(tmp_path):
+    pythonw, _python = _make_venv(tmp_path, with_console_python=True)
+    recovery_root = tmp_path / "recovery-source"
+    recovery_root.mkdir()
+    argv = [str(pythonw), "-m", "hermes_cli.main", "gateway", "run"]
+
+    with mock.patch(
+        "hermes_cli.config.get_hermes_home", return_value=str(tmp_path / "home")
+    ):
+        _new_argv, cwd, env = gateway_windows.windowless_gateway_restart_spec(
+            argv, source_root=recovery_root
+        )
+
+    assert cwd == str(recovery_root)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(recovery_root)
+    assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
 # ---------------------------------------------------------------------------
 # _refresh_windows_gateway_launchers: hermes update regenerates launchers
 # ---------------------------------------------------------------------------
-
-
 
 
 

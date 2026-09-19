@@ -1081,11 +1081,16 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     with _abort_on_error("Could not load Windows gateway restart helper"):
         from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline, launch_detached_profile_gateway_restart
 
+    restart_source_root = token.get("restart_source_root")
+    if restart_source_root and not Path(str(restart_source_root)).is_dir():
+        raise RuntimeError(f"Conflict-safe Windows gateway runtime is missing: {restart_source_root}")
+    launch_kwargs = {"source_root": str(restart_source_root)} if restart_source_root else {}
     # An exception from a launch (incl. bad pid/argv coercion) logs at debug and reads as a failed relaunch.
     relaunched = []
     failed_profiles = {}
     for profile, old_pid in sorted(profiles.items()):
-        if _try_call(lambda p=profile, o=old_pid: launch_detached_profile_gateway_restart(str(p), int(o)),
+        if _try_call(lambda p=profile, o=old_pid: launch_detached_profile_gateway_restart(
+            str(p), int(o), **launch_kwargs),
                      "Could not restart Windows gateway profile %s after update: %s", profile):
             relaunched.append(str(profile))
         else:
@@ -1103,7 +1108,8 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     failed_unmapped = []
     for entry in unmapped:
         argv, old_pid = entry.get("argv"), entry.get("pid")
-        if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(int(o), list(a)),
+        if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(
+            int(o), list(a), **launch_kwargs),
                                           "Could not restart unmapped Windows gateway (pid %s) after update: %s", old_pid):
             unmapped_relaunched += 1
         else:

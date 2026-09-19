@@ -842,6 +842,7 @@ class _CheckoutPlan:
     upstream_checked: bool
     fork_pre_update_sha: str | None = None
     fork_paused: bool = False
+    fork_recovery_worktree: str | None = None
 
 
 def _apply_parked_branch_guard(
@@ -959,7 +960,8 @@ def _prepare_checkout_for_update(
                 auto_stash_ref=auto_stash_ref, commit_count=0, in_place_update=in_place_update,
                 parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
                 switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
-                fork_pre_update_sha=getattr(fork_result, "pre_update_head", None), fork_paused=True)
+                fork_pre_update_sha=getattr(fork_result, "pre_update_head", None), fork_paused=True,
+                fork_recovery_worktree=getattr(fork_result, "recovery_worktree", None))
         post_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         if pre_sync_sha and post_sync_sha and pre_sync_sha != post_sync_sha:
             synced_count = _count_commits_between(
@@ -1323,6 +1325,18 @@ def _fork_update_preflight(args) -> bool:
         sys.exit(3)
     return continue_fork_update
 
+def _arm_conflict_safe_gateway_restart(result, token: dict | None) -> None:
+    """Route a paused maintained-fork restart through its clean recovery checkout."""
+    if not token or not getattr(result, "conflicts", ()):
+        return
+    recovery_root = getattr(result, "recovery_worktree", None)
+    if not recovery_root or not Path(recovery_root).is_dir():
+        raise RuntimeError(
+            "The maintained-fork rebase paused, but its conflict-safe gateway runtime is unavailable."
+        )
+    token["restart_source_root"] = str(Path(recovery_root))
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
@@ -1394,6 +1408,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"  conflict: {conflict}")
                 if fork_continue_result.detail:
                     print(f"  {fork_continue_result.detail}")
+                _arm_conflict_safe_gateway_restart(fork_continue_result, _windows_gateway_resume)
                 _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
                 sys.exit(3)
 
@@ -1436,6 +1451,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _windows_gateway_resume=_windows_gateway_resume)
         if _plan.fork_paused:
             print("  Run the hermes-fork-update skill before resuming.")
+            if _windows_gateway_resume:
+                recovery_root = _plan.fork_recovery_worktree
+                if not recovery_root or not Path(recovery_root).is_dir():
+                    raise RuntimeError("The maintained-fork rebase paused without a conflict-safe gateway runtime.")
+                _windows_gateway_resume["restart_source_root"] = str(Path(recovery_root))
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(3)
         if fork_continue_result is not None:
@@ -1485,6 +1505,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
                 if getattr(sync_result, "paused", False):
                     print("  Run the hermes-fork-update skill before resuming.")
+                    _arm_conflict_safe_gateway_restart(sync_result, _windows_gateway_resume)
                     _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
                     sys.exit(3)
                 if getattr(sync_result, "pre_update_head", None):

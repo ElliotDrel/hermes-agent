@@ -588,7 +588,9 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     return _gateway_run_argv(python_exe, profile_arg), working_dir, env_overlay
 
 
-def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str, dict[str, str]]:
+def windowless_gateway_restart_spec(
+    run_argv: list[str], *, source_root: str | Path | None = None,
+) -> tuple[list[str], str, dict[str, str]]:
     """(argv, cwd, env overlay) for a hidden-console gateway respawn; arguments after the interpreter
     are preserved verbatim. Non-Windows or a non-python argv[0] → argv unchanged, empty overlay.
 
@@ -609,15 +611,18 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
     except Exception:
         return run_argv, "", {}
 
+    runtime_root = Path(source_root) if source_root is not None else PROJECT_ROOT
     try:
         hermes_home = str(_hermes_home().resolve())
     except Exception:
         hermes_home = ""
     env_overlay: dict[str, str] = {"PYTHONIOENCODING": "utf-8", "HERMES_GATEWAY_DETACHED": "1", "VIRTUAL_ENV": str(venv_dir)}
+    if source_root is not None:
+        env_overlay["PYTHONDONTWRITEBYTECODE"] = "1"
     if hermes_home:
         env_overlay["HERMES_HOME"] = hermes_home
-    _prepend_pythonpath(env_overlay, [str(PROJECT_ROOT), *extra_pythonpath])
-    return [hidden_console_python, *run_argv[1:]], _stable_gateway_working_dir(PROJECT_ROOT), env_overlay
+    _prepend_pythonpath(env_overlay, [str(runtime_root), *extra_pythonpath])
+    return [hidden_console_python, *run_argv[1:]], _stable_gateway_working_dir(runtime_root), env_overlay
 
 
 def _spawn_detached(script_path: Path | None = None) -> int:

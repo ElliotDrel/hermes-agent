@@ -181,6 +181,7 @@ def test_clean_rebase_creates_recovery_state_and_lease_pushes(tmp_path: Path) ->
     assert state["upstream_sha"] == repos["stable_sha"]
     assert state["audit_pending"] is True
     assert state["status"] == "post_update"
+    assert "recovery_worktree" not in state
     assert (
         _git(
             checkout, "show-ref", "--verify", f"refs/heads/{state['backup_ref']}"
@@ -257,6 +258,10 @@ def test_conflict_pauses_without_push_then_continue_finishes(tmp_path: Path) -> 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["status"] == "conflict"
     assert state["audit_pending"] is True
+    recovery_root = Path(state["recovery_worktree"])
+    assert paused.recovery_worktree == str(recovery_root)
+    assert recovery_root.is_dir()
+    assert (recovery_root / "shared.txt").read_text(encoding="utf-8") == "fork\n"
 
     (checkout / "shared.txt").write_text("upstream\nfork\n", encoding="utf-8")
     _git(checkout, "add", "shared.txt")
@@ -277,7 +282,10 @@ def test_conflict_pauses_without_push_then_continue_finishes(tmp_path: Path) -> 
         ).returncode
         == 0
     )
-    assert json.loads(state_path.read_text(encoding="utf-8"))["status"] == "post_update"
+    final_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert final_state["status"] == "post_update"
+    assert "recovery_worktree" not in final_state
+    assert recovery_root.exists() is False
 
 
 def test_abort_restores_backup_and_keeps_remote_unchanged(tmp_path: Path) -> None:
@@ -291,6 +299,8 @@ def test_abort_restores_backup_and_keeps_remote_unchanged(tmp_path: Path) -> Non
     paused = start_fork_rebase(GIT_CMD, checkout, state_path=state_path)
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert paused.paused is True
+    recovery_root = Path(state["recovery_worktree"])
+    assert recovery_root.is_dir()
 
     aborted = abort_fork_rebase(GIT_CMD, checkout, state_path=state_path)
 
@@ -310,3 +320,4 @@ def test_abort_restores_backup_and_keeps_remote_unchanged(tmp_path: Path) -> Non
         == 0
     )
     assert state_path.exists() is False
+    assert recovery_root.exists() is False
