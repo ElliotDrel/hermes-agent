@@ -5593,7 +5593,7 @@ async def _start_gateway_start_control_socket(runner):
         # a truthful liveness/identity query for updater and fleet consumers. Strictly non-fatal: a bind
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
-        from gateway.control_socket import GatewayControlServer, pause_for_update_wait_budget
+        from gateway.control_socket import GatewayControlServer, UPDATE_PAUSE_AFTER_TURN_TIMEOUT, pause_for_update_wait_budget
         from gateway.run_profile_reconcile import (
             migrate_profile_identity_verb, purge_profile_identity_verb,
             unserve_profile_verb, serve_profile_verb,
@@ -5618,7 +5618,13 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    accepted_box.append(
+                        runner.request_restart(
+                            detached=False,
+                            via_service=True,
+                            after_turn_timeout=UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
+                        )
+                    )
                 finally:
                     _done.set()
 
