@@ -308,10 +308,8 @@ The behavior contracts live in this fork. The procedures for maintaining this
 specific installation live in the paired Hermes workspace, so they survive a
 source rebase and do not become upstream product behavior:
 
-- [`hermes-fork-change`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-change/SKILL.md) defines the source-fork commit and `PATCH.md` contract.
-- [`hermes-fork-update`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-update/SKILL.md) resumes and audits a maintained-fork update.
-- [`local-hermes-source-modification`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/autonomous-ai-agents/local-hermes-source-modification/SKILL.md) explains how to diagnose, change, and verify installed source.
-- [`local-hermes-issue-verification`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/autonomous-ai-agents/local-hermes-issue-verification/SKILL.md) defines the evidence record that belongs in the relevant `PATCH.md` entry.
+- [`hermes-fork-change`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-change/SKILL.md) is required before every installed-source edit. It contains the source-fork commit, diagnosis, verification, and `PATCH.md` evidence contract.
+- [`hermes-fork-update`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-update/SKILL.md) is required only for an update, rebase, or patch audit.
 
 ### Shared host conventions
 
