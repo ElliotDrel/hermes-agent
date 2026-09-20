@@ -300,7 +300,18 @@ history when upstream makes the behavior unnecessary.
 contains active behavior contracts, source-change history, verification
 requirements, incident context, and explicit operational decisions. Scheduler
 runtime state, logs, and temporary audit payloads remain machine data rather
-than competing registries.
+rather than competing registries.
+
+### Operator workflow skills
+
+The behavior contracts live in this fork. The procedures for maintaining this
+specific installation live in the paired Hermes workspace, so they survive a
+source rebase and do not become upstream product behavior:
+
+- [`hermes-fork-change`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-change/SKILL.md) defines the source-fork commit and `PATCH.md` contract.
+- [`hermes-fork-update`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-update/SKILL.md) resumes and audits a maintained-fork update.
+- [`local-hermes-source-modification`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/autonomous-ai-agents/local-hermes-source-modification/SKILL.md) explains how to diagnose, change, and verify installed source.
+- [`local-hermes-issue-verification`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/autonomous-ai-agents/local-hermes-issue-verification/SKILL.md) defines the evidence record that belongs in the relevant `PATCH.md` entry.
 
 ### Shared host conventions
 
