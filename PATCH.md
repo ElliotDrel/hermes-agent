@@ -294,6 +294,110 @@ history when upstream makes the behavior unnecessary.
   conversation contract. Keep active while the update audit requires agent
   follow-up after gateway restart.
 
+## Consolidated local operating record
+
+`PATCH.md` is the sole human-facing registry for this maintained fork. It
+contains active behavior contracts, source-change history, verification
+requirements, incident context, and explicit operational decisions. Scheduler
+runtime state, logs, and temporary audit payloads remain machine data rather
+than competing registries.
+
+### Shared host conventions
+
+- On this Windows host, run pytest with a unique external
+  `--basetemp="C:/Users/2supe/AppData/Local/Temp/hermes-pytest/<label>"`.
+  The default pytest location fails with `WinError 5`.
+- A Windows virtual-environment gateway appears as a small venv-Python parent
+  and a uv-Python child. Treat `hermes gateway status` and gateway state as the
+  authoritative runtime identity. Do not terminate the venv parent as a
+  duplicate gateway.
+- Hermes' default runtime remains the standing Discord agent. Codex App-Server
+  is an explicit per-session option because it bypasses the normal provider
+  failover and credential-pool path.
+- The active auxiliary policy is
+  `auxiliary.allow_provider_discovery_fallback: false`. Title generation stays
+  explicitly pinned to the configured Luna route.
+
+### Local incident index
+
+The following historical local records are consolidated here. The cited active
+patch is the maintenance and verification authority; the old `HERMES-LOCAL-*`
+labels are retained only for searchable history.
+
+- **HERMES-LOCAL-001, Discord drafts entered agent context:**
+  `HERMES-FORK-002` drops `draft` markers before dispatch and history backfill.
+- **HERMES-LOCAL-002, 008, 009, and 013, Discord command sync:**
+  `HERMES-FORK-003` owns startup policy propagation, unresolved application-ID
+  safety, bounded reconciliation, and resumable incomplete sync.
+- **HERMES-LOCAL-003, Discord auto-thread 429 amplification:**
+  `HERMES-FORK-004` owns the parent-channel cooldown and no-fallback contract.
+- **HERMES-LOCAL-004, 007, 012, and 019, manual Discord rename:**
+  `HERMES-FORK-012` owns native registration, active-turn dispatch, semantic
+  title generation, explicit titles, rollback, and actionable Discord errors.
+- **HERMES-LOCAL-005, Windows venv dependencies:**
+  `HERMES-FORK-006` exposes the venv package directory to the gateway runtime.
+- **HERMES-LOCAL-006, 015, 016, and 017, response footer and quotas:**
+  `HERMES-FORK-005` owns durable footer metadata. `HERMES-FORK-007` owns
+  duration-based subscription window labels and preserves cron `[SILENT]`.
+- **HERMES-LOCAL-010, Windows search patterns:** `HERMES-FORK-015` keeps regex
+  and glob values separate from path translation.
+- **HERMES-LOCAL-011, Windows cron Bash:** `HERMES-FORK-011` selects verified
+  Git Bash and rejects WSL launchers for native script paths.
+- **HERMES-LOCAL-014, real-profile Chrome attachment:** `HERMES-FORK-014`
+  preserves copied-profile isolation and direct-CDP recovery.
+- **HERMES-LOCAL-018, Discord monitor log rotation:** retired with its
+  recurrence monitor. `HERMES-FORK-003` and `HERMES-FORK-004` remain covered
+  by their source tests, without a recurring log monitor.
+
+### Retired operational watches and monitors
+
+The following non-patch monitors were intentionally retired by Elliot on
+2026-09-19. They have no active cron job, monitor script, or recurring audit.
+Recreate a new watch only when fresh production evidence warrants it.
+
+- **HERMES-WATCH-001, Codex long-context pre-stream failures:** retired. No
+  local fix was claimed; the prior upstream report was NousResearch/hermes-agent
+  issue `#103673`.
+- **HERMES-WATCH-002, Windows gateway restart handoff:** retired. No local fix
+  was claimed. The maintained-fork update/restart contracts remain in
+  `HERMES-FORK-001`.
+- **Discord auto-thread regression monitor:** retired. Its former 30-minute
+  cron job and deterministic script were removed. Source regressions remain the
+  verification mechanism when the affected code changes.
+
+### Update-audit evidence lifecycle
+
+`HERMES-FORK-001` uses `fork-update-state.json` as the machine checkpoint for
+an active update. It records source and target releases, backup and rebase
+heads, and whether the required audit remains pending. A per-patch evidence
+payload exists only while `complete_audit.py` validates a pending audit. On a
+successful audit, the payload is consumed and removed. The checkpoint retains
+only the audited status, exact fork head, patch count, summary, and timestamp.
+
+### Workspace extensions and deferred work
+
+- **Model context suffix:** The profile-local `model-context-suffix` plugin adds
+  the active model, provider, context usage, compaction count, and recognized
+  quota windows to ordinary final responses. It must preserve a terminal
+  `[SILENT]` response unchanged so cron delivery stays suppressed. Its installed
+  source bridges are maintained by `HERMES-FORK-005` and `HERMES-FORK-007`.
+- **Cron manifest:** `cron/manifest.json` is the reviewable declaration of
+  scheduled jobs. `cron/runtime/` is mutable scheduler state and is intentionally
+  excluded from the workspace repository. `HERMES-FORK-010` maintains that split.
+- **GitHub filing tracker:** `scripts/github_filing_tracker.py` remains a
+  read-only workspace integration. It stores durable confirmed goals separately
+  from generated runtime state and never mutates GitHub without per-item approval.
+- **Windows restart handoff:** The former unresolved watch is retired. Do not
+  restart the gateway from its owning agent process. If fresh evidence shows an
+  unpaired shutdown, investigate the detached handoff and restore evidence-based
+  monitoring rather than relying on this historical note.
+- **Discord completion cleanup:** Deferred feature. Any future cleanup must
+  retain final responses and user messages, and prove it cannot delete an error
+  or final answer.
+- **Discord active-thread archive backfill:** Deferred administration. A future
+  implementation must modify only Elliot-owned active threads and read each
+  resulting archive duration back.
+
 ## Retired patches
 
 None.
