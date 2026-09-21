@@ -478,40 +478,6 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_tracks_the_active_mutation_stage():
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-
-    class _DesiredCommand:
-        def to_dict(self, tree):
-            return {"name": "skill", "description": "Run a skill", "type": 1, "options": []}
-
-    stalled_create = asyncio.Event()
-
-    async def _stalled_create(*args):
-        await stalled_create.wait()
-
-    adapter._client = SimpleNamespace(
-        tree=SimpleNamespace(
-            get_commands=lambda: [_DesiredCommand()],
-            fetch_commands=AsyncMock(return_value=[]),
-        ),
-        http=SimpleNamespace(upsert_global_command=_stalled_create),
-        application_id=999,
-        user=SimpleNamespace(id=999),
-    )
-
-    task = asyncio.create_task(adapter._safe_sync_slash_commands())
-    for _ in range(10):
-        if getattr(adapter, "_discord_command_sync_stage", None) == "create:skill":
-            break
-        await asyncio.sleep(0)
-    assert adapter._discord_command_sync_stage == "create:skill"
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-
-@pytest.mark.asyncio
 async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)

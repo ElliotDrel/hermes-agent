@@ -2097,9 +2097,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # The recorded attempt has no success timestamp, so the startup guard
             # permits one later reconnect to resume the remaining diff.
             logger.warning(
-                "[%s] Slash command sync timed out at stage=%s; reconciliation remains pending and will resume on reconnect",
+                "[%s] Slash command sync timed out; reconciliation remains pending and will resume on reconnect",
                 self.name,
-                getattr(self, "_discord_command_sync_stage", "unknown"),
             )
         except asyncio.CancelledError:
             raise
@@ -2746,7 +2745,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
         }
-        self._discord_command_sync_stage = "fetch"
         existing_commands = await asyncio.wait_for(
             tree.fetch_commands(),
             timeout=_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
@@ -2761,12 +2759,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         http = self._client.http
         mutation_count = 0
 
-        async def mutate(stage, call, *args):
+        async def mutate(call, *args):
             nonlocal mutation_count
             if mutation_count:
-                self._discord_command_sync_stage = f"pacing-before-{stage}"
                 await self._sleep_between_command_sync_mutations()
-            self._discord_command_sync_stage = stage
             result = await asyncio.wait_for(
                 call(*args),
                 timeout=_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
@@ -2778,12 +2774,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(f"delete:{current.name}", http.delete_global_command, app_id, current.id)
+            await mutate(http.delete_global_command, app_id, current.id)
             summary["deleted"] += 1
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
-                await mutate(f"create:{desired['name']}", http.upsert_global_command, app_id, desired)
+                await mutate(http.upsert_global_command, app_id, desired)
                 summary["created"] += 1
                 continue
             current_existing_payload = self._existing_command_to_payload(current)
@@ -2793,13 +2789,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(f"recreate-delete:{current.name}", http.delete_global_command, app_id, current.id)
-                await mutate(f"recreate-create:{desired['name']}", http.upsert_global_command, app_id, desired)
+                await mutate(http.delete_global_command, app_id, current.id)
+                await mutate(http.upsert_global_command, app_id, desired)
                 summary["recreated"] += 1
                 continue
-            await mutate(f"edit:{desired['name']}", http.edit_global_command, app_id, current.id, desired)
+            await mutate(http.edit_global_command, app_id, current.id, desired)
             summary["updated"] += 1
-        self._discord_command_sync_stage = "complete"
         summary["total"] = len(desired_payloads)
         return summary
 
