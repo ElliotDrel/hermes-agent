@@ -114,9 +114,15 @@ history when upstream makes the behavior unnecessary.
 - **Verification:** Focused tests cover YAML propagation, initial sync, missing
   application IDs, converged reconnect suppression, resumable incomplete
   reconciliation, the short outer timeout, the fresh-process boundary, and the
-  active mutation stage. The full Discord command-sync gate reports `37 passed`;
-  edited modules pass Python compilation and `git diff --check`. Live stage
-  evidence remains pending one manual gateway restart. Runnable check:
+  active mutation stage. The 2026-09-21 live restart reported
+  `stage=pacing-before-create:reasoning`, proving the 30-second whole-job deadline
+  was expiring during Hermes' intentional 4.5-second inter-mutation sleep. The
+  deadline now applies separately to fetch and each mutation, while pacing can
+  complete an arbitrary legitimate diff. The pacing regression reproduced RED
+  with one of two creations completed and the exact stage warning, then GREEN.
+  The full Discord command-sync gate reports `38 passed`; edited modules pass
+  Python compilation and `git diff --check`. Live convergence remains pending
+  one manual gateway restart. Runnable check:
   `uv run --with pytest --with pytest-asyncio pytest tests/gateway/test_discord_connect.py tests/gateway/test_discord_sync_limit.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/discord-sync-stage`.
 - **Upstream disposition:** Candidate for upstreaming as a supported sync
   policy. Keep active while Discord command limits remain operationally tight.
