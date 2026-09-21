@@ -106,21 +106,20 @@ history when upstream makes the behavior unnecessary.
   instrumentation, timed out again, and emitted no fetch diagnostic. That live
   result disproved the stale fetch-bucket hypothesis and localized the stall to
   post-fetch comparison, mutation pacing, or a command mutation.
-- **Diagnostics:** The disproven discord.py private-bucket inspection and its two
-  tests were removed. Reconciliation now keeps one bounded stage string across
-  fetch, pacing, delete, create, recreate, edit, and completion. The existing
-  timeout warning reports that stage and command name without inspecting private
-  dependency state or changing cancellation behavior.
+- **Diagnostics:** Temporary fetch-bucket inspection, mutation-stage logging, and
+  their diagnostic-only tests were removed after they falsified the fetch theory
+  and identified intentional pacing as the timeout site. Production retains no
+  private discord.py introspection or temporary stage state.
 - **Verification:** Focused tests cover YAML propagation, initial sync, missing
   application IDs, converged reconnect suppression, resumable incomplete
-  reconciliation, the short outer timeout, the fresh-process boundary, and the
-  active mutation stage. The 2026-09-21 live restart reported
+  reconciliation, per-request timeout, the fresh-process boundary, and pacing.
+  Temporary instrumentation on the 2026-09-21 live restart reported
   `stage=pacing-before-create:reasoning`, proving the 30-second whole-job deadline
   was expiring during Hermes' intentional 4.5-second inter-mutation sleep. The
   deadline now applies separately to fetch and each mutation, while pacing can
   complete an arbitrary legitimate diff. The pacing regression reproduced RED
   with one of two creations completed and the exact stage warning, then GREEN.
-  The full Discord command-sync gate reports `38 passed`; edited modules pass
+  The full Discord command-sync gate reports `37 passed`; edited modules pass
   Python compilation and `git diff --check`. Live convergence remains pending
   one manual gateway restart. Runnable check:
   `uv run --with pytest --with pytest-asyncio pytest tests/gateway/test_discord_connect.py tests/gateway/test_discord_sync_limit.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/discord-sync-stage`.
