@@ -4343,6 +4343,7 @@ class GatewayRunner(
         _thinking_enabled: Any = None
         _native_slack_task_cards: Any = None
         needs_progress_queue: Any = None
+        progress_compositor_mode: Any = None
         _generic_status_phrase: Any = None
 
     @dataclasses.dataclass

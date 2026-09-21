@@ -298,6 +298,40 @@ class TestCleanupProgress:
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
 
 
+class TestProgressCompositor:
+    """The compositor is opt-in and invalid values fail closed."""
+
+    def test_default_is_off_for_every_platform(self):
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "email"):
+            assert resolve_display_setting({}, plat, "progress_compositor") == "off"
+
+    def test_discord_single_message_override(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "discord": {
+                        "progress_compositor": "single_message",
+                        "tool_progress": "all",
+                        "thinking_progress": False,
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "discord", "progress_compositor") == "single_message"
+        assert resolve_display_setting(config, "discord", "tool_progress") == "all"
+        assert resolve_display_setting(config, "discord", "thinking_progress") is False
+
+    def test_invalid_value_fails_safe_to_off(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"discord": {"progress_compositor": "many_messages"}}}}
+        assert resolve_display_setting(config, "discord", "progress_compositor") == "off"
+
+
 class TestToolProgressGrouping:
     """resolve_display_setting() for the tool_progress_grouping knob."""
 

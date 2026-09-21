@@ -482,6 +482,122 @@ def _make_runner(adapter):
 
 
 @pytest.mark.asyncio
+async def test_discord_compositor_ack_precedes_agent_and_keeps_one_progress_id(monkeypatch, tmp_path):
+    """The configured Discord turn acknowledges before work and never opens a second progress bubble."""
+    import yaml
+
+    order = []
+
+    class OrderedDiscordAdapter(DiscordProgressCaptureAdapter):
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            order.append(("send", content))
+            return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    class OrderedAgent(FakeAgent):
+        def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+            order.append(("agent", message))
+            return super().run_conversation(
+                message, conversation_history=conversation_history, task_id=task_id, **kwargs
+            )
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({
+            "display": {
+                "platforms": {
+                    "discord": {
+                        "progress_compositor": "single_message",
+                        "tool_progress": "all",
+                        "thinking_progress": False,
+                        "long_running_notifications": True,
+                        "interim_assistant_messages": False,
+                        "cleanup_progress": False,
+                    }
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = OrderedAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = OrderedDiscordAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+    )
+
+    result = await runner._run_agent(
+        message="research this",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-compositor",
+        session_key="agent:main:discord:thread:thread-1:thread-1",
+        event_message_id="user-1",
+    )
+
+    assert result["final_response"] == "done"
+    assert order[0] == ("send", "⏳ Working…")
+    assert order[1] == ("agent", "research this")
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["reply_to"] is None
+    assert adapter.sent[0]["metadata"]["thread_id"] == "thread-1"
+    assert adapter.edits
+    assert {edit["message_id"] for edit in adapter.edits} == {"progress-1"}
+    rendered = "\n".join(edit["content"] for edit in adapter.edits)
+    assert "pwd" in rendered
+    assert "example.com" in rendered
+
+
+@pytest.mark.asyncio
+async def test_global_compositor_setting_does_not_replace_slack_progress(monkeypatch, tmp_path):
+    """single_message is Discord-only even when an operator places it at global display scope."""
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"progress_compositor": "single_message", "tool_progress": "all"}}),
+        encoding="utf-8",
+    )
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    source = SessionSource(platform=Platform.SLACK, chat_id="C123", chat_type="channel")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-global-compositor",
+        session_key="agent:main:slack:channel:C123",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert all(call["content"] != "⏳ Working…" for call in adapter.sent)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")

@@ -278,7 +278,7 @@ from gateway.platforms.helpers import (
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
@@ -3123,7 +3123,32 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return result
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            error_kind = "rate_limited" if self._is_discord_rate_limit(e) else classify_send_error(e, str(e))
+            retry_after = self._extract_discord_retry_after(e) if error_kind == "rate_limited" else None
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=error_kind in {"rate_limited", "transient"},
+                retry_after=retry_after,
+                error_kind=error_kind,
+            )
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete one bot-owned Discord message without fetching its full payload."""
+        if not self._client:
+            return False
+        try:
+            channel = await self._resolve_channel(chat_id)
+            await channel.get_partial_message(int(message_id)).delete()
+            self._last_overflow_preview.pop((str(chat_id), str(message_id)), None)
+            return True
+        except Exception as exc:
+            # Cleanup is best-effort. Keep content/error text out of logs; the category is sufficient.
+            logger.debug(
+                "[%s] Failed to delete Discord message chat=%s message=%s category=%s",
+                self.name, chat_id, message_id, type(exc).__name__,
+            )
+            return False
 
     @staticmethod
     def _is_reply_reference_rejected(err: Exception) -> bool:

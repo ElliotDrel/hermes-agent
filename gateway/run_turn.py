@@ -2776,6 +2776,13 @@ class GatewayTurnMixin:
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
+        # This compositor relies on Discord's bounded editable-message contract. A global display
+        # value must not replace Slack task cards or create permanent acknowledgements elsewhere.
+        progress_compositor_mode = (
+            resolve_display_setting(user_config, platform_key, "progress_compositor", "off")
+            if source.platform == Platform.DISCORD
+            else "off"
+        )
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
@@ -2805,7 +2812,12 @@ class GatewayTurnMixin:
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
+            # single_message posts immediately even when every optional source is disabled.
+            needs_progress_queue=(
+                tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
+                or progress_compositor_mode == "single_message"
+            ),
+            progress_compositor_mode=progress_compositor_mode,
             _generic_status_phrase=_generic_status_phrase,
         )
 
@@ -2815,6 +2827,7 @@ class GatewayTurnMixin:
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "progress_compositor_mode",
     )
 
     def _run_agent_build_turn_context(
@@ -3819,10 +3832,14 @@ class GatewayTurnMixin:
             and session_key
             and isinstance(response, dict)
             and not response.get("failed")
+            and not response.get("interrupted")
+            and not response.get("cancelled")
+            and response.get("completed", True) is not False
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
             return
-        _ids_snapshot = list(_cleanup_msg_ids)
+        # One owned compositor id can be observed by more than one source callback. Delete it once.
+        _ids_snapshot = list(dict.fromkeys(str(mid) for mid in _cleanup_msg_ids if mid))
         _chat_id_snapshot = turn_ctx.source.chat_id
         _loop_snapshot = asyncio.get_running_loop()
 
@@ -3914,6 +3931,10 @@ class GatewayTurnMixin:
                 if _long_running_mode == "generic"
                 else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
             )
+            if turn_ctx.progress_compositor_mode == "single_message" and turn_ctx.progress_queue is not None:
+                # The compositor owns the temporary lane. A heartbeat replaces its status header.
+                turn_ctx.progress_queue.put(("__status__", _heartbeat_text))
+                continue
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:
@@ -3980,6 +4001,11 @@ class GatewayTurnMixin:
         self._run_agent_start_streaming_tts(
             source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
         )
+
+        # single_message means the acknowledgement is an execution boundary, not a best-effort race
+        # between a background progress task and the worker thread.
+        if turn_ctx.progress_compositor_mode == "single_message":
+            await turn_runner.start_progress_compositor()
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task

@@ -33,7 +33,9 @@ async def _fire_post_delivery_cb(cb):
     if _inspect.isawaitable(result):
         await result
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.session import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_key
+from gateway.turn_context import TurnContext
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +297,85 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_compositor_cleanup_deletes_unique_owned_id_after_confirmed_delivery():
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    session_key = "agent:main:discord:thread:123:123"
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="123", thread_id="123"),
+        session_key=session_key,
+        run_generation=7,
+        _cleanup_progress=True,
+        _cleanup_msg_ids=["progress-1", "progress-1"],
+    )
+
+    runner._run_agent_schedule_bubble_cleanup(
+        {"final_response": "done", "completed": True}, adapter, ctx
+    )
+    callback = adapter.pop_post_delivery_callback(session_key, generation=7)
+    assert callable(callback)
+    await _fire_post_delivery_cb(callback)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+
+    assert adapter.deleted == [{"chat_id": "123", "message_id": "progress-1"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"final_response": "failed", "failed": True},
+        {"final_response": "interrupted", "interrupted": True},
+        {"final_response": "cancelled", "cancelled": True},
+        {"final_response": "partial", "completed": False},
+    ],
+)
+async def test_cleanup_is_not_registered_for_nonfinal_turns(response):
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    session_key = "agent:main:discord:thread:123:123"
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="123", thread_id="123"),
+        session_key=session_key,
+        run_generation=9,
+        _cleanup_progress=True,
+        _cleanup_msg_ids=["progress-1"],
+    )
+
+    runner._run_agent_schedule_bubble_cleanup(response, adapter, ctx)
+
+    assert adapter.pop_post_delivery_callback(session_key, generation=9) is None
+    assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_failed_final_delivery_preserves_registered_progress_breadcrumb():
+    """A failed adapter send must not fire cleanup registered for final delivery."""
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+
+    async def failed_send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=False, error="simulated delivery failure")
+
+    async def handler(_event):
+        return "final answer"
+
+    adapter.send = failed_send
+    adapter.set_message_handler(handler)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="thread")
+    event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=source)
+    session_key = build_session_key(source)
+
+    async def cleanup():
+        await adapter.delete_message("123", "progress-1")
+
+    adapter.register_post_delivery_callback(session_key, cleanup)
+    await adapter._process_message_background(event, session_key)
+
+    assert adapter.deleted == []
+    assert adapter.pop_post_delivery_callback(session_key) is not None

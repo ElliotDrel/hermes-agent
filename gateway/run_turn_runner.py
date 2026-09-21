@@ -695,6 +695,9 @@ class TurnRunner:
         adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
+        if ctx.progress_compositor_mode == "single_message":
+            await self._send_composed_progress(adapter)
+            return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
@@ -745,6 +748,63 @@ class TurnRunner:
             except Exception as e:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
+
+    async def start_progress_compositor(self, adapter=None):
+        """Create and confirm the sole temporary reply before the agent worker starts."""
+        from gateway.progress_compositor import ProgressCompositor
+
+        ctx = self._ctx
+        if ctx.progress_compositor is not None:
+            return ctx.progress_compositor
+        adapter = adapter or self._runner._adapter_for_source(ctx.source)
+        if adapter is None:
+            return None
+        compositor = ProgressCompositor(
+            adapter,
+            ctx.source.chat_id,
+            reply_to=ctx._progress_reply_to,
+            metadata=ctx._progress_metadata,
+            session_key=ctx.session_key,
+            generation=ctx.run_generation,
+        )
+        ctx.progress_compositor = compositor
+        result = await compositor.start()
+        self._track_progress_result(result)
+        return compositor
+
+    async def _send_composed_progress(self, adapter) -> None:
+        """Coalesce every safe source into edits of the already-owned temporary reply."""
+        ctx = self._ctx
+        compositor = await self.start_progress_compositor(adapter)
+        if compositor is None:
+            self._drain_progress_queue()
+            return
+        if not compositor.message_id:
+            self._drain_progress_queue()
+            return
+        try:
+            while ctx._run_still_current():
+                changed = False
+                try:
+                    while True:
+                        raw = ctx.progress_queue.get_nowait()
+                        if not self._agent_interrupted():
+                            compositor.absorb(raw)
+                            changed = True
+                except queue.Empty:
+                    pass
+                if changed or compositor.next_edit_after <= time.monotonic():
+                    await compositor.flush()
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            # Drain only normal completion. Interrupted turns keep the last visible breadcrumb without
+            # publishing tool events parsed after the interrupt.
+            if not self._agent_interrupted() and ctx._run_still_current():
+                with suppress(Exception):
+                    while True:
+                        compositor.absorb(ctx.progress_queue.get_nowait())
+            await compositor.flush(force=True)
+            return
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
@@ -882,6 +942,10 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        if ctx.progress_compositor_mode == "single_message" and ctx.progress_queue is not None:
+            # _prepare_gateway_status_message is the existing audited allowlist/redaction boundary.
+            ctx.progress_queue.put(("__status__", prepared))
+            return
         fut = self._schedule(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
             f"status_callback ({event_type}) scheduling error",
@@ -945,6 +1009,14 @@ class TurnRunner:
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            if (
+                ctx.progress_compositor_mode == "single_message"
+                and ctx.progress_queue is not None
+                and not already_streamed
+                and str(text or "").strip()
+            ):
+                ctx.progress_queue.put(("__interim__", text))
+                return
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
