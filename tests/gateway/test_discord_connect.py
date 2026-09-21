@@ -501,7 +501,10 @@ async def test_safe_sync_tracks_the_active_mutation_stage():
     )
 
     task = asyncio.create_task(adapter._safe_sync_slash_commands())
-    await asyncio.sleep(0)
+    for _ in range(10):
+        if getattr(adapter, "_discord_command_sync_stage", None) == "create:skill":
+            break
+        await asyncio.sleep(0)
     assert adapter._discord_command_sync_stage == "create:skill"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -591,19 +594,49 @@ async def test_post_connect_initialization_stops_a_stalled_sync_at_the_short_cap
     monkeypatch.setattr(
         discord_platform, "_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS", 0.01
     )
+    never_finishes = asyncio.Event()
     adapter._client = SimpleNamespace(
-        tree=SimpleNamespace(get_commands=lambda: []),
+        tree=SimpleNamespace(get_commands=lambda: [], fetch_commands=never_finishes.wait),
         application_id=999,
         user=SimpleNamespace(id=999),
     )
-
-    never_finishes = asyncio.Event()
-    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", never_finishes.wait)
     caplog.set_level(logging.WARNING, logger="plugins.platforms.discord.adapter")
 
     await asyncio.wait_for(adapter._run_post_connect_initialization(), timeout=0.2)
 
     assert "Slash command sync timed out" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_does_not_apply_request_timeout_to_mutation_pacing(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, name):
+            self.name = name
+
+        def to_dict(self, tree):
+            return {"name": self.name, "description": self.name, "type": 1, "options": []}
+
+    async def pacing():
+        await asyncio.sleep(0.02)
+
+    monkeypatch.setattr(discord_platform, "_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS", 0.01)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(adapter, "_sleep_between_command_sync_mutations", pacing)
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(
+            get_commands=lambda: [_DesiredCommand("one"), _DesiredCommand("two")],
+            fetch_commands=AsyncMock(return_value=[]),
+        ),
+        http=SimpleNamespace(max_ratelimit_timeout=None, upsert_global_command=AsyncMock()),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    await asyncio.wait_for(adapter._run_post_connect_initialization(), timeout=0.2)
+
+    assert adapter._client.http.upsert_global_command.await_count == 2
 
 
 def test_command_sync_policy_reads_startup_from_discord_config(monkeypatch):

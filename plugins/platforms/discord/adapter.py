@@ -2067,13 +2067,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if has_ratelimit_timeout:
                 http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
             try:
-                # A startup sync is best-effort. Bound the outer wait to the
-                # same short cap as discord.py's rate-limit wait so a stalled
-                # command bucket cannot occupy the gateway for ten minutes.
-                summary = await asyncio.wait_for(
-                    self._safe_sync_slash_commands(),
-                    timeout=_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
-                )
+                # Bound each Discord request inside reconciliation, not the
+                # whole job. The deliberate 4.5s mutation pacing can legitimately
+                # exceed one request deadline when several commands changed.
+                summary = await self._safe_sync_slash_commands()
             except Exception as e:
                 if not self._is_discord_rate_limit(e):
                     raise
@@ -2750,7 +2747,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             for payload in desired_payloads
         }
         self._discord_command_sync_stage = "fetch"
-        existing_commands = await tree.fetch_commands()
+        existing_commands = await asyncio.wait_for(
+            tree.fetch_commands(),
+            timeout=_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
+        )
         existing_by_key = {
             (
                 int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
@@ -2767,7 +2767,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self._discord_command_sync_stage = f"pacing-before-{stage}"
                 await self._sleep_between_command_sync_mutations()
             self._discord_command_sync_stage = stage
-            result = await call(*args)
+            result = await asyncio.wait_for(
+                call(*args),
+                timeout=_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
+            )
             mutation_count += 1
             return result
         # Delete obsolete commands FIRST: an upsert pushing the live total over 100 fails with
