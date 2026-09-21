@@ -120,8 +120,11 @@ history when upstream makes the behavior unnecessary.
   complete an arbitrary legitimate diff. The pacing regression reproduced RED
   with one of two creations completed and the exact stage warning, then GREEN.
   The full Discord command-sync gate reports `37 passed`; edited modules pass
-  Python compilation and `git diff --check`. Live convergence remains pending
-  one manual gateway restart. Runnable check:
+  Python compilation and `git diff --check`. The clean 2026-09-21 production
+  restart completed reconciliation after the paced backlog: `71` total,
+  `67` recreated, `3` created, `1` updated, and `0` deleted. The persisted state
+  records equal `last_attempt_at` and `last_success_at`, confirming convergence.
+  Runnable check:
   `uv run --with pytest --with pytest-asyncio pytest tests/gateway/test_discord_connect.py tests/gateway/test_discord_sync_limit.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/discord-sync-stage`.
 - **Upstream disposition:** Candidate for upstreaming as a supported sync
   policy. Keep active while Discord command limits remain operationally tight.
