@@ -2100,8 +2100,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # The recorded attempt has no success timestamp, so the startup guard
             # permits one later reconnect to resume the remaining diff.
             logger.warning(
-                "[%s] Slash command sync timed out; reconciliation remains pending and will resume on reconnect",
+                "[%s] Slash command sync timed out at stage=%s; reconciliation remains pending and will resume on reconnect",
                 self.name,
+                getattr(self, "_discord_command_sync_stage", "unknown"),
             )
         except asyncio.CancelledError:
             raise
@@ -2748,18 +2749,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
         }
-        try:
-            existing_commands = await tree.fetch_commands()
-        except asyncio.CancelledError:
-            # discord.py can wait inside a route bucket beyond Hermes' outer sync
-            # deadline. Capture bounded, non-secret bucket state at cancellation so
-            # a live timeout identifies the blocked semaphore instead of hiding it.
-            logger.warning(
-                "[%s] Discord command fetch cancelled; HTTP rate-limit state: %s",
-                self.name,
-                self._discord_http_ratelimit_snapshot(),
-            )
-            raise
+        self._discord_command_sync_stage = "fetch"
+        existing_commands = await tree.fetch_commands()
         existing_by_key = {
             (
                 int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
@@ -2770,10 +2761,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         http = self._client.http
         mutation_count = 0
 
-        async def mutate(call, *args):
+        async def mutate(stage, call, *args):
             nonlocal mutation_count
             if mutation_count:
+                self._discord_command_sync_stage = f"pacing-before-{stage}"
                 await self._sleep_between_command_sync_mutations()
+            self._discord_command_sync_stage = stage
             result = await call(*args)
             mutation_count += 1
             return result
@@ -2782,12 +2775,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
+            await mutate(f"delete:{current.name}", http.delete_global_command, app_id, current.id)
             summary["deleted"] += 1
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
-                await mutate(http.upsert_global_command, app_id, desired)
+                await mutate(f"create:{desired['name']}", http.upsert_global_command, app_id, desired)
                 summary["created"] += 1
                 continue
             current_existing_payload = self._existing_command_to_payload(current)
@@ -2797,61 +2790,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
-                await mutate(http.upsert_global_command, app_id, desired)
+                await mutate(f"recreate-delete:{current.name}", http.delete_global_command, app_id, current.id)
+                await mutate(f"recreate-create:{desired['name']}", http.upsert_global_command, app_id, desired)
                 summary["recreated"] += 1
                 continue
-            await mutate(http.edit_global_command, app_id, current.id, desired)
+            await mutate(f"edit:{desired['name']}", http.edit_global_command, app_id, current.id, desired)
             summary["updated"] += 1
+        self._discord_command_sync_stage = "complete"
         summary["total"] = len(desired_payloads)
         return summary
-
-    def _discord_http_ratelimit_snapshot(self) -> str:
-        """Return bounded discord.py bucket diagnostics without tokens or payloads."""
-        try:
-            http = getattr(self._client, "http", None) if self._client else None
-            if http is None:
-                return "http=unavailable"
-            global_gate = getattr(http, "_global_over", None)
-            global_open = global_gate.is_set() if hasattr(global_gate, "is_set") else None
-            now = asyncio.get_running_loop().time()
-            route_hashes = getattr(http, "_bucket_hashes", {}) or {}
-            buckets = getattr(http, "_buckets", {}) or {}
-            command_route_keys = {
-                route_key
-                for route_key in route_hashes
-                if str(route_key).startswith("GET ")
-                and "/applications/{application_id}/commands" in str(route_key)
-            }
-            command_bucket_prefixes = command_route_keys | {
-                str(route_hashes[route_key]) for route_key in command_route_keys
-            }
-            bucket_rows = []
-            for index, (bucket_key, bucket) in enumerate(list(buckets.items())[:20], start=1):
-                expires = getattr(bucket, "expires", None)
-                expires_in = None if expires is None else max(0.0, float(expires) - now)
-                sleeping = getattr(bucket, "_sleeping", None)
-                is_command_bucket = any(
-                    str(bucket_key).startswith(f"{prefix}:") for prefix in command_bucket_prefixes
-                )
-                bucket_rows.append(
-                    f"bucket#{index}:command_fetch={is_command_bucket} "
-                    f"limit={getattr(bucket, 'limit', None)} "
-                    f"remaining={getattr(bucket, 'remaining', None)} "
-                    f"outgoing={getattr(bucket, 'outgoing', None)} "
-                    f"reset_after={getattr(bucket, 'reset_after', None)} "
-                    f"expires_in={None if expires_in is None else round(expires_in, 3)} "
-                    f"pending={len(getattr(bucket, '_pending_requests', ()))} "
-                    f"sleeping={sleeping.locked() if hasattr(sleeping, 'locked') else None} "
-                    f"bucket_timeout={getattr(bucket, '_max_ratelimit_timeout', None)}"
-                )
-            return (
-                f"global_open={global_open} client_timeout={getattr(http, 'max_ratelimit_timeout', None)} "
-                f"route_hashes={len(route_hashes)} buckets=[{' | '.join(bucket_rows)}]"
-            )
-        except Exception as exc:
-            # Diagnostics must never replace the original cancellation path.
-            return f"snapshot=unavailable error={type(exc).__name__}"
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""

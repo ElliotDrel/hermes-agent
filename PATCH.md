@@ -102,32 +102,22 @@ history when upstream makes the behavior unnecessary.
 - **Incident:** A clean gateway restart on 2026-09-20 timed out after exactly
   30 seconds while `/skill` already matched Discord's global manifest. A direct
   request to the same Discord application-command endpoint returned `201` and
-  immediate readback succeeded. The first awaited synchronization operation is
-  `tree.fetch_commands()`, before any mutation. The leading hypothesis is stale
-  discord.py route-bucket state: Hermes changes `HTTPClient.max_ratelimit_timeout`
-  at sync time, while discord.py copies that setting into each `Ratelimit` when
-  the bucket is created.
-- **Diagnostics:** Cancellation of `tree.fetch_commands()` now logs a bounded,
-  non-secret snapshot of discord.py's global gate and up to 20 route buckets,
-  including capacity, pending requests, reset timing, sleeper state, and each
-  bucket's copied timeout. It does not log tokens, bucket keys, major parameters,
-  or command payloads. Each anonymous bucket carries only a `command_fetch`
-  correlation flag derived from the non-secret route template and bucket hash.
-  Malformed dependency internals degrade to an error-class marker and can never
-  replace the original cancellation. Expected confirmation is a correlated
-  command bucket with no remaining capacity or pending waiters and a copied
-  timeout inconsistent with the client timeout. A healthy/open correlated
-  bucket, or no correlated command bucket, falsifies the leading hypothesis.
+  immediate readback succeeded. The 2026-09-21 restart loaded fetch-cancellation
+  instrumentation, timed out again, and emitted no fetch diagnostic. That live
+  result disproved the stale fetch-bucket hypothesis and localized the stall to
+  post-fetch comparison, mutation pacing, or a command mutation.
+- **Diagnostics:** The disproven discord.py private-bucket inspection and its two
+  tests were removed. Reconciliation now keeps one bounded stage string across
+  fetch, pacing, delete, create, recreate, edit, and completion. The existing
+  timeout warning reports that stage and command name without inspecting private
+  dependency state or changing cancellation behavior.
 - **Verification:** Focused tests cover YAML propagation, initial sync, missing
   application IDs, converged reconnect suppression, resumable incomplete
-  reconciliation, the short outer timeout, the fresh-process boundary, and
-  cancellation diagnostics. The diagnostic regression was observed RED with
-  `AssertionError: assert 'Discord command fetch cancelled' in ''`, then GREEN.
-  The full Discord command-sync gate reports `38 passed`; edited modules pass
-  Python compilation and `git diff --check`. The 2026-09-20 22:11 manual restart
-  timed out without emitting the new cancellation diagnostic, so the active
-  module path or cancellation boundary still needs confirmation. Runnable check:
-  `uv run --with pytest --with pytest-asyncio pytest tests/gateway/test_discord_connect.py -k "safe_sync or stalled_sync" --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/discord-sync-diagnostic`.
+  reconciliation, the short outer timeout, the fresh-process boundary, and the
+  active mutation stage. The full Discord command-sync gate reports `37 passed`;
+  edited modules pass Python compilation and `git diff --check`. Live stage
+  evidence remains pending one manual gateway restart. Runnable check:
+  `uv run --with pytest --with pytest-asyncio pytest tests/gateway/test_discord_connect.py tests/gateway/test_discord_sync_limit.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/discord-sync-stage`.
 - **Upstream disposition:** Candidate for upstreaming as a supported sync
   policy. Keep active while Discord command limits remain operationally tight.
 
