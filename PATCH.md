@@ -294,6 +294,36 @@ history when upstream makes the behavior unnecessary.
   conversation contract. Keep active while the update audit requires agent
   follow-up after gateway restart.
 
+### HERMES-FORK-017: Discord single-message progress compositor
+
+- **Intent:** Acknowledge every Discord turn immediately while keeping live
+  progress observable without leaving temporary chatter in successful threads.
+- **Behavior:** Opt-in `display.platforms.discord.progress_compositor:
+  single_message` sends one temporary reply before agent execution and composes
+  enabled tool, thinking, interim-assistant, heartbeat, and routine safe-status
+  sources by editing that original message ID. Rendering keeps a rolling bounded
+  window below Discord's 2,000-character limit. Retryable edit failures coalesce
+  the newest desired state and retry the same ID; permanent failures freeze the
+  breadcrumb and never create a replacement. Final answers retain the normal
+  delivery path. Confirmed successful delivery deletes the owned temporary ID
+  once, while failed, cancelled, interrupted, incomplete, or failed-delivery
+  turns preserve it. Action-required and error notices remain standalone. The
+  mode is clamped to Discord so global configuration cannot replace another
+  platform's progress implementation.
+- **Touchpoints:** `gateway/progress_compositor.py`, display resolution, turn
+  context/runner lifecycle, base post-delivery callbacks, the Discord adapter,
+  and focused compositor, lifecycle, progress, cleanup, interruption, overflow,
+  and non-Discord isolation tests.
+- **Verification:** The final focused callback/progress gate reports `108 passed,
+  2 deselected`; the broader adjacent gate reports `156 passed, 2 deselected`.
+  The two deselected queued-media cases are an unrelated Windows
+  `Path.as_uri()` versus encoded URI expectation mismatch. Edited modules pass
+  Python compilation and `git diff --check`. Production behavior remains
+  pending a manual gateway restart.
+- **Upstream disposition:** Candidate for upstreaming as an opt-in Discord
+  progress lifecycle. Keep active while Elliot relies on immediate acknowledgement
+  and delivery-gated cleanup.
+
 ## Consolidated local operating record
 
 `PATCH.md` is the sole human-facing registry for this maintained fork. It
@@ -400,9 +430,8 @@ only the audited status, exact fork head, patch count, summary, and timestamp.
   restart the gateway from its owning agent process. If fresh evidence shows an
   unpaired shutdown, investigate the detached handoff and restore evidence-based
   monitoring rather than relying on this historical note.
-- **Discord completion cleanup:** Deferred feature. Any future cleanup must
-  retain final responses and user messages, and prove it cannot delete an error
-  or final answer.
+- **Discord completion cleanup:** Implemented by `HERMES-FORK-017`; cleanup owns
+  only the temporary progress ID and is gated on confirmed final delivery.
 - **Discord active-thread archive backfill:** Deferred administration. A future
   implementation must modify only Elliot-owned active threads and read each
   resulting archive duration back.
