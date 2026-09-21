@@ -478,6 +478,79 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
+async def test_safe_sync_logs_discord_bucket_state_when_fetch_is_cancelled(caplog):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {"name": "skill", "description": "Run a skill", "type": 1, "options": []}
+
+    stalled_fetch = asyncio.Event()
+    bucket = SimpleNamespace(
+        limit=5,
+        remaining=0,
+        outgoing=0,
+        reset_after=48.183,
+        expires=asyncio.get_running_loop().time() + 48.183,
+        _pending_requests=[object()],
+        _sleeping=SimpleNamespace(locked=lambda: True),
+        _max_ratelimit_timeout=None,
+    )
+    fake_http = SimpleNamespace(
+        max_ratelimit_timeout=30.0,
+        _global_over=SimpleNamespace(is_set=lambda: True),
+        _bucket_hashes={"GET /applications/{application_id}/commands": "command-bucket"},
+        _buckets={"command-bucket:999": bucket},
+    )
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(
+            get_commands=lambda: [_DesiredCommand()],
+            fetch_commands=stalled_fetch.wait,
+        ),
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    caplog.set_level(logging.WARNING, logger="plugins.platforms.discord.adapter")
+
+    task = asyncio.create_task(adapter._safe_sync_slash_commands())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "Discord command fetch cancelled" in caplog.text
+    assert "command-bucket:999" not in caplog.text
+    assert "bucket#1" in caplog.text
+    assert "command_fetch=True" in caplog.text
+    assert "remaining=0" in caplog.text
+    assert "reset_after=48.183" in caplog.text
+    assert "pending=1" in caplog.text
+    assert "bucket_timeout=None" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_preserves_cancellation_with_malformed_discord_bucket_state(caplog):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    stalled_fetch = asyncio.Event()
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [], fetch_commands=stalled_fetch.wait),
+        http=SimpleNamespace(_buckets=object(), _bucket_hashes=None),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    caplog.set_level(logging.WARNING, logger="plugins.platforms.discord.adapter")
+
+    task = asyncio.create_task(adapter._safe_sync_slash_commands())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "snapshot=unavailable error=AttributeError" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)

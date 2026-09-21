@@ -2748,7 +2748,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
         }
-        existing_commands = await tree.fetch_commands()
+        try:
+            existing_commands = await tree.fetch_commands()
+        except asyncio.CancelledError:
+            # discord.py can wait inside a route bucket beyond Hermes' outer sync
+            # deadline. Capture bounded, non-secret bucket state at cancellation so
+            # a live timeout identifies the blocked semaphore instead of hiding it.
+            logger.warning(
+                "[%s] Discord command fetch cancelled; HTTP rate-limit state: %s",
+                self.name,
+                self._discord_http_ratelimit_snapshot(),
+            )
+            raise
         existing_by_key = {
             (
                 int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
@@ -2794,6 +2805,53 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             summary["updated"] += 1
         summary["total"] = len(desired_payloads)
         return summary
+
+    def _discord_http_ratelimit_snapshot(self) -> str:
+        """Return bounded discord.py bucket diagnostics without tokens or payloads."""
+        try:
+            http = getattr(self._client, "http", None) if self._client else None
+            if http is None:
+                return "http=unavailable"
+            global_gate = getattr(http, "_global_over", None)
+            global_open = global_gate.is_set() if hasattr(global_gate, "is_set") else None
+            now = asyncio.get_running_loop().time()
+            route_hashes = getattr(http, "_bucket_hashes", {}) or {}
+            buckets = getattr(http, "_buckets", {}) or {}
+            command_route_keys = {
+                route_key
+                for route_key in route_hashes
+                if str(route_key).startswith("GET ")
+                and "/applications/{application_id}/commands" in str(route_key)
+            }
+            command_bucket_prefixes = command_route_keys | {
+                str(route_hashes[route_key]) for route_key in command_route_keys
+            }
+            bucket_rows = []
+            for index, (bucket_key, bucket) in enumerate(list(buckets.items())[:20], start=1):
+                expires = getattr(bucket, "expires", None)
+                expires_in = None if expires is None else max(0.0, float(expires) - now)
+                sleeping = getattr(bucket, "_sleeping", None)
+                is_command_bucket = any(
+                    str(bucket_key).startswith(f"{prefix}:") for prefix in command_bucket_prefixes
+                )
+                bucket_rows.append(
+                    f"bucket#{index}:command_fetch={is_command_bucket} "
+                    f"limit={getattr(bucket, 'limit', None)} "
+                    f"remaining={getattr(bucket, 'remaining', None)} "
+                    f"outgoing={getattr(bucket, 'outgoing', None)} "
+                    f"reset_after={getattr(bucket, 'reset_after', None)} "
+                    f"expires_in={None if expires_in is None else round(expires_in, 3)} "
+                    f"pending={len(getattr(bucket, '_pending_requests', ()))} "
+                    f"sleeping={sleeping.locked() if hasattr(sleeping, 'locked') else None} "
+                    f"bucket_timeout={getattr(bucket, '_max_ratelimit_timeout', None)}"
+                )
+            return (
+                f"global_open={global_open} client_timeout={getattr(http, 'max_ratelimit_timeout', None)} "
+                f"route_hashes={len(route_hashes)} buckets=[{' | '.join(bucket_rows)}]"
+            )
+        except Exception as exc:
+            # Diagnostics must never replace the original cancellation path.
+            return f"snapshot=unavailable error={type(exc).__name__}"
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
