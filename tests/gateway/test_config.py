@@ -283,6 +283,22 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.DISCORD].extra["command_sync_policy"] == "startup"
 
+    def test_discord_manual_thread_rename_from_top_level_yaml_reaches_platform_extra(self, tmp_path, monkeypatch):
+        """The public opt-in must reach the adapter that stamps the no-clobber guard."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n  rename_manual_threads: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.delenv("DISCORD_RENAME_MANUAL_THREADS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["rename_manual_threads"] is True
+
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

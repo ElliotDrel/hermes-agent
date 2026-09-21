@@ -1435,6 +1435,9 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
+        # Opt in to semantic title replacement for threads created by a Discord user.
+        # The adapter guards on the name observed at ingest so later human renames win.
+        "rename_manual_threads": False,
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
         # Multi-bot rooms: another bot must type @thisbot (a reply/quote alone won't) to trigger a
         # reply — stops two bots replying to each other forever. Humans unaffected.

@@ -241,21 +241,33 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as a Windows reliability
   fix. Keep active until upstream uses the same verified interpreter contract.
 
-### HERMES-FORK-012: Semantic session titles and manual rename
+### HERMES-FORK-012: Semantic session titles and Discord rename
 
-- **Intent:** Produce concise T3-style conversation titles and let a Discord
-  user deliberately regenerate or replace the active session/thread title.
+- **Intent:** Produce concise T3-style conversation titles, let a Discord user
+  deliberately regenerate or replace the active session/thread title, and
+  optionally apply the generated title to user-created Discord threads.
 - **Behavior:** Title generation follows the customized semantic prompt;
   `/rename [title]` regenerates or sets the title, updates session metadata,
   renames the Discord thread, works during an active run, and surfaces native
-  rename failures instead of silently hiding them.
+  rename failures instead of silently hiding them. With
+  `discord.rename_manual_threads: true`, the first generated LLM title also
+  renames a user-created Discord thread. Hermes captures Discord's exact name
+  at message receipt and applies the generated title only if that name remains
+  unchanged, so a human rename made while generation is in flight wins. The
+  opt-in defaults to `false`; Hermes-created auto-threads keep their existing
+  behavior.
 - **Touchpoints:** Title generation, gateway slash and mid-run dispatch,
-  command metadata, the Discord adapter, and focused title/rename tests.
-- **Verification:** Focused regressions cover generated and explicit titles,
-  active-run dispatch, native command registration, metadata persistence,
-  thread rename, and diagnostic error propagation. The split command architecture
-  and current upstream title-generator API are revalidated whenever this maintained
-  workflow is restored after an upstream update.
+  session-source metadata, Discord configuration defaults and adapter bridging,
+  the Discord adapter, and focused title/rename/configuration tests.
+- **Verification:** The pre-change focused run reported `3 failed, 5 passed`:
+  manual callback registration, manual-lane eligibility, and Discord-name
+  capture were all absent. The completed focused and adjacent regression set
+  reports `110 passed`, covering enabled and disabled manual lanes, environment
+  override parity, exact-name capture, a fresh Discord no-clobber check against
+  stale cache state, existing auto-thread behavior, relay behavior, `/rename`,
+  and YAML-to-adapter propagation. Discord has no atomic compare-and-edit API,
+  so a narrow race remains between the fresh read and edit. No live
+  post-restart observation exists yet.
 - **Upstream disposition:** Candidate for upstreaming as a richer session-title
   workflow. Keep active while the workspace relies on this naming contract.
 

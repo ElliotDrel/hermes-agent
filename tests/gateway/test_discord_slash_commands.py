@@ -504,6 +504,7 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
         edit=AsyncMock(),
     )
     adapter._client.get_channel = lambda _id: thread
+    adapter._client.fetch_channel = AsyncMock(return_value=thread)
 
     result = await adapter.rename_thread(
         "999",
@@ -516,6 +517,26 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
         name="Semantic Session Title",
         reason="Hermes semantic session title",
     )
+
+
+@pytest.mark.asyncio
+async def test_guarded_rename_fetches_fresh_name_before_edit(adapter):
+    """A stale cache entry must not let semantic titling overwrite a human rename."""
+    cached = SimpleNamespace(id=999, name="raw user prompt", edit=AsyncMock())
+    fresh = SimpleNamespace(id=999, name="Human title", edit=AsyncMock())
+    adapter._client.get_channel = lambda _id: cached
+    adapter._client.fetch_channel = AsyncMock(return_value=fresh)
+
+    result = await adapter.rename_thread(
+        "999",
+        "Semantic Session Title",
+        only_if_current_name="raw user prompt",
+    )
+
+    assert result is False
+    adapter._client.fetch_channel.assert_awaited_once_with(999)
+    cached.edit.assert_not_awaited()
+    fresh.edit.assert_not_awaited()
 
 
 # ------------------------------------------------------------------

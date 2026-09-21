@@ -307,7 +307,7 @@ class GatewayTopicThreadsMixin:
         cleaned = _collapse_title(title)
         return cleaned if utf16_len(cleaned) <= 80 else _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
 
-    # ── Discord auto-thread lanes ───────────────────────────────────────────────────────────
+    # ── Discord semantic thread-title lanes ─────────────────────────────────────────────────
 
     def _is_discord_auto_thread_lane(self, source: SessionSource) -> bool:
         """Return True only for Discord threads Hermes just auto-created."""
@@ -316,6 +316,22 @@ class GatewayTopicThreadsMixin:
             and bool(getattr(source, "auto_thread_created", False)) and bool(source.thread_id)
             and bool(getattr(source, "auto_thread_initial_name", None))
         )
+
+    def _is_discord_manual_thread_lane(self, source: SessionSource) -> bool:
+        """Return True for opted-in user-created threads with a no-clobber name snapshot."""
+        if (
+            source.platform != Platform.DISCORD or source.chat_type != "thread"
+            or bool(getattr(source, "auto_thread_created", False)) or not source.thread_id
+            or not getattr(source, "auto_thread_initial_name", None)
+        ):
+            return False
+        adapter = self._adapter_for_source(source)
+        resolver = getattr(adapter, "_manual_thread_rename_enabled", None)
+        if callable(resolver):
+            return bool(resolver())
+        # Compatibility for relay/test adapters that expose only PlatformConfig.
+        extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+        return is_truthy_value(extra.get("rename_manual_threads"))
 
     def _is_relay_discord_channel_lane(self, source: SessionSource) -> bool:
         """Shape-only check: a relay-delivered Discord CHANNEL event whose reply the connector MAY
@@ -377,10 +393,12 @@ class GatewayTopicThreadsMixin:
         self, source: SessionSource, session_id: str, title: str,
         relay_info: Optional[Tuple[str, str]] = None,
     ) -> None:
-        """Best-effort semantic rename of a newly auto-created Discord thread. ``relay_info`` is the
+        """Best-effort semantic rename of an eligible Discord thread. ``relay_info`` is the
         connector's (thread_id, initial_name) feedback, supplied on the title turn where the source
         is the parent-channel event without auto-thread markers (see _relay_auto_thread_info)."""
-        if relay_info is None and not await asyncio.to_thread(self._is_discord_auto_thread_lane, source):
+        if relay_info is None and not await asyncio.to_thread(
+            lambda: self._is_discord_auto_thread_lane(source) or self._is_discord_manual_thread_lane(source)
+        ):
             # Relay title turn with no feedback captured at schedule time: the title comes off the
             # user's opening message, so it beats the delivery that produces the connector's
             # send-result feedback by the whole length of the turn. None here = a true miss.
@@ -406,12 +424,12 @@ class GatewayTopicThreadsMixin:
             if relay else {"only_if_current_name": getattr(source, "auto_thread_initial_name", None)}
         )
         logger.info(
-            "discord auto-thread rename: thread=%s lane=%s new_title=%r",
+            "discord semantic thread rename: thread=%s lane=%s new_title=%r",
             target_thread_id, "relay" if relay else "native", thread_name,
         )
         try:
             renamed = await rename_thread(target_thread_id, thread_name, **rename_kwargs)
-            logger.info("discord auto-thread rename result: thread=%s applied=%s", target_thread_id, bool(renamed))
+            logger.info("discord semantic thread rename result: thread=%s applied=%s", target_thread_id, bool(renamed))
         except TypeError:
             logger.warning(
                 "Discord semantic thread rename raised TypeError (adapter=%s)", type(adapter).__name__, exc_info=True,
@@ -454,11 +472,14 @@ class GatewayTopicThreadsMixin:
             future.add_done_callback(_log_rename_failure)
 
     def _schedule_discord_semantic_thread_rename(self, source: SessionSource, session_id: str, title: str) -> None:
-        """Schedule Discord auto-thread rename from the auto-title background thread."""
+        """Schedule an eligible Discord thread rename from the auto-title background thread."""
         if not title:
             return
         relay_info = None
-        if not self._is_discord_auto_thread_lane(source):
+        if not (
+            self._is_discord_auto_thread_lane(source)
+            or self._is_discord_manual_thread_lane(source)
+        ):
             # Relay title turn: the source is the PARENT channel event (thread didn't exist at
             # ingest). The auto-title races the delivery that fills the send-result cache, so a
             # miss HERE is not a verdict: schedule whenever the SHAPE matches; the async rename

@@ -5192,6 +5192,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             pass
         return thread
 
+    def _manual_thread_rename_enabled(self) -> bool:
+        """Resolve the manual-thread opt-in once for both ingest and title scheduling."""
+        return self._extra_or_env_flag(
+            "rename_manual_threads", "DISCORD_RENAME_MANUAL_THREADS", "false", truthy=True,
+        )
+
+    def _semantic_thread_initial_name(self, channel: Any) -> Optional[str]:
+        """Capture the exact manual-thread name that semantic titling may replace.
+
+        The opt-in fails closed. Reading Discord's own value gives the later rename a no-clobber
+        guard, so a human rename made while title generation is in flight always wins.
+        """
+        if not self._manual_thread_rename_enabled():
+            return None
+        current_name = getattr(channel, "name", None)
+        return str(current_name) if current_name else None
+
     def _discord_auto_thread_archive_duration(self) -> int:
         """Return the validated configured retention for Hermes-created auto threads."""
         try:
@@ -5311,7 +5328,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
 
         try:
-            thread = self._client.get_channel(thread_id_int)
+            # A guarded semantic rename must compare against fresh Discord state. Channel cache
+            # entries can lag a human rename and would defeat the no-clobber contract. Discord has
+            # no atomic compare-and-edit API, so a narrow race remains between this fetch and edit.
+            thread = (
+                await self._client.fetch_channel(thread_id_int)
+                if only_if_current_name is not None
+                else self._client.get_channel(thread_id_int)
+            )
             if thread is None:
                 thread = await self._client.fetch_channel(thread_id_int)
         except Exception:
@@ -6034,7 +6058,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             auto_thread_initial_name=(
                 getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
                 or self._derive_auto_thread_name(message.content or "")
-            ) if auto_threaded_channel is not None else None,
+            ) if auto_threaded_channel is not None else (
+                self._semantic_thread_initial_name(effective_channel) if is_thread else None
+            ),
         )
         media_urls, media_types, pending_text_injection = await self._collect_attachment_media(all_attachments)
         event_text = normalized_content
@@ -7233,7 +7259,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
-    for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
+    for key, env_key in (
+        ("auto_thread", "DISCORD_AUTO_THREAD"),
+        ("rename_manual_threads", "DISCORD_RENAME_MANUAL_THREADS"),
+        ("reactions", "DISCORD_REACTIONS"),
+    ):
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())

@@ -86,7 +86,8 @@ class SessionSource:
     profile: Optional[str] = None
     # Transport-local fail-closed signal: explicit profile route whose target is not served.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
-    # Discord auto-thread metadata: explicit so pre-existing/renamed threads are never renamed.
+    # Discord semantic-rename metadata. ``auto_thread_created`` distinguishes Hermes-created
+    # threads; ``auto_thread_initial_name`` is also the no-clobber guard for opted-in manual threads.
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
     # Discord auto-thread continuity: the thread id a CHANNEL message WILL be delivered into, so
