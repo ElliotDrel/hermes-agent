@@ -4450,6 +4450,10 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
+            # Adapter-level handoffs can race the runner's in-band dequeue. Both paths
+            # honor the same sealed event before any processing hook or agent input.
+            from gateway.discord_composition import begin_composition_turn
+            await begin_composition_turn(event)
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
