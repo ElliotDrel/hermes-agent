@@ -254,3 +254,102 @@ async def test_fetch_failure_uses_original_receipt_not_mutated_cache():
     state.begun = True
     await seal_composition(state, None)
     assert a.text == "receipt"
+
+
+@pytest.mark.asyncio
+async def test_thread_history_backfill_does_not_split_same_sender_window(monkeypatch):
+    import gateway.discord_composition as composition
+    clock = [0.0]
+    monkeypatch.setattr(composition.time, "monotonic", lambda: clock[0])
+    runner = object.__new__(GatewayRunner)
+    overflow = []
+    runner._session_state = lambda key: SimpleNamespace(conversation=SimpleNamespace(queued_events=overflow))
+    runner._peek_session_state = runner._session_state
+    adapter = SimpleNamespace(_pending_messages={}, _client=SimpleNamespace(user=None))
+    a, b = _event("first", 1), _event("second", 2)
+    a.channel_context = "[Recent channel messages]\n[User] earlier"
+    b.channel_context = a.channel_context + "\n[User] first"
+    assert runner._queue_discord_composition("s", a, adapter)
+    clock[0] = 1.0
+    assert runner._queue_discord_composition("s", b, adapter)
+    assert adapter._pending_messages["s"] is a
+    assert overflow == []
+    assert a._discord_composition.messages == [a.raw_message, b.raw_message]
+    a._discord_composition.task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_busy_discord_text_reaches_composer_before_ingress_batch(monkeypatch):
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from gateway.config import PlatformConfig
+    from gateway.session import build_session_key
+    from tests.gateway.test_discord_free_response import FakeTextChannel, make_message
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="placeholder"))
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._busy_text_mode = "queue"
+    adapter._text_batch_delay_seconds = 0.6
+    adapter.handle_message = AsyncMock()
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    channel = FakeTextChannel(channel_id=123)
+    a = make_message(channel=channel, content="first")
+    b = make_message(channel=channel, content="second")
+    b.id = 124
+    from gateway.config import Platform
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="group", user_id="42")
+    adapter._active_sessions[build_session_key(source)] = asyncio.Event()
+    await adapter._handle_message(a)
+    await adapter._handle_message(b)
+    assert adapter.handle_message.await_count == 2
+    assert [call.args[0].message_id for call in adapter.handle_message.await_args_list] == ["123", "124"]
+    assert adapter._pending_text_batches == {}
+    for task in adapter._pending_text_batch_tasks.values():
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_finished_turn_dequeues_unsealed_composition_without_waiting():
+    from gateway.discord_composition import Composition
+    runner = object.__new__(GatewayRunner)
+    runner._peek_session_state = lambda key: None
+    runner._draining = False
+    runner._pending_event_audio_paths = lambda event: []
+    a = _event("follow up", 1)
+    a._discord_composition = Composition(event=a, deadline=30, messages=[a.raw_message])
+    adapter = SimpleNamespace(_pending_messages={"s": a})
+    adapter.get_pending_message = lambda key: adapter._pending_messages.pop(key, None)
+    # The caller delivers the finished task's answer in _run_agent_queued_followup.
+    # Dequeue must not block that delivery while the new message is still editable.
+    pending_event, pending = await asyncio.wait_for(
+        runner._run_agent_drain_pending({"final_response": "current answer"}, adapter, a.source, "s"),
+        timeout=0.2,
+    )
+    assert pending_event is a
+    assert pending == "follow up"
+
+
+@pytest.mark.asyncio
+async def test_current_answer_is_delivered_before_queued_window_closes():
+    from gateway.discord_composition import Composition
+    runner = object.__new__(GatewayRunner)
+    a = _event("queued", 1)
+    state = Composition(event=a, deadline=30, messages=[a.raw_message])
+    a._discord_composition = state
+    delivered = asyncio.Event()
+
+    async def deliver(*args):
+        delivered.set()
+
+    runner._run_agent_deliver_first_response = deliver
+    runner._is_goal_continuation_event = lambda event: True
+    runner._goal_still_active_for_session = lambda session_id: False
+    ctx = SimpleNamespace(source=a.source, session_id="id", session_key="s",
+                          run_generation=1, _interrupt_depth=0, history=[],
+                          _status_thread_metadata=None, result_holder=[{"final_response": "answer"}])
+    job = asyncio.create_task(runner._run_agent_queued_followup(
+        ctx, None, a.text, a, {"final_response": "answer"},
+        {"messages": [], "interrupted": False}, None))
+    await asyncio.wait_for(delivered.wait(), timeout=0.2)
+    assert not job.done()  # The next turn still waits for edits.
+    state.sealed.set()
+    await asyncio.wait_for(job, timeout=0.2)
