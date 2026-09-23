@@ -7,6 +7,19 @@ past that); see the **routing table** at the end and read the area file before e
 
 **Never give up on the right solution.**
 
+## Maintained-fork gates
+
+This checkout carries Elliot's deliberate deviations from upstream. Before any
+write in this repository, load the paired workspace skill `hermes-fork-change`
+with `skill_view` in the current turn. Do not edit if the skill is unavailable.
+
+Before `hermes update`, a maintained-fork rebase, a patch audit, or any action
+on `fork-update-state.json`, load `hermes-fork-update` with `skill_view` in the
+current turn. That update gate owns the source edits required by an audit.
+
+Every deliberate fork behavior requires one source commit and one matching root
+`PATCH.md` entry. A workspace commit never substitutes for the fork commit.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a messaging

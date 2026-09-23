@@ -55,8 +55,12 @@ history when upstream makes the behavior unnecessary.
   rebase pauses on conflicts, Windows restarts the gateway from that clean tree
   while the installed checkout retains its active conflict state. Conflicts
   remain as an active Git rebase and resume through the `hermes update --continue`
-  command; `--abort` restores the recorded backup without deleting it.
-- **Touchpoints:** `hermes_cli/fork_update.py`, `hermes_cli/update_cmd.py`,
+  command; `--abort` restores the recorded backup without deleting it. Before
+  any normal source write, the root `AGENTS.md` requires the current-turn
+  `hermes-fork-change` skill gate. Before update, rebase, or audit work, it
+  requires the current-turn `hermes-fork-update` skill gate. The update gate
+  owns audit-required source edits.
+- **Touchpoints:** `AGENTS.md`, `hermes_cli/fork_update.py`, `hermes_cli/update_cmd.py`,
   `hermes_cli/subcommands/update.py`, `hermes_cli/config_defaults.py`,
   `gateway/control_socket.py`, `gateway/run.py`, `gateway/run_shutdown.py`,
   `gateway/run_notifications.py`, and the focused updater, control-socket, and gateway-notification tests.
