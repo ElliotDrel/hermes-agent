@@ -33,6 +33,61 @@ logger = logging.getLogger("gateway.run")
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    def _queue_discord_composition(self, session_key: str, event: MessageEvent, adapter: Any) -> bool:
+        """Reserve FIFO order immediately, but keep a fixed edit/typing window."""
+        from gateway.discord_composition import Composition, WINDOW_SECONDS
+        if (event.source.platform != Platform.DISCORD or event.internal
+                or event.message_type != MessageType.TEXT or event.get_command()
+                or getattr(event, "media_urls", None) or getattr(event, "metadata", None)):
+            return False
+        raw = getattr(event, "raw_message", None)
+        if raw is None or not getattr(raw, "id", None):
+            return False
+        states = self.__dict__.setdefault("_discord_compositions", {})
+        now = time.monotonic()
+        state = states.get(session_key)
+        if (state is not None and now < state.deadline and not state.sealed.is_set()
+                and state.event.source.user_id == event.source.user_id
+                and state.event.source.thread_id == event.source.thread_id
+                and all(getattr(state.event, name, None) == getattr(event, name, None)
+                        for name in ("reply_to_message_id", "reply_to_text", "channel_context",
+                                     "channel_prompt", "auto_skill"))
+                and state.event.source.role_authorized == event.source.role_authorized):
+            state.messages.append(raw)
+            state.received.append(event.text)
+            event._gateway_accepted = True
+            return True
+        # A new window must occupy a new FIFO item, even if the old timer has not run yet.
+        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+            # Consume at capacity: falling through to base would merge into the occupied slot.
+            logger.warning("Dropping Discord composition for full FIFO session %s", session_key)
+            return True
+        state = Composition(event=event, deadline=now + WINDOW_SECONDS, messages=[raw], received=[event.text])
+        event._discord_composition = state
+        event._discord_composition_bot = getattr(getattr(adapter, "_client", None), "user", None)
+        states[session_key] = state
+        self._enqueue_fifo(session_key, event, adapter)
+        state.task = asyncio.create_task(self._seal_discord_composition(session_key, event, adapter))
+        return True
+
+    async def _seal_discord_composition(self, session_key: str, event: MessageEvent, adapter: Any) -> None:
+        from gateway.discord_composition import seal_composition
+        state = event._discord_composition
+        try:
+            # The first arrival fixes the deadline; later messages never restart the timer.
+            await asyncio.sleep(max(0.0, state.deadline - time.monotonic()))
+            await seal_composition(
+                state, adapter,
+                is_waiting=lambda: (
+                    getattr(adapter, "_pending_messages", {}).get(session_key) is event
+                    or any(item is event for item in (self._overflow_queue(session_key) or ()))
+                ),
+            )
+        finally:
+            states = getattr(self, "_discord_compositions", {})
+            if states.get(session_key) is state:
+                states.pop(session_key, None)
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
@@ -300,7 +355,7 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
-        if same_security_context and (
+        if same_security_context and not getattr(existing, "_discord_composition", None) and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
             or bool(getattr(existing, "media_urls", None))
@@ -693,6 +748,10 @@ class GatewayBusySessionMixin:
         # queue them through the FIFO (security metadata kept apart).
         if getattr(event, "internal", False):
             self._queue_or_replace_pending_event(session_key, event)
+            return True
+        # Reserve a Discord composition slot before legacy busy-text debounce can merge it.
+        if (effective_mode == "queue" and event.message_type == MessageType.TEXT
+                and self._queue_discord_composition(session_key, event, adapter)):
             return True
         if (
             event.message_type == MessageType.TEXT

@@ -360,6 +360,40 @@ history when upstream makes the behavior unnecessary.
   progress lifecycle. Keep active while Elliot relies on immediate acknowledgement
   and delivery-gated cleanup.
 
+### HERMES-FORK-018: Discord queue-mode composition window
+
+- **Intent:** Give one sender a fixed 30-second composition window for ordinary
+  Discord text while a session is busy, without changing explicit `/queue` or
+  other transports.
+- **Behavior:** The first queued Discord text reserves its FIFO position and
+  opens a non-sliding 30-second window. Later text from the same sender and
+  thread with matching reply/context/security fields joins that turn before
+  the deadline. Other senders, context changes, and post-deadline arrivals
+  keep distinct FIFO turns. An early-ending active run waits for the full
+  window before starting the composed turn. At seal, each Discord message is
+  fetched once to include edits, then text is frozen; an edit cannot promote
+  ordinary text into a control command. A waiting sealed item reacts ⏳ only
+  on its final Discord message; the marker is removed once when its turn
+  begins. Buffered turns suppress 👀/✅/❌. Reaction failures do not determine
+  queue boundaries. Media, explicit commands, and non-Discord paths retain
+  their existing routing.
+- **Touchpoints:** `gateway/discord_composition.py`, `gateway/run_busy.py`,
+  `gateway/run_turn.py`, `gateway/platforms/base.py`,
+  `plugins/platforms/discord/adapter.py`, and
+  `tests/gateway/test_discord_composition_buffer.py`.
+- **Verification:** RED first reported `2 failed` with missing composition
+  module; focused REDs subsequently caught duplicate marker removal, media
+  merging, mention normalization, command edits, and reply-context merging.
+  GREEN focused/adjacent run reports `64 passed` with
+  `DISCORD_REACTIONS=true`, including busy-handler integration and queued
+  delivery hooks. Edited modules pass `python -m py_compile`; the final
+  verification command uses `uv run --with pytest --with pytest-asyncio pytest`
+  with the named gateway suites and an external unique `--basetemp`.
+  No live post-restart observation exists; the running gateway has not been
+  restarted.
+- **Upstream disposition:** Candidate for upstreaming as Discord-specific
+  queue composition. Keep active while Elliot uses this conversation contract.
+
 ## Consolidated local operating record
 
 `PATCH.md` is the sole human-facing registry for this maintained fork. It

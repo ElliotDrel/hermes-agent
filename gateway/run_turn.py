@@ -3430,6 +3430,10 @@ class GatewayTurnMixin:
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            # Wait before reading text, including a promoted overflow head. The seal freezes edits.
+            if pending_event is not None:
+                from gateway.discord_composition import begin_composition_turn
+                await begin_composition_turn(pending_event)
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):

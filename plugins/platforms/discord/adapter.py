@@ -2828,14 +2828,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
         acked = False
-        if self._reactions_enabled() and hasattr(message, "add_reaction"):
+        if self._reactions_enabled() and hasattr(message, "add_reaction") and not getattr(event, "_discord_composition", None):
             acked = await self._add_reaction(message, "👀")
         await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for final reaction and durable state."""
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
+        # Buffered composition has one waiting marker only; ordinary completion emoji
+        # would mark a multi-message turn as multiple independent acknowledgements.
+        if getattr(event, "_discord_composition", None) or not self._reactions_enabled():
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
