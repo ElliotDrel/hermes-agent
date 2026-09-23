@@ -461,6 +461,18 @@ class TestCodexOAuthContextLength:
             for key in mm._codex_oauth_context_cache
         )
 
+    @pytest.mark.parametrize("slug", ["gpt-6-sol", "gpt-6-luna"])
+    def test_new_codex_tiers_fail_closed_when_catalog_is_unavailable(self, slug):
+        """Do not leak the direct API's 1.05M window onto the Codex route."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.requests.get", side_effect=OSError("offline")), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            assert get_model_context_length(
+                slug, base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token", provider="openai-codex",
+            ) == 272_000
+
     def test_probe_failure_falls_back_to_hardcoded(self):
         """If the probe fails (non-200 / network error), we still return
         the hardcoded 272k rather than leaking through to models.dev 1.05M."""

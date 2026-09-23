@@ -271,10 +271,8 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.3-codex"
 
 
-def test_catalog_requests_use_ungated_client_version(monkeypatch):
-    """Both catalog request sites send the backend's ungated ``0.0.0`` sentinel: the endpoint
-    hides models whose ``minimal_client_version`` is newer than ``client_version``, so a
-    made-up version silently drops future models."""
+def test_catalog_requests_ask_as_newest_client_for_sol_and_luna(monkeypatch):
+    """Both request sites use the account catalog, not the frozen 0.0.0 list."""
     import sys
     from urllib.parse import parse_qs, urlparse
 
@@ -283,33 +281,54 @@ def test_catalog_requests_use_ungated_client_version(monkeypatch):
 
     seen_urls = []
 
-    class _FakeResp:
+    class Response:
         status_code = 200
 
+        def __init__(self, url):
+            self.version = parse_qs(urlparse(url).query)["client_version"][0]
+
         def json(self):
-            return {"models": []}
+            models = [{"slug": "gpt-5.6-sol", "visibility": "list", "context_window": 272000}]
+            if self.version != "0.0.0":
+                models += [
+                    {"slug": slug, "visibility": "list", "context_window": 272000}
+                    for slug in ("gpt-6-sol", "gpt-6-luna")
+                ]
+            return {"models": models}
 
-    class _FakeHttpx:
-        @staticmethod
-        def get(url, headers=None, timeout=None):
-            seen_urls.append(url)
-            return _FakeResp()
+    def get(url, **kwargs):
+        seen_urls.append(url)
+        return Response(url)
 
-    class _FakeRequests:
-        @staticmethod
-        def get(url, headers=None, timeout=None, verify=None):
-            seen_urls.append(url)
-            return _FakeResp()
-
-    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
-    codex_models._fetch_models_from_api(access_token="tok")
-    monkeypatch.setattr(model_metadata, "requests", _FakeRequests)
+    monkeypatch.setitem(sys.modules, "httpx", type("FakeHttpx", (), {"get": staticmethod(get)}))
+    for slug in ("gpt-6-sol", "gpt-6-luna"):
+        assert slug in codex_models._fetch_models_from_api("tok")
+    monkeypatch.setattr(model_metadata, "requests", type("FakeRequests", (), {"get": staticmethod(get)}))
     monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
-    model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
+    live, fresh = model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
+    assert fresh and live["gpt-6-sol"] == live["gpt-6-luna"] == 272000
+    assert len(seen_urls) == 3
+    assert all(parse_qs(urlparse(url).query)["client_version"] != ["0.0.0"] for url in seen_urls)
 
-    assert len(seen_urls) == 2
-    for url in seen_urls:
-        parsed = urlparse(url)
-        assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
-        assert parse_qs(parsed.query)["client_version"] == ["0.0.0"]
+
+def test_catalog_retries_legacy_sentinel_after_newest_rejected():
+    from agent.model_metadata import fetch_codex_catalog_entries
+
+    class Response:
+        def __init__(self, status, models):
+            self.status_code, self.models = status, models
+
+        def json(self):
+            return {"models": self.models}
+
+    seen = []
+
+    def get(url):
+        seen.append(url)
+        return Response(200, [{"slug": "gpt-5.5"}]) if url.endswith("0.0.0") else Response(400, [])
+
+    entries, status = fetch_codex_catalog_entries(get)
+    assert status == 200 and entries == [{"slug": "gpt-5.5"}]
+    assert len(seen) == 2
+    assert fetch_codex_catalog_entries(lambda url: Response(200, [])) == ([], 200)
