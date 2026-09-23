@@ -366,9 +366,11 @@ history when upstream makes the behavior unnecessary.
   Discord text while a session is busy, without changing explicit `/queue` or
   other transports.
 - **Behavior:** The first queued Discord text reserves its FIFO position and
-  opens a non-sliding 30-second window. Later text from the same sender and
-  thread with matching reply/context/security fields joins that turn before
-  the deadline. Other senders, context changes, and post-deadline arrivals
+  opens a non-sliding 30-second window. Busy queue-mode text bypasses Discord's
+  older short ingress batch so each physical message retains its ID. Later
+  text from the same sender and thread with matching reply/security fields
+  joins that turn before the deadline; evolving history backfill is not a
+  grouping boundary. Other senders, context changes, and post-deadline arrivals
   keep distinct FIFO turns. An early-ending active run waits for the full
   window before starting the composed turn. At seal, each Discord message is
   fetched once to include edits, then text is frozen; an edit cannot promote
@@ -384,11 +386,17 @@ history when upstream makes the behavior unnecessary.
 - **Verification:** RED first reported `2 failed` with missing composition
   module; focused REDs subsequently caught duplicate marker removal, media
   merging, mention normalization, command edits, and reply-context merging.
-  GREEN focused/adjacent run reports `64 passed` with
-  `DISCORD_REACTIONS=true`, including busy-handler integration and queued
-  delivery hooks. Edited modules pass `python -m py_compile`; the final
-  verification command uses `uv run --with pytest --with pytest-asyncio pytest`
-  with the named gateway suites and an external unique `--basetemp`.
+  Independent review caught the Discord ingress batch joining physical messages
+  before composition and evolving thread history splitting the window; both
+  regressions reproduced RED (`2 failed`) then passed with adjacent text-batch
+  coverage (`45 passed`). A further RED showed the pre-delivery dequeue blocking
+  the current answer until the window closed; the seal wait now occurs after
+  delivering that answer, with a focused ordering regression.
+  Final reviewed focused/adjacent run reports `140 passed` with
+  `DISCORD_REACTIONS=true`, including busy-handler integration, Discord ingress
+  batching, and queued delivery hooks. Edited modules pass `python -m py_compile`;
+  verification uses `uv run --with pytest --with pytest-asyncio pytest` with
+  named gateway suites and an external unique `--basetemp`.
   No live post-restart observation exists; the running gateway has not been
   restarted.
 - **Upstream disposition:** Candidate for upstreaming as Discord-specific

@@ -6121,7 +6121,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if thread_id:
             self._threads.mark(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
+        # Busy queue composition needs the identity of every physical Discord
+        # message. The older short text batch destroys those IDs and its sliding
+        # timer can join messages across the fixed 30-second boundary.
+        busy_queue_text = (
+            msg_type == MessageType.TEXT
+            and self._busy_text_mode == "queue"
+            and self._event_session_key(event) in self._active_sessions
+        )
+        if (not recovered and msg_type == MessageType.TEXT
+                and self._text_batch_delay_seconds > 0 and not busy_queue_text):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)

@@ -49,8 +49,10 @@ class GatewayBusySessionMixin:
         if (state is not None and now < state.deadline and not state.sealed.is_set()
                 and state.event.source.user_id == event.source.user_id
                 and state.event.source.thread_id == event.source.thread_id
+                # Discord's history backfill grows after every new message. It is
+                # derived context, not a change of reply target or security scope.
                 and all(getattr(state.event, name, None) == getattr(event, name, None)
-                        for name in ("reply_to_message_id", "reply_to_text", "channel_context",
+                        for name in ("reply_to_message_id", "reply_to_text",
                                      "channel_prompt", "auto_skill"))
                 and state.event.source.role_authorized == event.source.role_authorized):
             state.messages.append(raw)
