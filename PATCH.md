@@ -423,6 +423,42 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as Discord-specific
   queue composition. Keep active while Elliot uses this conversation contract.
 
+### HERMES-FORK-019: Codex GPT-6 catalog context fidelity
+
+- **Intent:** Budget GPT-6 Sol and Luna against their account-advertised Codex
+  `context_window`, not the direct OpenAI API allocation or an obsolete catalog.
+- **Behavior:** The picker and context probe first query the account-scoped Codex
+  catalog as a newest-compatible client (`99.0.0`). Only a rejected or empty
+  response retries the legacy `0.0.0` catalog. The live slug's `context_window`
+  controls Hermes budgeting; when the catalog is unavailable, Sol and Luna use
+  their observed conservative 272,000-token Codex default, not API metadata.
+  The workspace config separately scopes 85% compression to these two Codex
+  routes (`231,200` tokens at a `272,000` window); it does not change other
+  models or opt into the `-900k` variant.
+- **Touchpoints:** `agent/model_metadata.py`, `hermes_cli/codex_models.py`,
+  `tests/hermes_cli/test_codex_models.py`, and `tests/agent/test_model_metadata.py`.
+- **Incident and hypothesis:** The `0.0.0` catalog returned a nonempty legacy
+  list missing Sol and Luna, so a successful request prevented any cache
+  fallback. Neither model had a Codex-specific static fallback in this fork.
+  A newer compatible version exposes their account entries; a Codex fallback
+  prevents an unavailable probe from using a generic context guess.
+- **Verification:** Focused RED reported `4 failed` (Sol hidden from picker,
+  missing shared helper, and two missing fallback entries). With the fix,
+  `uv run --with pytest pytest tests/hermes_cli/test_codex_models.py
+  tests/agent/test_model_metadata.py -q --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/codex-context-green-0923`
+  reported `140 passed`; the adjacent Codex-header and per-model compressor
+  suites reported `15 passed`. A fresh-process compressor probe using the actual
+  workspace config resolved both Sol and Luna to `231200` at `272000`, while
+  Terra remained at `204000`. Live gateway behavior awaits a manual restart.
+  Falsifying evidence would be an account catalog that returns a different
+  `context_window` ignored by the resolver, or a newly created Sol session
+  continuing to budget against the API window.
+- **Upstream disposition:** Upstream PR #119436 merged the catalog fix after
+  stable `v2026.9.21`; PR #119410 added the Codex GPT-6 fallback separately.
+  Retire this source deviation at the next stable audit only after verifying
+  both contracts in that release. Elliot's 85% workspace preference remains
+  independent of upstream source retirement.
+
 ## Consolidated local operating record
 
 `PATCH.md` is the sole human-facing registry for this maintained fork. It
