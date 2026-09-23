@@ -250,28 +250,45 @@ history when upstream makes the behavior unnecessary.
 - **Intent:** Produce concise T3-style conversation titles, let a Discord user
   deliberately regenerate or replace the active session/thread title, and
   optionally apply the generated title to user-created Discord threads.
-- **Behavior:** Title generation follows the customized semantic prompt;
-  `/rename [title]` regenerates or sets the title, updates session metadata,
-  renames the Discord thread, works during an active run, and surfaces native
-  rename failures instead of silently hiding them. With
+- **Behavior:** Opening-turn title generation uses the original T3-inspired
+  semantic prompt: Title Case, concise wording, umbrella subject/outcome, and
+  no process-only titles. It still uses the opening message and an instant
+  derived preview, then upgrades from the configured auxiliary model; it does
+  not call `/rename`. `/rename [title]` separately regenerates from bounded
+  conversation history and the previous title, or sets an explicit title. It
+  updates session metadata and the Discord thread, works during an active run,
+  and surfaces native rename failures instead of silently hiding them. With
   `discord.rename_manual_threads: true`, the first generated LLM title also
   renames a user-created Discord thread. Hermes captures Discord's exact name
   at message receipt and applies the generated title only if that name remains
   unchanged, so a human rename made while generation is in flight wins. The
   opt-in defaults to `false`; Hermes-created auto-threads keep their existing
   behavior.
-- **Touchpoints:** Title generation, gateway slash and mid-run dispatch,
-  session-source metadata, Discord configuration defaults and adapter bridging,
-  the Discord adapter, and focused title/rename/configuration tests.
-- **Verification:** The pre-change focused run reported `3 failed, 5 passed`:
-  manual callback registration, manual-lane eligibility, and Discord-name
-  capture were all absent. The completed focused and adjacent regression set
-  reports `110 passed`, covering enabled and disabled manual lanes, environment
-  override parity, exact-name capture, a fresh Discord no-clobber check against
-  stale cache state, existing auto-thread behavior, relay behavior, `/rename`,
-  and YAML-to-adapter propagation. Discord has no atomic compare-and-edit API,
-  so a narrow race remains between the fresh read and edit. No live
-  post-restart observation exists yet.
+- **Incident:** After the upstream split, the initial generator used the
+  upstream sentence-case, 3–7-word prompt while bare `/rename` retained the
+  custom Title Case regeneration prompt. The installed fork's initial prompt
+  no longer matched the original `106d48a5e4` source or this entry's intent.
+  A new opening-turn regression failed on the missing semantic prompt before
+  restoration, then passed afterward. The upstream example-echo defense stays
+  intact with Title Case examples. The slash-command documentation parity
+  check also exposed an older omission of `/rename`; the messaging reference
+  now describes both its generated and explicit modes.
+- **Touchpoints:** `agent/title_generator.py`,
+  `tests/agent/test_title_generator.py`, `website/docs/reference/slash-commands.md`,
+  gateway slash and mid-run dispatch, session-source metadata, Discord
+  configuration defaults and adapter bridging, the Discord adapter, and focused
+  title/rename/configuration tests.
+- **Verification:** The original manual-thread lane change was verified by
+  `110 passed`, including its YAML bridge and no-clobber checks. For this prompt
+  restoration, the new regression failed on `recognize this chat weeks later`
+  under the old initial prompt, then passed. The focused title, rename,
+  Discord command, and website parity selection reports `82 passed, 1
+  deselected`; edited Python modules compile and `git diff --check` passes.
+  The deselected manual-thread test fails on the untouched baseline because
+  this installation's `DISCORD_RENAME_MANUAL_THREADS` override supersedes both
+  explicit true and false test adapter values. No paid title call or live
+  post-restart observation was made. Runnable check:
+  `uv run --with pytest --with pytest-asyncio --with discord.py pytest -q tests/agent/test_title_generator.py tests/gateway/test_rename_command.py tests/gateway/test_session_title_rename_lane.py tests/gateway/test_discord_slash_commands.py tests/gateway/test_slash_command_profile_scope.py tests/website/test_slash_commands_doc_parity.py -k 'not test_manual_thread_initial_name_uses_current_discord_name_only_when_enabled' --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/initial-title-final-0923`.
 - **Upstream disposition:** Candidate for upstreaming as a richer session-title
   workflow. Keep active while the workspace relies on this naming contract.
 

@@ -16,8 +16,27 @@ from hermes_state import SessionDB
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
 
-
-
+    def test_initial_title_uses_semantic_prompt_not_rename_prompt(self):
+        """The first title retains the T3-inspired policy without needing history."""
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = '{"title":"Add Discord Thread Titles"}'
+        with patch("agent.title_generator.call_llm", return_value=response) as call_llm:
+            assert generate_title("Add useful titles to Discord threads") == "Add Discord Thread Titles"
+        request = call_llm.call_args.kwargs["messages"]
+        assert request[1] == {"role": "user", "content": "Add useful titles to Discord threads"}
+        prompt = request[0]["content"]
+        for rule in (
+            "recognize this chat weeks later",
+            "5–10 words, fewer than 45 characters, in Title Case",
+            "'Add' over 'Implement'",
+            "Capture the umbrella goal",
+            "Name the product change, decision, problem, or question",
+            "Do not copy, paraphrase, or truncate the user's message",
+            "Preserve technical terms, product names, filenames",
+        ):
+            assert rule in prompt
+        assert "previous title" not in prompt.lower()
 
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}

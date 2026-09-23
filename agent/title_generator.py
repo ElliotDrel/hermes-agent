@@ -47,38 +47,56 @@ _MAX_TITLE_WORDS = 12
 # rendered from these constants so the guard set and the prompt cannot drift
 # apart. Port of QwenLM/qwen-code#9709.
 _PROMPT_GOOD_EXAMPLES = (
-    "Fix login button on mobile",
-    "Postgres connection pool exhaustion",
-    "Friendly greeting",
+    "Fix Login Button on Mobile",
+    "Postgres Connection Pool Exhaustion",
+    "Friendly Greeting",
 )
-_PROMPT_VAGUE_EXAMPLE = "Code changes"
+_PROMPT_VAGUE_EXAMPLE = "Code Changes"
 
-# "Friendly greeting" is deliberately NOT in the reject set: the prompt
+# "Friendly Greeting" is deliberately NOT in the reject set: the prompt
 # instructs the model to produce it for bare greetings, so it is a legitimate
 # output, not an echo failure. The too-vague example is rejected too — a model
 # repeating the counter-example says nothing about the session, and the
 # derived title the guard falls back to is strictly more informative.
 _EXAMPLE_ECHO_REJECT = frozenset(
-    t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
+    t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly Greeting"
 ) | {_PROMPT_VAGUE_EXAMPLE.lower()}
 
+# HERMES-FORK-012: Restore the opening-turn editorial policy lost during the
+# upstream split. This remains distinct from /rename: no previous title or
+# conversation history exists yet, and the instant derived preview stays intact.
 _TITLE_PROMPT_TEMPLATE = (
-    "You name chat sessions. Given the user's opening message, write a title "
-    "that lets them find this conversation again in a list.\n\n"
-    "Rules:\n"
-    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
-    "- Name what the user wants DONE, not that they asked a question.\n"
-    "- Keep technical terms, filenames, numbers, and error codes exact.\n"
+    "Generate a title that will help the user recognize this chat weeks later.\n"
+    "Return JSON with exactly one key: title.\n\n"
+    "Editorial Rules:\n"
+    "- 5–10 words, fewer than 45 characters, in Title Case.\n"
+    "- Use a compact noun phrase or clear action phrase.\n"
+    "- Prefer shorter, concrete words when equivalent: 'Add' over 'Implement', "
+    "'Fix' over 'Resolve'.\n"
+    "- Capture the umbrella goal when the request lists several symptoms, tasks, or steps.\n"
+    "- Name the product change, decision, problem, or question—not the mock, plan, "
+    "report, branch, PR, or workflow used to produce it.\n"
+    "- Models, subagents, tools, prompts, output formats, tests, CI, commits, "
+    "monitoring, & other process instructions do not belong in the title unless they "
+    "are the topic.\n"
+    "- For reviews, name what is being reviewed & the relevant concern. Avoid generic "
+    "titles such as 'Review PR 123.'\n"
+    "- For research, name the question domain—not the research process.\n"
+    "- Do not claim the work is complete.\n"
+    "- Do not copy, paraphrase, or truncate the user's message.\n"
+    "- Preserve technical terms, product names, filenames, numbers, acronyms, & error "
+    "codes exactly.\n"
+    "- Prefer & or + when they make the title shorter & clearer.\n"
     "- Drop filler words: the, this, my, a, an.\n"
-    "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
-    "- Never answer the message. Name it.\n"
-    "- Always produce something, even for a bare greeting.\n"
+    "- Avoid quotes, labels, trailing punctuation, & a 'Title:' prefix.\n"
+    "- Never answer the message; only name it.\n"
     "__LANGUAGE_RULE__\n"
+    "- Always return a useful title, including for a greeting.\n\n"
+    # Retain upstream's example-echo defense; use Title Case examples so they
+    # reinforce, rather than contradict, the restored editorial policy.
     + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
     + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
-    'Too long: {"title": "Investigate and fix the issue where the login button '
-    'does not respond on mobile devices"}\n\n'
-    'Reply with JSON only: {"title": "..."}'
+    'Reply with JSON only: {"title":"..."}'
 )
 
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
