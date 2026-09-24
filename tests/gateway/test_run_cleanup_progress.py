@@ -327,6 +327,102 @@ async def test_compositor_cleanup_deletes_unique_owned_id_after_confirmed_delive
 
 
 @pytest.mark.asyncio
+async def test_cleanup_callback_waits_for_delete_before_returning():
+    """A gateway drain immediately after final delivery must not outrun deletion."""
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="123", thread_id="123"),
+        session_key="agent:main:discord:thread:123:123", run_generation=7,
+        _cleanup_progress=True, _cleanup_msg_ids=["progress-1"],
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_delete(chat_id, message_id):
+        started.set()
+        await release.wait()
+        adapter.deleted.append({"chat_id": chat_id, "message_id": message_id})
+        return True
+
+    adapter.delete_message = delayed_delete
+    runner._run_agent_schedule_bubble_cleanup({"final_response": "done"}, adapter, ctx)
+    callback = adapter.pop_post_delivery_callback(ctx.session_key, generation=7)
+    task = asyncio.create_task(_fire_post_delivery_cb(callback))
+    await asyncio.wait_for(started.wait(), 1)
+    assert not task.done(), "cleanup callback returned before Discord deletion finished"
+    release.set()
+    await asyncio.wait_for(task, 1)
+    assert adapter.deleted == [{"chat_id": "123", "message_id": "progress-1"}]
+
+
+@pytest.mark.asyncio
+async def test_queued_first_answer_cleans_progress_after_confirmed_delivery():
+    """The early queued-turn return still owns its progress message."""
+    from unittest.mock import AsyncMock
+
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    runner._deliver_queued_first_response = AsyncMock(return_value=True)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="123", thread_id="123"),
+        session_key="agent:main:discord:thread:123:123", run_generation=7,
+        _cleanup_progress=True, _cleanup_msg_ids=["progress-1"],
+    )
+    await runner._run_agent_deliver_first_response(
+        ctx, adapter, {"final_response": "first", "completed": True},
+        {"final_response": "first", "completed": True}, None,
+    )
+    assert adapter.deleted == [{"chat_id": "123", "message_id": "progress-1"}]
+
+
+@pytest.mark.asyncio
+async def test_queued_failed_first_answer_keeps_progress():
+    """A refused queued final must not delete the only visible breadcrumb."""
+    from unittest.mock import AsyncMock
+
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    runner._deliver_queued_first_response = AsyncMock(return_value=False)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="123", thread_id="123"),
+        session_key="agent:main:discord:thread:123:123", run_generation=7,
+        _cleanup_progress=True, _cleanup_msg_ids=["progress-1"],
+    )
+    await runner._run_agent_deliver_first_response(
+        ctx, adapter, {"final_response": "first", "completed": True},
+        {"final_response": "first", "completed": True}, None,
+    )
+    assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retries_a_refused_delete(caplog):
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="123", thread_id="123"),
+        session_key="agent:main:discord:thread:123:123", run_generation=7,
+        _cleanup_progress=True, _cleanup_msg_ids=["progress-1"],
+    )
+    attempts = []
+
+    async def delete(chat_id, message_id):
+        attempts.append(message_id)
+        if len(attempts) == 1:
+            return False
+        adapter.deleted.append({"chat_id": chat_id, "message_id": message_id})
+        return True
+
+    adapter.delete_message = delete
+    runner._run_agent_schedule_bubble_cleanup({"final_response": "done"}, adapter, ctx)
+    callback = adapter.pop_post_delivery_callback(ctx.session_key, generation=7)
+    await _fire_post_delivery_cb(callback)
+    assert attempts == ["progress-1", "progress-1"]
+    assert adapter.deleted == [{"chat_id": "123", "message_id": "progress-1"}]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "response",
     [
@@ -352,6 +448,75 @@ async def test_cleanup_is_not_registered_for_nonfinal_turns(response):
 
     assert adapter.pop_post_delivery_callback(session_key, generation=9) is None
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_has_time_for_every_id_or_logs_unattempted_ids(monkeypatch, caplog):
+    """Several hung deletes cannot silently outlive the post-delivery callback."""
+    import gateway.platforms.base as base
+
+    monkeypatch.setattr(base, "_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS", 1.3)
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="123", thread_id="123"),
+        session_key="agent:main:discord:thread:123:123", run_generation=7,
+        _cleanup_progress=True, _cleanup_msg_ids=["progress-1", "progress-2"],
+    )
+    attempts = []
+
+    async def never_delete(chat_id, message_id):
+        attempts.append(message_id)
+        await asyncio.Event().wait()
+
+    adapter.delete_message = never_delete
+    runner._run_agent_schedule_bubble_cleanup({"final_response": "done"}, adapter, ctx)
+    callback = adapter.pop_post_delivery_callback(ctx.session_key, generation=7)
+    with caplog.at_level("WARNING"):
+        await asyncio.wait_for(_fire_post_delivery_cb(callback), timeout=0.9)
+    assert attempts == ["progress-1"]
+    assert "progress-2" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_refused_stream_reconciliation_does_not_confirm_delivery():
+    """A refused final edit must leave the normal delivery lane eligible."""
+    from unittest.mock import AsyncMock
+
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="503"))
+    runner = _make_runner(adapter)
+    response = {"final_response": "transformed final", "response_transformed": True}
+    stream = SimpleNamespace(adapter=adapter, message_id="preview-1")
+    await runner._run_agent_edit_streamed_message(
+        stream, SessionSource(platform=Platform.DISCORD, chat_id="123"), response,
+        "transformed final", _sk="session-1", ok=("edited %s", "preview-1"),
+        fail_result=None, fail_exc="edit failed for %s: %s",
+    )
+    assert response.get("already_sent") is not True
+
+
+@pytest.mark.asyncio
+async def test_streamed_final_delivery_cleans_progress_without_duplicate_send():
+    """A confirmed stream returns None from the handler, but still completed delivery."""
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+
+    async def handler(event):
+        event._streamed_final_response = "final answer already sent"
+        return None
+
+    adapter.set_message_handler(handler)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="thread")
+    event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=source)
+    session_key = build_session_key(source)
+
+    async def cleanup():
+        await adapter.delete_message("123", "progress-1")
+
+    adapter.register_post_delivery_callback(session_key, cleanup)
+    await adapter._process_message_background(event, session_key)
+    assert adapter.deleted == [{"chat_id": "123", "message_id": "progress-1"}]
+    assert adapter.sent == []
 
 
 @pytest.mark.asyncio
