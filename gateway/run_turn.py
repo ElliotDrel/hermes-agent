@@ -4042,6 +4042,11 @@ class GatewayTurnMixin:
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
         )
+        # Expose only the current turn's Discord queue to busy steering. A displaced
+        # turn must not publish into a successor; TurnState.clear drops the reference.
+        if (session_key and turn_ctx.progress_compositor_mode == "single_message"
+                and (run_generation is None or self._is_session_run_current(session_key, run_generation))):
+            self._session_state(session_key).turn.progress_queue = turn_ctx.progress_queue
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
