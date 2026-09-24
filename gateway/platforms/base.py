@@ -4122,6 +4122,10 @@ class BasePlatformAdapter(ABC):
             await begin_composition_turn(event)
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            # The handler returns None after a confirmed streamed final to avoid a duplicate
+            # send. Its delivery marker is the only proof available to the adapter's callback.
+            if getattr(event, "_streamed_final_response", None):
+                delivery_succeeded = True
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)

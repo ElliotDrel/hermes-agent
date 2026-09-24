@@ -107,6 +107,21 @@ async def _deliver(adapter, *, session_key=SESSION_KEY, stream_consumer=None, me
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_queued_delivery_reports_actual_send_success_for_progress_cleanup():
+    """A queued reply authorizes cleanup only after the adapter confirms its send."""
+    from gateway.run import GatewayRunner
+
+    adapter = _plain_adapter()
+    for success in (False, True):
+        adapter.send.return_value = SendResult(success=success, message_id="p1" if success else None)
+        delivered = await GatewayRunner._deliver_queued_first_response(
+            _runner(), TEXT, source=_source(), adapter=adapter,
+            text_already_delivered=False, deliver_media=False,
+        )
+        assert delivered is success
+
+
+@pytest.mark.asyncio
 async def test_a_delivered_queued_final_is_recorded_and_marked_delivered():
     adapter = _telegram_adapter()
 
@@ -212,7 +227,7 @@ def _chain_runner_and_ctx(followup_return):
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
-        source=topic, message_id="6002", channel_prompt=None, message_type=None)
+        source=topic, message_id="6002", text="hi again", channel_prompt=None, message_type=None)
     return GatewayRunner, runner, turn_ctx, pending_event
 
 
@@ -239,7 +254,7 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
-        source=topic, message_id="6002", channel_prompt=None, message_type=None)
+        source=topic, message_id="6002", text="hi again", channel_prompt=None, message_type=None)
 
     await GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,

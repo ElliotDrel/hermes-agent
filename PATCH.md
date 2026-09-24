@@ -366,17 +366,48 @@ history when upstream makes the behavior unnecessary.
   once, while failed, cancelled, interrupted, incomplete, or failed-delivery
   turns preserve it. Action-required and error notices remain standalone. The
   mode is clamped to Discord so global configuration cannot replace another
-  platform's progress implementation.
+  platform's progress implementation. Confirmed streamed finals, which return
+  `None` to suppress a duplicate send, count as delivered for the one-shot
+  cleanup callback. The queued-first-answer path cleans its own progress after
+  confirmed text delivery rather than returning before registration. Cleanup
+  awaits a bounded deletion before releasing the turn; a refused or timed-out
+  delete gets one bounded retry, subject to the 25-second total cleanup budget,
+  and warns when any ID remains unattempted or unconfirmed. A refused final
+  streamed edit cannot claim delivery. Failed, cancelled, interrupted,
+  incomplete, and failed-delivery turns retain the breadcrumb. The gateway
+  never deletes a different message ID.
+- **Incident and hypothesis:** A progress message remained in Discord after a
+  final answer; the live log shows the answer send at 16:24:46.804 and gateway
+  stop at 16:24:46.926. The old callback launched an unawaited task and ignored
+  the adapter's `False` delete result. A 503 earlier that turn affected an edit,
+  not a proven delete. Source tracing also found two deterministic omissions:
+  queued turns returned before registering cleanup, and streamed finals returned
+  `None` without marking delivery at the adapter boundary.
 - **Touchpoints:** `gateway/progress_compositor.py`, display resolution, turn
-  context/runner lifecycle, base post-delivery callbacks, the Discord adapter,
-  and focused compositor, lifecycle, progress, cleanup, interruption, overflow,
-  and non-Discord isolation tests.
-- **Verification:** The final focused callback/progress gate reports `108 passed,
-  2 deselected`; the broader adjacent gate reports `156 passed, 2 deselected`.
-  The two deselected queued-media cases are an unrelated Windows
-  `Path.as_uri()` versus encoded URI expectation mismatch. Edited modules pass
-  Python compilation and `git diff --check`. Production behavior remains
-  pending a manual gateway restart.
+  context/runner lifecycle, `gateway/run_turn.py`, `gateway/run_notifications.py`,
+  `gateway/platforms/base.py`, the Discord adapter, and focused compositor,
+  lifecycle, queued-delivery, progress, cleanup, interruption, overflow, and
+  non-Discord isolation tests.
+- **Verification:** The cleanup-await regression failed RED with `cleanup
+  callback returned before Discord deletion finished`; the queued-first-answer
+  regression failed RED with `adapter.deleted == []`; the streamed-final
+  regression failed RED with `adapter.deleted == []`. Each passed after its
+  focused fix. Independent review caught the whole-callback timeout on multiple
+  slow IDs and a transformed-stream edit that marked a refused result delivered;
+  both regressions failed RED, then passed. The adjacent gate reports
+  `138 passed, 2 deselected`; the two excluded queued-media tests assert a
+  POSIX `Path.as_uri()` shape on Windows and failed before this cleanup change. A stale queued-ledger test fixture
+  omitted the `.text` field required by the earlier composition behavior and
+  was updated to match a real event. A slow callback registered earlier in the
+  same post-delivery chain can still exhaust the shared 30-second deadline
+  before cleanup begins; that chain-level scheduling limit is outside this
+  Discord cleanup patch. No live post-restart cleanup observation exists. Runnable check: `uv run --with pytest --with pytest-asyncio pytest -q
+  tests/gateway/test_run_cleanup_progress.py tests/gateway/test_queued_final_ledger.py
+  tests/gateway/test_discord_composition_buffer.py tests/gateway/test_run_progress_topics.py
+  tests/gateway/test_progress_compositor.py tests/gateway/test_display_config.py
+  tests/gateway/test_discord_slash_commands.py -k 'not test_run_agent_queued_message_delivers_first_response_media
+  and not test_run_agent_queued_message_delivers_streamed_first_response_media'
+  --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/cleanup-review-broad-0923`.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in Discord
   progress lifecycle. Keep active while Elliot relies on immediate acknowledgement
   and delivery-gated cleanup.

@@ -3499,6 +3499,7 @@ class GatewayTurnMixin:
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
+        _delivered = _already_streamed
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
             logger.info(
@@ -3513,7 +3514,7 @@ class GatewayTurnMixin:
                 session_key or "?",
             )
             try:
-                await self._deliver_queued_first_response(
+                _delivered = bool(await self._deliver_queued_first_response(
                     first_response, source=turn_ctx.source, adapter=adapter,
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
@@ -3521,9 +3522,13 @@ class GatewayTurnMixin:
                     # The text send records a delivery-ledger obligation under this key, keyed on
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
-                )
+                ))
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
+        # The queued path returns before normal registration. Only the first answer's confirmed
+        # delivery may consume its progress ID, never a failed send or the following turn's reply.
+        if _delivered:
+            self._run_agent_schedule_bubble_cleanup(_delivery_result, adapter, turn_ctx)
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
@@ -3728,8 +3733,8 @@ class GatewayTurnMixin:
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
-        ``response["already_sent"]`` and log ``ok``. ``fail_result`` (None = trust the call) logs a
-        returned failure as ``(session, error)``; ``fail_exc`` logs an exception as ``(session, exc)``."""
+        ``response["already_sent"]`` only on a confirmed successful edit and log ``ok``. A refused
+        result or raised exception leaves the normal final-send fallback eligible."""
         try:
             _res = await _sc.adapter.edit_message(
                 chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
@@ -3737,8 +3742,13 @@ class GatewayTurnMixin:
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
-        if fail_result is not None and not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+        if not getattr(_res, "success", False):
+            # An adapter can return a failure instead of raising (notably Discord 503s). A
+            # transformed final must never claim delivery from that refused edit.
+            logger.warning(
+                fail_result or "Streamed final edit failed for session %s (%s); sending complete response via normal final send.",
+                _sk, getattr(_res, "error", None),
+            )
             return
         response["already_sent"] = True
         logger.info(*ok)
@@ -3830,8 +3840,7 @@ class GatewayTurnMixin:
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.
 
-        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures swallowed."""
-        from gateway.run import safe_schedule_threadsafe
+        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures logged."""
         _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
         if not (
             turn_ctx._cleanup_progress
@@ -3849,18 +3858,48 @@ class GatewayTurnMixin:
         # One owned compositor id can be observed by more than one source callback. Delete it once.
         _ids_snapshot = list(dict.fromkeys(str(mid) for mid in _cleanup_msg_ids if mid))
         _chat_id_snapshot = turn_ctx.source.chat_id
-        _loop_snapshot = asyncio.get_running_loop()
 
-        def _cleanup_temp_bubbles() -> None:
-            async def _delete_all() -> None:
-                for _mid in _ids_snapshot:
-                    with suppress(Exception):
-                        await _cleanup_adapter.delete_message(_chat_id_snapshot, _mid)
-            with suppress(Exception):
-                safe_schedule_threadsafe(
-                    _delete_all(), _loop_snapshot, logger=logger,
-                    log_message="Temp bubble cleanup scheduling error",
-                )
+        async def _cleanup_temp_bubbles() -> None:
+            # The delivery callback awaits us before releasing the turn. A detached task could be
+            # killed by a gateway drain immediately after the final answer reaches Discord.
+            from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+
+            loop = asyncio.get_running_loop()
+            # Leave one second for the adapter's outer callback timeout to unwind and log any
+            # unattempted IDs. The normal compositor owns one ID; legacy progress can own several.
+            deadline = loop.time() + max(0.0, min(25.0, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS - 1.0))
+            for index, _mid in enumerate(_ids_snapshot):
+                if loop.time() >= deadline:
+                    logger.warning("Temp bubble cleanup budget exhausted chat=%s unattempted=%s",
+                                   _chat_id_snapshot, _ids_snapshot[index:])
+                    break
+                for attempt in range(2):
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        deleted = await asyncio.wait_for(
+                            _cleanup_adapter.delete_message(_chat_id_snapshot, _mid),
+                            timeout=min(5.0, remaining),
+                        )
+                        if deleted:
+                            break
+                    except Exception as exc:
+                        logger.warning(
+                            "Temp bubble delete failed chat=%s message=%s attempt=%s category=%s",
+                            _chat_id_snapshot, _mid, attempt + 1, type(exc).__name__,
+                        )
+                    if attempt == 0:
+                        await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
+                else:
+                    logger.warning(
+                        "Temp bubble delete unconfirmed chat=%s message=%s after 2 attempts",
+                        _chat_id_snapshot, _mid,
+                    )
+                if loop.time() >= deadline:
+                    logger.warning("Temp bubble cleanup budget exhausted chat=%s unattempted=%s",
+                                   _chat_id_snapshot, _ids_snapshot[index + 1:])
+                    break
 
         try:
             _cleanup_adapter.register_post_delivery_callback(
