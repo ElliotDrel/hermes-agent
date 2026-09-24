@@ -109,10 +109,14 @@ class ProgressCompositor:
             if kind == "__interim__" and len(raw) > 1:
                 self.publish_activity(raw[1])
                 return
+            if kind == "__steer__" and len(raw) > 1:
+                # A steer is an ordered activity boundary, not a replaceable status line.
+                self.publish_activity(raw[1])
+                return
             if kind == "__dedup__" and len(raw) == 3:
                 _, base, count = raw
                 replacement = f"{base} (×{count + 1})"
-                if self.activity_items:
+                if self.activity_items and self.activity_items[-1].startswith(str(base)):
                     self.activity_items[-1] = replacement
                     self._dirty = True
                 else:

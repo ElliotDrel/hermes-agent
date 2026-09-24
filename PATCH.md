@@ -375,7 +375,11 @@ history when upstream makes the behavior unnecessary.
   and warns when any ID remains unattempted or unconfirmed. A refused final
   streamed edit cannot claim delivery. Failed, cancelled, interrupted,
   incomplete, and failed-delivery turns retain the breadcrumb. The gateway
-  never deletes a different message ID.
+  never deletes a different message ID. Accepted Discord `/steer` and busy-mode
+  steering append a bounded `⏩ Steer received` marker to the same ordered tool
+  progress queue, so the temporary editable message shows where the steer
+  arrived relative to tool updates. Rejected, queued, or non-Discord input does
+  not create a marker. The turn-scoped queue reference is dropped on release.
 - **Incident and hypothesis:** A progress message remained in Discord after a
   final answer; the live log shows the answer send at 16:24:46.804 and gateway
   stop at 16:24:46.926. The old callback launched an unawaited task and ignored
@@ -387,7 +391,7 @@ history when upstream makes the behavior unnecessary.
   context/runner lifecycle, `gateway/run_turn.py`, `gateway/run_notifications.py`,
   `gateway/platforms/base.py`, the Discord adapter, and focused compositor,
   lifecycle, queued-delivery, progress, cleanup, interruption, overflow, and
-  non-Discord isolation tests.
+  non-Discord isolation tests, and `tests/gateway/test_progress_steer.py`.
 - **Verification:** The cleanup-await regression failed RED with `cleanup
   callback returned before Discord deletion finished`; the queued-first-answer
   regression failed RED with `adapter.deleted == []`; the streamed-final
@@ -408,6 +412,19 @@ history when upstream makes the behavior unnecessary.
   tests/gateway/test_discord_slash_commands.py -k 'not test_run_agent_queued_message_delivers_first_response_media
   and not test_run_agent_queued_message_delivers_streamed_first_response_media'
   --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/cleanup-review-broad-0923`.
+- **Steer-marker verification:** The three accepted-steer routes and turn reset
+  failed RED with three missing markers and one uncleared queue; the focused
+  check passed GREEN (`53 passed`). The adjacent compositor, busy-origin,
+  progress, queued-delivery, cleanup, display, and Discord slash suites reported
+  `184 passed, 2 deselected` after accounting for a direct-call test that omits
+  a generation number. The two deselections are the previously documented
+  Windows POSIX-URI assertions. The marker tests cover ordered placement,
+  rejection, non-Discord isolation, bounded multiline previews, deduplication,
+  and stale-agent isolation. No live post-restart observation exists. Runnable
+  check: `uv run --with pytest --with pytest-asyncio pytest -q
+  tests/gateway/test_progress_steer.py tests/gateway/test_progress_compositor.py
+  tests/gateway/test_busy_steer_origin.py
+  --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/steer-final-focused-0924`.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in Discord
   progress lifecycle. Keep active while Elliot relies on immediate acknowledgement
   and delivery-gated cleanup.
