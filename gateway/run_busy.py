@@ -1023,8 +1023,9 @@ class GatewayBusySessionMixin:
         if not accepted:
             return "Steer rejected (empty payload)."
         self._publish_steer_progress(quick_key, event, running_agent, steer_text)
-        preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+        # Keep the acknowledgement lossless: Discord's send path splits long replies,
+        # while the separate editable progress marker remains deliberately bounded.
+        return f"⏩ Steer queued — arrives after the next tool call: '{steer_text}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't
