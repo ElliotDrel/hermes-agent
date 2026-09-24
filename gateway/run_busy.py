@@ -1137,9 +1137,9 @@ class GatewayBusySessionMixin:
         if not accepted:
             return "Steer rejected (empty payload)."
         self._publish_steer_progress(quick_key, event, running_agent, steer_text)
-        preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
+        # Keep the acknowledgement lossless; the editable progress preview stays bounded.
         target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
-        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
+        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{steer_text}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't

@@ -380,6 +380,9 @@ history when upstream makes the behavior unnecessary.
   progress queue, so the temporary editable message shows where the steer
   arrived relative to tool updates. Rejected, queued, or non-Discord input does
   not create a marker. The turn-scoped queue reference is dropped on release.
+  The separate accepted `/steer` acknowledgement repeats the full steered text
+  without its former 60-character preview cut; Discord splits long sends. The
+  rolling progress marker stays bounded independently.
 - **Incident and hypothesis:** A progress message remained in Discord after a
   final answer; the live log shows the answer send at 16:24:46.804 and gateway
   stop at 16:24:46.926. The old callback launched an unawaited task and ignored
@@ -425,6 +428,18 @@ history when upstream makes the behavior unnecessary.
   tests/gateway/test_progress_steer.py tests/gateway/test_progress_compositor.py
   tests/gateway/test_busy_steer_origin.py
   --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/steer-final-focused-0924`.
+- **Full acknowledgement verification:** A live post-restart Discord steer
+  displayed its marker between tool updates in the editable message, and Elliot
+  confirmed seeing it. The new acknowledgement regression failed RED on the
+  61- and 1900-character payloads (`2 failed, 1 passed`); the multiline case
+  passed on baseline. After removing only the 60-character slice, the focused
+  steer, compositor, origin, and Discord slash suites reported `75 passed`.
+  The Discord send path splits content above 2,000 characters; no live
+  post-restart observation of this acknowledgement change exists. Runnable
+  check: `uv run --with pytest --with pytest-asyncio pytest -q
+  tests/gateway/test_progress_steer.py tests/gateway/test_progress_compositor.py
+  tests/gateway/test_busy_steer_origin.py tests/gateway/test_discord_slash_commands.py
+  --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/steer-ack-green-0924`.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in Discord
   progress lifecycle. Keep active while Elliot relies on immediate acknowledgement
   and delivery-gated cleanup.

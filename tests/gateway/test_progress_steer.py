@@ -21,6 +21,18 @@ class SteerAgent:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["x" * 61, "first line\nsecond line", "x" * 1900])
+async def test_explicit_steer_ack_contains_full_payload(text):
+    runner = GatewayRunner(config=GatewayConfig())
+    source = SessionSource(platform=Platform.DISCORD, chat_id="thread")
+    runner._session_state("key").turn.agent = SteerAgent()
+    reply = await runner._busy_steer_command(
+        MessageEvent(text=f"/steer {text}", source=source), "key", source,
+    )
+    assert reply == f"⏩ Steer queued — arrives after the next tool call: '{text}'"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["command", "normal", "priority"])
 async def test_accepted_steer_follows_prior_tool_and_precedes_next_tool(route):
     runner = GatewayRunner(config=GatewayConfig())
