@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timezone, UTC, timedelta
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
@@ -397,9 +397,12 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 def _usage_windows(
     source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
     model_scoped: frozenset[str] | set[str] = frozenset(),
+    reset_after_key: Optional[str] = None,
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
-    ``model_scoped`` keys build windows that cap only a model family, never the account."""
+    """Normalize provider windows, preserving account/model scope.
+
+    Relative reset seconds are used only without an absolute reset timestamp.
+    """
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
@@ -409,16 +412,25 @@ def _usage_windows(
         used = float(used)
         if fraction and used <= 1:
             used *= 100
+        reset_at = _parse_dt(window.get(reset_key))
+        if reset_at is None and reset_after_key is not None:
+            after = window.get(reset_after_key)
+            if _is_finite_num(after) and after >= 0:
+                try:
+                    reset_at = _utc_now() + timedelta(seconds=float(after))
+                except (OverflowError, ValueError):
+                    # A malformed but finite duration must not discard the usage snapshot.
+                    pass
         windows.append(AccountUsageWindow(
-            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
+            label=label, used_percent=used, reset_at=reset_at,
             scope="model" if key in model_scoped else "account",
         ))
     return windows
 
 
 # Published Codex quota windows by ``limit_window_seconds``: 5h session and 7-day weekly.
-_CODEX_WINDOW_LABELS_BY_SECONDS = {18000: "Session", 604800: "Weekly"}
-_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "Session"), ("secondary_window", "Weekly"))
+_CODEX_WINDOW_LABELS_BY_SECONDS = {18000: "5-hour block", 604800: "Weekly"}
+_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "5-hour block"), ("secondary_window", "Weekly"))
 
 
 def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
@@ -479,7 +491,8 @@ def _fetch_codex_account_usage_impl(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
         )
     rate_limit = payload.get("rate_limit") or {}
-    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
+    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at",
+                             reset_after_key="reset_after_seconds")
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
