@@ -99,9 +99,11 @@ class GatewayGoalCommandsMixin:
         """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
         prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
         ordinary user turns, so alternation and caching hold."""
-        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
-        args = (event.get_command_args() or "").strip()
-        lower = args.lower()
+        from hermes_cli.heartbeat import parse_heartbeat_spec, format_interval
+        # Read raw command text: the generic event parser normalizes dashes inside prompts.
+        parts = (event.text or "").split(None, 1)
+        args = parts[1] if len(parts) > 1 else ""
+        lower = args.strip().lower()
         mgr, _session_entry = await self._get_heartbeat_manager_for_event(event)
         if mgr is None:
             return "Heartbeats unavailable (no session)."
@@ -111,7 +113,7 @@ class GatewayGoalCommandsMixin:
             if quick_key and event.source is not None:
                 self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
 
-        if not args or lower == "status":
+        if not args.strip() or lower == "status":
             return mgr.status_line()
         if lower == "pause":
             state = mgr.pause()
@@ -128,27 +130,23 @@ class GatewayGoalCommandsMixin:
                 self._unregister_heartbeat_watch(quick_key)
             return "✓ Heartbeat cleared." if had else "No heartbeat set."
 
-        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
-        tokens = args.split(None, 2)
-        interval, prompt = None, ""
-        if tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        else:
-            interval = parse_interval(tokens[0])
-            prompt = args[len(tokens[0]):].strip() if interval and interval > 0 else ""
-        if interval is None:
-            return (
-                "Usage: /heartbeat every <interval> <prompt>  (e.g. /heartbeat every 10m Check CI)\n"
-                "Also: /heartbeat status | pause | resume | clear"
-            )
-        if interval < 0:
-            return f"Interval too small — minimum is {MIN_INTERVAL_SECONDS}s."
-        if not prompt.strip():
-            return "Usage: /heartbeat every <interval> <prompt> — the prompt is required."
-        state, err = _mgr_call("Invalid heartbeat", mgr.set, prompt, interval, errors=(ValueError,))
-        if err:
-            return err
+        # CLI and gateway share one prefix-only parser; no tool/system surface changes.
+        try:
+            interval, prompt, options = parse_heartbeat_spec(args)
+            if not options:
+                raw_tokens = args.split(None, 2)
+                tail = raw_tokens[2] if raw_tokens[0].lower() == "every" else args[len(raw_tokens[0]):].lstrip()
+                # No flags keeps the old event parser's dash normalization. Explicit -- is new syntax.
+                if tail.split(None, 1)[0] != "--":
+                    legacy = (event.get_command_args() or "").strip()
+                    tokens = legacy.split(None, 2)
+                    prompt = tokens[2] if tokens[0].lower() == "every" else legacy[len(tokens[0]):].strip()
+        except ValueError as exc:
+            return f"Invalid heartbeat: {exc}"
+        try:
+            state = mgr.set(prompt, interval, **options)
+        except ValueError as exc:
+            return f"Invalid heartbeat: {exc}"
         _watch()
         return (
             f"♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}\n"

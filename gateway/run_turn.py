@@ -2180,9 +2180,16 @@ class GatewayTurnMixin:
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
-            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current, refresh_heartbeat_time
             if not heartbeat_owner_is_current(self, event, session_key):
                 return
+            # Update the copied opt-in payload, not only event.text. Leave default turns untouched.
+            if getattr(getattr(event, "_heartbeat_state", None), "include_time", False):
+                message_text = refresh_heartbeat_time(event, message_text)
+                prepared = dataclasses.replace(
+                    prepared, message_text=message_text,
+                    persist_user_message=refresh_heartbeat_time(event, prepared.persist_user_message),
+                )
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and

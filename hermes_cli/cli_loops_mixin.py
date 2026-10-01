@@ -511,6 +511,10 @@ class CLILoopsMixin:
                             continue
                         prompt = mgr.due_prompt()
                         if prompt:
+                            # Default queue bytes stay unchanged. Opt-in ticks recheck at dequeue.
+                            if mgr.state.windows or mgr.state.timezone or mgr.state.include_time:
+                                from hermes_cli.heartbeat import HeartbeatTick
+                                prompt = HeartbeatTick(mgr)
                             self._pending_input.put(prompt)
                     except Exception as exc:
                         logging.debug("heartbeat watchdog tick failed: %s", exc)

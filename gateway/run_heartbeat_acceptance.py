@@ -29,6 +29,15 @@ async def resolve_heartbeat_owner(runner, event, entry):
 
 
 def heartbeat_owner_is_current(runner, event, session_key):
+    state = getattr(event, "_heartbeat_state", None)
+    # Only opt-in attempts revalidate their exact instruction after preparation/hooks.
+    if state is not None:
+        from hermes_cli.heartbeat import load_heartbeat, time
+        event._heartbeat_checked_at = time.time()
+        owner = getattr(event, "_heartbeat_resolved_session_id", None) or event._heartbeat_session_id
+        current_state = load_heartbeat(owner)
+        if current_state != state or state.status != "active" or not state.window_is_open(now=event._heartbeat_checked_at):
+            return False
     expected = getattr(event, "_heartbeat_resolved_session_id", None)
     if not expected:
         return True
@@ -36,9 +45,30 @@ def heartbeat_owner_is_current(runner, event, session_key):
     return current is not None and not current.suspended and current.session_id == expected
 
 
+def refresh_heartbeat_time(event, message):
+    """Refresh the current user payload only, retaining any preparation wrappers and history."""
+    state = getattr(event, "_heartbeat_state", None)
+    if state is None or not state.include_time or message is None:
+        return message
+    old_header = event.text.split("\n", 1)[0]
+    new_header = state.render_prompt(now=getattr(event, "_heartbeat_checked_at", None)).split("\n", 1)[0]
+    return message.replace(old_header, new_header, 1) if old_header in message else new_header + "\n" + message
+
+
 def settle_heartbeat_attempt(event, manager):
     if not getattr(event, "_heartbeat_execution_started", False):
         try:
+            state = getattr(event, "_heartbeat_state", None)
+            if state is not None:
+                from hermes_cli.heartbeat import HeartbeatManager, load_heartbeat
+                owner = getattr(event, "_heartbeat_resolved_session_id", None) or manager.session_id
+                # Controls/new claims win. Refund only this immutable attempt, even after compression.
+                if load_heartbeat(owner) != state or manager.state != state:
+                    return
+                if owner != manager.session_id:
+                    successor = HeartbeatManager(owner)
+                    successor._last_claim = manager._last_claim
+                    manager = successor
             manager.abandon_fire()
         except Exception:
             logger.warning("Failed to refund unexecuted heartbeat", exc_info=True)

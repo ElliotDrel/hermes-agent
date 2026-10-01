@@ -39,6 +39,26 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 
 `/hb` is an alias. Works on the CLI, the TUI / Desktop app, and gateway platforms (on Slack, use `/hermes heartbeat …`).
 
+## Daily windows and current time (opt-in)
+
+On the CLI or a messaging gateway, put options between the interval and prompt:
+
+```text
+/heartbeat every 15m --windows 07:15-09:00,23:00-00:30 --timezone America/New_York --include-time Restate the specific outstanding workout question until I answer it. Don't defer this reminder because another discussion is unresolved.
+```
+
+- `--windows` accepts comma-separated daily `HH:MM-HH:MM` ranges. Windows require an explicit IANA `--timezone`.
+- Starts and **ending minutes are inclusive**. `07:15-09:00` stays open through `09:00:59`; `23:00-00:30` crosses midnight and stays open through `00:30:59`.
+- Equal endpoints, overlapping ranges (including shared ending minutes), empty ranges, invalid times/timezones, unknown options, and duplicate options are rejected without replacing the existing heartbeat.
+- `--include-time` adds the actual current local date/time, IANA timezone, and UTC offset to the new user message. With no timezone, this optional timestamp uses UTC. No process-wide timezone changes occur.
+- The interval remains **elapsed time**, not quarter-hour alignment. If a fire occurs at `08:01`, a 15-minute heartbeat next becomes due at `08:16`.
+- Outside a window, no heartbeat model turn starts and no backlog accumulates. At the next eligible idle poll, elapsed missed intervals coalesce into one fire. Windows don't guarantee an exact endpoint reminder.
+- A gateway tick delayed through a closed window during preparation is dropped before entering the agent runner. The existing unexecuted-attempt refund applies. The time stamp refreshes in the copied model-facing payload at this boundary. The CLI rechecks and stamps opt-in queued ticks when dequeuing for turn preparation, refunding ticks displaced by queued users or session changes.
+
+Options are parsed only at the beginning. After the first prompt word, flags, quotes, dashes, newlines, and trailing whitespace stay literal for an opt-in heartbeat. To start a prompt with a literal option, use `--` as the boundary. The existing default heartbeat template and legacy records stay unchanged when these options are absent.
+
+`/heartbeat status` shows configured windows, timezone, and timestamp mode. Pausing, resuming, process restart, and compression retain the options. An outstanding question is part of your configured prompt; Hermes does not add workout-specific rules to other heartbeats.
+
 ## Behavior details
 
 - **Idle-only.** A heartbeat never interrupts a running turn. If the agent is busy when the tick comes due, it fires at the next idle poll. In the gateway, an idle watched session wakes proactively; no new inbound message is needed.

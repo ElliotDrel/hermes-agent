@@ -2198,12 +2198,14 @@ class CLICommandsMixin:
         sets the session's one recurring instruction, injected as a normal user turn when due.
         Session-scoped and in-process — use `hermes cron` for durable schedules."""
         from hermes_cli.heartbeat import format_interval
-        arg = _command_arg(cmd)
-        lower = arg.lower()
+        # Only the command/options are syntax; don't trim the opt-in prompt suffix.
+        parts = cmd.split(None, 1)
+        arg = parts[1] if len(parts) > 1 else ""
+        lower = arg.strip().lower()
         mgr = self._session_manager(self._get_heartbeat_manager, "Heartbeats")
         if mgr is None:
             return
-        if not arg or lower == "status":
+        if not arg.strip() or lower == "status":
             _cp(f"  {mgr.status_line()}")
         elif lower == "pause":
             state = mgr.pause()
@@ -2222,26 +2224,12 @@ class CLICommandsMixin:
 
     def _heartbeat_set(self, mgr, arg: str) -> None:
         """Set: ``/heartbeat every 10m <prompt>`` (also accepts ``10m <prompt>``)."""
-        from hermes_cli.heartbeat import parse_interval, format_interval
-        tokens = arg.split(None, 2)
-        interval = None
-        prompt = ""
-        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        elif tokens:
-            interval = parse_interval(tokens[0])
-            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
-        if interval is None:
-            return _cp(
-                "  Usage: /heartbeat every <interval> <prompt>   (e.g. /heartbeat every 10m Check CI)",
-                       _dim_line('Also: /heartbeat status | pause | resume | clear'))
-        if interval < 0:
-            from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS
-            return _cp(f"  Interval too small — minimum is {MIN_INTERVAL_SECONDS}s.")
-        if not prompt.strip():
-            return _cp("  Usage: /heartbeat every <interval> <prompt> — the prompt is required.")
-        state = _attempt("Invalid heartbeat", ValueError, mgr.set, prompt, interval)
+        from hermes_cli.heartbeat import parse_heartbeat_spec, format_interval
+        try:
+            interval, prompt, options = parse_heartbeat_spec(arg)
+        except ValueError as exc:
+            return _cp(f"  Invalid heartbeat: {exc}")
+        state = _attempt("Invalid heartbeat", ValueError, mgr.set, prompt, interval, **options)
         if state is _FAILED:
             return
         self._start_heartbeat_watchdog()

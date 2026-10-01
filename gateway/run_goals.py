@@ -163,6 +163,10 @@ class GatewayGoalsMixin:
         # Provenance read by display_kind_for_event / the turn's quiet surfaces; the event stays
         # non-internal so authorization and the emergency stop still apply.
         event._heartbeat_session_id = session_id
+        if mgr.state.windows or mgr.state.timezone or mgr.state.include_time:
+            from dataclasses import replace
+            # Only opt-in attempts carry a frozen claim; legacy admission remains unchanged.
+            event._heartbeat_state = replace(mgr.state, windows=list(mgr.state.windows))
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.
         try:

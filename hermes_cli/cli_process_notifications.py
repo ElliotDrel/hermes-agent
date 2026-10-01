@@ -48,6 +48,10 @@ class CLIProcessNotificationsMixin:
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
         from cli import _VoiceInputMessage, _SeededQueryMessage
+        from hermes_cli.heartbeat import HeartbeatTick
+        if isinstance(user_input, HeartbeatTick):
+            # Recheck only this CLI session; real queued input wins without global blocking.
+            user_input = user_input.prepare(self.session_id, user_waiting=not self._pending_input.empty())
         from tools.process_registry import process_registry
         from tools.process_registry_notifications import (
             PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification)
