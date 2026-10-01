@@ -522,6 +522,112 @@ history when upstream makes the behavior unnecessary.
   both contracts in that release. Elliot's 85% workspace preference remains
   independent of upstream source retirement.
 
+### HERMES-FORK-020: Opt-in windowed session heartbeats
+
+- **Intent:** Extend the existing session heartbeat with daily local-time windows
+  and an optional current-time stamp, without another scheduler, plugin, tool,
+  system-prompt mutation, or model/provider route.
+- **Manual protected override:** After the timing/inclusion, stale timestamp,
+  duplicate dispatch, session/history/cache, deterministic-test, and rollback
+  assessment, Elliot directly approved `approve protected windowed-heartbeat patch`
+  on `2026-09-30` in Discord message `1555059909832216667`, thread
+  `1550839413808828456`. This approval applies only to this extension.
+- **Behavior:** CLI and messaging gateways share prefix-only parsing for
+  `/heartbeat every 15m --windows 07:15-09:00,23:00-00:30 --timezone America/New_York --include-time <prompt>`.
+  Windows require an IANA timezone and include the entire ending minute.
+  Overnight ranges cross midnight; `ZoneInfo` handles DST without changing the
+  global environment. Equal endpoints, overlapping/empty/malformed ranges,
+  invalid timezones, and unknown/duplicate/missing options fail validation.
+  Options persist through restart and compression. Status exposes all options.
+  Legacy records omit new default fields and legacy prompt bytes stay identical.
+  Elapsed intervals remain elapsed intervals, not quarter-hour slots; busy or
+  missed ticks coalesce, real queued users retain idle-boundary priority, and
+  closed windows start no heartbeat turn or backlog. Another thread remains
+  independent. Gateway ownership admission rechecks the window after preparation
+  and hooks; refused execution retains the existing refund path. Its timestamp
+  refreshes both copied model-facing and persistence payloads, not merely
+  `event.text`. CLI opt-in queue tokens recheck/refund at dequeue preparation and
+  stamp then. Workout reminders restate the outstanding question only when that
+  instruction is in the user's configured prompt, not a global core template.
+- **Touchpoints:** `hermes_cli/heartbeat.py`,
+  `hermes_cli/cli_commands_mixin.py`, `hermes_cli/cli_loops_mixin.py`,
+  `hermes_cli/cli_process_notifications.py`, `gateway/slash_commands_goals.py`,
+  `gateway/run_goals.py`, `gateway/run_heartbeat_acceptance.py`,
+  `gateway/run_turn.py`, `tests/hermes_cli/test_windowed_heartbeat.py`,
+  `tests/gateway/test_windowed_heartbeat.py`,
+  `tests/agent/test_windowed_heartbeat_payload.py`, and
+  `website/docs/user-guide/features/heartbeat.md`.
+- **Deterministic evidence:** Initial tests-first RED returned `25 failed`:
+  missing `parse_heartbeat_spec` and unexpected `windows` constructor/set options.
+  Boundary RED returned `3 failed, 25 passed`: option flags became prompt text,
+  the prepared payload retained `09:00:05` instead of execution-boundary
+  `09:00:59`, and a `09:01:00` closed-window attempt entered the agent runner.
+  CLI queue RED returned `4 failed, 25 deselected` on missing `HeartbeatTick`.
+  GREEN below returned `247 passed, 1 deselected`. Coverage includes real
+  temp-`HERMES_HOME` database I/O and fresh-process reload; daytime/overnight/end
+  boundaries and DST gap/fold; duplicate/refund/busy-user/other-thread behavior;
+  restart restoration, reset and compression ownership; actual offline AIAgent
+  provider-request snapshots with and without caching, multi-turn resume,
+  unchanged canonical history/system prefix, schemas, request options, and
+  byte/data-identical window-only versus legacy requests. Telegram, Discord,
+  Slack handler parity, native Discord commands, TUI legacy heartbeat behavior,
+  registry and website parity suites run alongside the new tests. All eleven
+  edited Python modules/tests pass `python -m py_compile`; `git diff --check`
+  reports no whitespace errors (Git emits its existing PATCH.md CRLF warning).
+  ```text
+  uv run --with pytest --with pytest-asyncio pytest -q tests/hermes_cli/test_windowed_heartbeat.py tests/hermes_cli/test_heartbeat.py tests/agent/test_windowed_heartbeat_payload.py tests/gateway/test_windowed_heartbeat.py tests/gateway/test_heartbeat_acceptance.py tests/gateway/test_heartbeat_execution_ownership.py tests/gateway/test_heartbeat_poller.py tests/gateway/test_heartbeat_watch_restore.py tests/gateway/test_heartbeat_session_boundaries.py tests/gateway/test_heartbeat_watch_lifecycle.py tests/gateway/test_compaction_heartbeat_gateway_filter.py tests/tui_gateway/test_heartbeat_tui_tick.py tests/hermes_cli/test_commands.py tests/website/test_slash_commands_doc_parity.py tests/gateway/test_discord_slash_commands.py tests/agent/test_prompt_caching.py tests/agent/test_prompt_cache_boundary.py -k 'not test_telegram_parity' --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/window-heartbeat-child-final2
+  ```
+- **Known baseline failure:** The unfiltered adjacent gate returned
+  `1 failed, 167 passed`: `TestSlackNativeSlashes::test_telegram_parity` reports
+  `commands on Telegram but missing from Slack native slashes: ['usage']`.
+  Running that exact test with all eight edited production modules temporarily
+  restored to `HEAD` reproduced `1 failed` with the same missing command. The
+  edits were restored byte-identically; no command registry changes are made.
+  An initial request invariant incorrectly froze moving Anthropic cache markers;
+  the test now checks byte-stable system decoration and canonical prior messages
+  while retaining the existing rolling-marker policy. No cache code changed.
+- **Parent verification and bounded correction:** Parent review reproduced two
+  CLI queue defects: a dropped old tick rewound a replacement heartbeat's counters,
+  and a pause/resume mutated the queued state's reference so the stale tick ran.
+  New tests returned `2 failed, 35 deselected` before correction. `HeartbeatTick`
+  now snapshots admission state, including a separate windows list, and refunds
+  only when both persisted and manager state still equal that exact snapshot.
+  The first parent correction returns `249 passed, 1 deselected` and `47`
+  new tests pass under the isolated clean-environment runner. Independent review
+  then identifies legacy gateway dash normalization, gateway pause/clear/replacement
+  during preparation, and timezone-only CLI queue admission gaps. Expanded
+  regressions return `7 failed, 49 passed`, including a closed-window refund
+  following compression. Gateway opt-in claims now snapshot state, check the
+  persisted canonical owner's exact instruction at execution, and refund only
+  that claim in the resolved lineage. Controls or newer claims remain untouched.
+  Legacy no-option gateway commands retain event-parser normalization; an explicit
+  `--` boundary remains new syntax. Timezone-only CLI records use queue tokens too.
+  The final command above, with basetemp label `window-heartbeat-parent-final-reviewed`,
+  returns `260 passed, 1 deselected`. The isolated clean-environment runner reports
+  `58 tests passed, 0 failed` across the three new test files:
+  `HERMES_PYTHON=<uv pytest interpreter> bash scripts/run_tests.sh -j 1 tests/hermes_cli/test_windowed_heartbeat.py tests/gateway/test_windowed_heartbeat.py tests/agent/test_windowed_heartbeat_payload.py`.
+  Parent also reproduces the known Slack `usage` parity failure with the registry
+  and its test unchanged. Compatibility-pointer validation passes. The final
+  independent, schema-validated read-only review returns `passed: true`, with
+  empty security and logic-error lists. No live activation evidence exists.
+- **Residual risk and activation:** Offline fake-clock and fake-wire tests do not
+  prove nondeterministic model choices, live delivery, abrupt-death refunds, or
+  exact wall-clock reminder timing. A window can close after the checked safe
+  preparation/execution boundary. No live heartbeat model call or Discord post,
+  heartbeat activation, gateway restart, or cron/config/profile/runtime/update-state
+  modification is performed. Source, tests, documentation and this entry ship
+  together only after the parent review and verification gate.
+  The existing sixpack cron `105faa3a80d3` remains untouched and must stay active
+  until Elliot explicitly approves its replacement after parent review.
+  Activation requires Elliot's **manual gateway restart**, then an explicit
+  `/heartbeat ...` command in the intended session and `/heartbeat status`
+  readback. To roll back an activated replacement, clear that session with
+  `/heartbeat clear` and re-enable existing sixpack cron `105faa3a80d3` if it was
+  later disabled. Source rollback belongs to a reviewed inverse source commit
+  and another manual restart; legacy heartbeat records remain compatible.
+- **Upstream disposition:** Candidate for upstreaming as an opt-in extension.
+  Keep active while Elliot relies on conversation-local daily reminder windows.
+
 ## Consolidated local operating record
 
 `PATCH.md` is the sole human-facing registry for this maintained fork. It
