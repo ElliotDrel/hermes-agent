@@ -2085,6 +2085,7 @@ class GatewayTurnMixin:
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                session_message_event=event,
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
@@ -2235,6 +2236,14 @@ class GatewayTurnMixin:
         from agent.skill_utils import parse_config_string_list
         enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
         disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
+        # Session-scoped capability, never a process-env/check_fn gate. Explicit
+        # disable remains the rollback switch; other transports retain old schemas.
+        from gateway.session_messaging import session_messaging_available
+        if (source.platform == Platform.DISCORD and session_messaging_available()
+                and "session_messaging" not in (disabled or [])):
+            enabled = sorted(set(enabled) | {"session_messaging"})
+        else:
+            enabled = [name for name in enabled if name != "session_messaging"]
         return enabled, disabled
 
     async def _run_background_task_inner(
@@ -2761,7 +2770,19 @@ class GatewayTurnMixin:
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
-        with self._profile_scope_for_source(source):
+        # Grant identity only at an owned turn boundary, including queued recursion.
+        # Other transports mask the capability; tool workers inherit ContextVars.
+        from gateway.session_messaging import SessionMessenger, bind_session_messenger
+        messenger = getattr(self, "_session_messenger", None)
+        if messenger is None:
+            messenger = self._session_messenger = SessionMessenger(self)
+        # Carry trusted event-owned budgets across both idle and FIFO boundaries;
+        # consume the runtime-only argument before model/agent construction.
+        inbound = turn_kwargs.pop("session_message_event", None)
+        with self._profile_scope_for_source(source), bind_session_messenger(
+            messenger, source, session_id, inbound if inbound is not None else turn_kwargs.get("inbound_message_id"),
+            generation=turn_kwargs.get("run_generation"),
+        ):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
@@ -3727,6 +3748,7 @@ class GatewayTurnMixin:
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                session_message_event=pending_event,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
             )
         except asyncio.CancelledError:

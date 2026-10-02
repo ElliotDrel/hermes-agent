@@ -615,6 +615,12 @@ class GatewayInboundMixin:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        # Internally admitted, non-control peer input always retains a FIFO turn.
+        # This guard also covers the runner sentinel before an adapter becomes busy.
+        if (event.internal and not event.allow_gateway_control
+                and (event.metadata or {}).get("session_message") is True):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
