@@ -7,6 +7,7 @@ message is more important than preserving every transient update.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import time
@@ -24,6 +25,8 @@ class ProgressCompositor:
 
     EDIT_INTERVAL_SECONDS = 1.5
     DEFAULT_TEXT_LIMIT = 1936
+    # Best-effort display must never stall worker admission or hold-expiry continuation.
+    TRANSPORT_TIMEOUT_SECONDS = 2.0
 
     def __init__(
         self,
@@ -43,6 +46,7 @@ class ProgressCompositor:
         self.session_key = session_key
         self.generation = generation
         self.message_id: Optional[str] = None
+        self._start_attempted = False
         self.status_line: Optional[str] = None
         self.activity_items: Deque[str] = deque()
         self.omitted_count = 0
@@ -67,19 +71,32 @@ class ProgressCompositor:
 
     async def start(self) -> SendResult:
         """Post the sole temporary message. Failure disables progress for this turn."""
+        # Concurrent handoff or an ambiguous timeout must never duplicate the initial send.
+        if self._start_attempted:
+            return SendResult(success=bool(self.message_id), message_id=self.message_id)
+        self._start_attempted = True
         try:
-            result = await self.adapter.send(
-                self.chat_id,
-                "⏳ Working…",
-                reply_to=self.reply_to,
-                metadata=self.metadata,
-            )
+            # Hygiene supplies the initial header without posting a second temporary message.
+            initial_text = self._fit_render()
+            # Cancel inline, with no shield/detached send: an ambiguous timeout never retries.
+            async with asyncio.timeout(self.TRANSPORT_TIMEOUT_SECONDS):
+                result = await self.adapter.send(
+                    self.chat_id,
+                    initial_text,
+                    reply_to=self.reply_to,
+                    metadata=self.metadata,
+                )
+        except asyncio.CancelledError:
+            self.editing_disabled = True
+            raise
         except Exception as exc:
             logger.debug("Progress compositor initial send failed: %s", type(exc).__name__)
             self.editing_disabled = True
             return SendResult(success=False, error=str(exc))
         if getattr(result, "success", False) and getattr(result, "message_id", None):
             self.message_id = str(result.message_id)
+            self._last_rendered = initial_text
+            self._dirty = False
         else:
             self.editing_disabled = True
         return result
@@ -87,6 +104,9 @@ class ProgressCompositor:
     def publish_activity(self, text: Any) -> None:
         value = str(text or "").strip()
         if value and not self.editing_disabled:
+            # Actual activity ends the hold explanation, never compositor handoff alone.
+            if (self.status_line or "").startswith("Compression still running;"):
+                self.status_line = None
             self.activity_items.append(value)
             self._dirty = True
 
@@ -198,7 +218,9 @@ class ProgressCompositor:
         if self.metadata and accepts_metadata:
             kwargs["metadata"] = self.metadata
         try:
-            result = await self.adapter.edit_message(**kwargs)
+            # Timeout freezes the owned ID; continuation never waits on an orphan edit.
+            async with asyncio.timeout(self.TRANSPORT_TIMEOUT_SECONDS):
+                result = await self.adapter.edit_message(**kwargs)
         except Exception as exc:
             logger.debug(
                 "Progress compositor edit exception platform=%s chat=%s message=%s session=%s generation=%s category=%s",
