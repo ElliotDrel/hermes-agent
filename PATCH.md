@@ -747,6 +747,138 @@ history when upstream makes the behavior unnecessary.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in extension.
   Keep active while Elliot relies on conversation-local daily reminder windows.
 
+### HERMES-FORK-021: Scoped Discord session-to-session messages
+
+- **Intent:** Let an owned Discord gateway turn send peer content to another
+  existing Discord conversation of the same user and profile. Reuse the current
+  session resolver, adapter admission and busy FIFO; add no server or general
+  model/history/cache/router machinery.
+- **Manual protected override:** After the assessment of tool schemas,
+  attributed user-role input, idle/busy timing, history/resume/cache isolation,
+  deterministic snapshots and bounded rollback, Elliot directly approved
+  `Build this` in Discord message `1555367347462602753`, thread
+  `1555229315350921223`, on `2026-10-01`. Approval covers only this feature.
+  Supported Bot Mode `message_agent` targets canonical profile Bot Chats and
+  does not address arbitrary existing Discord sessions.
+- **Behavior:** `send_session_message(target_session_id, message)` accepts only
+  exact existing current Discord routing IDs belonging to the runtime sender's
+  user and profile. Sender attribution, opaque receipt IDs and budgets come
+  from a process-local turn capability, never tool arguments, environment
+  variables, or a model-authored prefix. Self-targets, missing/suspended routes,
+  unavailable adapters, stale sender generations and cross-user/profile/platform
+  targets refuse. Compression resolves the sender only through its owned route's
+  profile-local database. The new named toolset is folded into owned Discord
+  turns only; CLI, other transports, background jobs and delegated execution
+  have no runtime capability. Existing tool-search deferral remains unchanged.
+- **Delivery contract:** An idle destination schedules its normal adapter turn;
+  a busy destination queues a distinct FIFO item, including the runner's pending
+  sentinel. No steering, interruption, composition-window merging, direct
+  history mutation, or acceptance of Discord self-messages is added. Destination
+  text is labelled agent-origin peer content, below real user instructions and
+  approvals, and `allow_gateway_control=False`. Cold admission uses existing
+  strict route metadata, so it cannot create or reset a missing destination.
+  Replies explicitly use the same tool. Concurrent identical target/text calls
+  within a turn deduplicate. Automatic chains share eight sends across branches
+  and stop at four hops; the next real user turn starts a fresh budget.
+  Results distinguish `accepted`, `delivery=started|queued|refused`, and
+  `visible`. Started means scheduled, not model execution/completion. Visible
+  destination sends have a 15-second deadline and nonconversational metadata;
+  a failed visible post does not revoke internal admission or permit a duplicate.
+- **Touchpoints:** `gateway/session_messaging.py`, `gateway/run_turn.py`,
+  `gateway/run_inbound.py`, `tools/session_message_tool.py`, `toolsets.py`,
+  `tests/gateway/test_session_messaging.py`,
+  `tests/gateway/test_session_message_lifecycle.py`,
+  `tests/gateway/test_session_message_worker.py`,
+  `tests/agent/test_session_message_payload.py`, and
+  `website/docs/user-guide/messaging/discord.md`.
+- **Deterministic evidence:** Tests-first RED reported `1 error during collection`
+  on the absent `gateway.session_messaging` module. Removing only the busy guard
+  reproduced `1 failed` with `AssertionError: control dispatch`; restoring it
+  passed. Removing only the turn-capability wrapper reproduced `1 failed` on
+  missing `session_messaging` in the owned Discord turn's schemas; restoring it
+  passed. The focused/adjacent gate reports `216 passed`, covering production
+  registry dispatch, real temporary SessionStore/SQLite persistence and reload,
+  real compression-child publication and unchanged retained transcript, real
+  adapter background admission, human-first FIFO, parallel deduplication,
+  queue-cap refusal, chain budgets, stale generation, environment/argument
+  isolation, delegated denial, explicit disable and Telegram masking.
+  Offline real AIAgent provider-request snapshots cover user-role placement,
+  multi-turn resume, byte/data-identical unaffected requests, stable prior
+  history/system prefix, actual registered tool schemas, existing tool-search
+  assembly and request options, with caching on/off. Existing registry,
+  distribution, composition, busy-origin and prompt-cache suites pass alongside.
+  The isolated clean-environment runner reports `10 tests passed, 0 failed`.
+  All edited Python modules/tests pass `python -m py_compile`; scoped
+  `git diff --check` exits `0` with only Git's existing PATCH.md CRLF warning.
+  GBrain impact tools returned `permission_denied` for agent callers; local
+  definition/call-site searches supplied the fallback review, not a claimed
+  indexed blast-radius result. Runnable checks (Windows external basetemp):
+  ```text
+  uv run --with pytest --with pytest-asyncio pytest -q tests/gateway/test_session_messaging.py tests/agent/test_session_message_payload.py tests/gateway/test_discord_composition_buffer.py tests/gateway/test_busy_wake_admission.py tests/gateway/test_busy_steer_origin.py tests/agent/test_prompt_caching.py tests/agent/test_prompt_cache_boundary.py tests/tools/test_registry.py tests/tools/test_toolsets.py tests/tools/test_toolset_distributions.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/session-message-adjacent-child-final
+  HERMES_PYTHON=C:/Users/2supe/AppData/Local/hermes/hermes-agent/.venv/Scripts/python.exe bash scripts/run_tests.sh -j 1 tests/gateway/test_session_messaging.py tests/agent/test_session_message_payload.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/session-message-isolated-child-final
+  python -m py_compile gateway/session_messaging.py gateway/run_turn.py gateway/run_inbound.py tools/session_message_tool.py toolsets.py tests/gateway/test_session_messaging.py tests/agent/test_session_message_payload.py
+  git diff --check -- PATCH.md gateway/session_messaging.py gateway/run_turn.py gateway/run_inbound.py tools/session_message_tool.py toolsets.py tests/gateway/test_session_messaging.py tests/agent/test_session_message_payload.py website/docs/user-guide/messaging/discord.md
+  ```
+- **Reviewer correction and witnessed evidence:** The admission-ID map retained
+  chain records when accepted work was cancelled, discarded or rejected before
+  the destination bound its turn. At 4096 orphan IDs, unrelated real user turns
+  permanently refused sends. Tests-first RED returned `4 failed`: started/queued
+  discard cases report `Discarded admissions permanently exhaust the pending cap`,
+  missing trusted peer budgets incorrectly reset, and event-owned chain transfer
+  was absent. A separate subprocess loading the pre-correction pending-map code,
+  without rewriting the live checkout, reproduced real adapter cancellation RED:
+  `1 failed, 4 deselected`, with
+  `Cancelled admissions permanently exhaust the pending cap`.
+  The correction removes the global pending map/cap. A private runtime-only event
+  attribute owns the shared chain reference through idle admission and FIFO
+  recursion. Discarded events need no cleanup registry, live queued branches never
+  expire, and missing/serialized peer capabilities fail closed instead of receiving
+  fresh budgets. The eight-message/four-hop limits and new real-user budgets remain.
+- **Joint production-worker coverage:** Offline tests execute the actual
+  `_run_agent_inner`, owned gateway executor/ContextVar copy, `TurnRunner.run_sync`,
+  real cached AIAgent lookup/reuse, AIAgent tool execution, production registry
+  dispatch, adapter background admission, inbound preprocessing, FIFO drain and
+  recursive destination worker together. Both conversations reuse their agents
+  over two turns, with caching on/off; destination requests contain attributed
+  user-role peer input and the exact event-owned shared budget. Only credentials,
+  test config and provider/Discord wire I/O are faked; outbound socket connections
+  are blocked during this integration. Removing the event-capability consumption
+  reproduced `2 failed` with `Destination production worker lost trusted chain
+  budget`. Removing only FIFO event propagation reproduced
+  `2 failed, 2 deselected` with that same assertion. Restoring each passes.
+  The expanded adjacent gate reports `225 passed`, and the clean-environment
+  per-file runner reports `19 tests passed, 0 failed`. Compilation and scoped
+  `git diff --check` pass. Test harness construction initially rebuilt the first
+  agent because lazy plugin discovery changed the registry generation; explicit
+  discovery before signature calculation preserves the real cache invariant.
+  Parent reruns the expanded adjacent gate: `225 passed in 27.61s` with
+  basetemp `session-message-parent-corrected`. Independent read-only review
+  reruns all 19 feature tests and reports no security or logic findings.
+  Its delegation wrapper reports a schema failure after retry; the parent
+  separately parses the exact returned partial JSON and validates every
+  required key and type, `passed=true`, and empty finding lists. Wrapper status
+  is not treated as proof of approval. No live-activation claim is made.
+  Runnable correction checks:
+  ```text
+  uv run --with pytest --with pytest-asyncio pytest -q tests/gateway/test_session_messaging.py tests/gateway/test_session_message_lifecycle.py tests/gateway/test_session_message_worker.py tests/agent/test_session_message_payload.py tests/gateway/test_discord_composition_buffer.py tests/gateway/test_busy_wake_admission.py tests/gateway/test_busy_steer_origin.py tests/agent/test_prompt_caching.py tests/agent/test_prompt_cache_boundary.py tests/tools/test_registry.py tests/tools/test_toolsets.py tests/tools/test_toolset_distributions.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/session-fix-adjacent-green
+  HERMES_PYTHON=C:/Users/2supe/AppData/Local/hermes/hermes-agent/.venv/Scripts/python.exe bash scripts/run_tests.sh -j 1 tests/gateway/test_session_messaging.py tests/gateway/test_session_message_lifecycle.py tests/gateway/test_session_message_worker.py tests/agent/test_session_message_payload.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/session-fix-isolated-green
+  ```
+- **Residual risk and rollback:** Offline tests cannot prove nondeterministic
+  model authority handling, live Discord transport or eventual completion.
+  Admission receipts, deduplication and chain budgets are process-local, not a
+  durable message bus. A reset/deletion/shutdown can discard admitted work.
+  Admitted events retain their own runtime budgets until execution or discard;
+  there is no process-global unconsumed-ID registry. Existing FIFO limits still
+  bound queued work. Disable with
+  `agent.disabled_toolsets: [session_messaging]` at a deliberate new-session
+  boundary and manual gateway restart, or use a reviewed inverse source commit.
+  No config/profile/cron/live runtime/update-state write, paid model request,
+  real Discord traffic, gateway restart, commit or push is performed by the
+  implementation subagent. Source awaits parent review and activation by a
+  manual restart; there is no live post-restart evidence.
+- **Upstream disposition:** Candidate for upstreaming as a session-scoped
+  Discord edge capability. Keep active while Elliot relies on this contract.
+
 ## Consolidated local operating record
 
 `PATCH.md` is the sole human-facing registry for this maintained fork. It

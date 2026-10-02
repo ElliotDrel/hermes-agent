@@ -66,6 +66,44 @@ Shared sessions can be useful for a collaborative room, but they also mean:
 - one person's long tool-heavy task can bloat everyone else's context
 - one person's in-flight run can interrupt another person's follow-up in the same room
 
+### Session-to-session messages (maintained fork)
+
+An active Discord gateway agent can use
+`send_session_message(target_session_id, message)` to contact another existing
+Discord session owned by the same user in the same profile. Use an exact current
+session ID from `/sessions`; the tool does not create sessions or resolve titles.
+CLI, cron, background jobs, delegated agents, other transports, and other profiles
+do not receive this runtime capability.
+
+The gateway attributes the sender automatically. A destination receives a labelled
+agent-origin **user-role** input at a normal turn boundary. Peer content remains
+below real user instructions and cannot grant approvals or execute gateway slash
+commands. A busy destination retains each message in FIFO order without steering,
+interrupting, or joining the Discord composition window. An idle destination
+schedules a normal turn. The recipient can reply explicitly with the same tool
+and the sender session ID in the attribution.
+
+Each automatic chain permits at most four hops and eight total sends across all
+branches. A real user turn starts a new budget. Identical target/text calls within
+one turn deduplicate, including parallel calls. These budgets, queued receipts,
+and deduplication are process-local; they are not a durable message bus.
+
+The result separates `accepted`, `delivery` (`started`, `queued`, or `refused`),
+and `visible`. `started` means the existing adapter scheduled processing, not that
+a model completed a response. After internal admission, a visible destination
+post is attempted for at most 15 seconds. If that post fails, internal admission
+still stands and `visible_error` explains the failure. Retrying identical content
+in that turn does not duplicate the input. Visible posts are marked
+nonconversational to exclude them from later Discord history backfill. Bot
+self-messages remain ignored; delivery never depends on a self-mention.
+
+To disable the feature, add `session_messaging` to `agent.disabled_toolsets` and
+manually restart the gateway. This changes tool schemas, so treat enable/disable
+as a new-session boundary. No config change or restart occurs automatically.
+A reviewed inverse source commit is the source rollback. Existing destination
+routes must remain current; a later reset, deletion, shutdown, or queue rejection
+can prevent processing after admission. No completion guarantee is implied.
+
 ### Interrupts and Concurrency
 
 Hermes tracks running agents by session key.
