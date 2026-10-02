@@ -756,6 +756,17 @@ class TurnRunner:
         ctx = self._ctx
         if ctx.progress_compositor is not None:
             return ctx.progress_compositor
+        # Only the matching generation can inherit a pre-agent hygiene breadcrumb.
+        inherited = (self._runner._session_state(ctx.session_key).turn.progress_compositor
+                     if ctx.session_key else None)
+        if inherited is not None and inherited.generation == ctx.run_generation:
+            ctx.progress_compositor = inherited
+            if ctx._cleanup_progress and inherited.message_id:
+                ctx._cleanup_msg_ids.append(inherited.message_id)
+            # Keep the hold-expiry explanation visible until real activity arrives.
+            if not (inherited.status_line or "").startswith("Compression still running;"):
+                inherited.publish_status("⏳ Working…")
+            return inherited
         adapter = adapter or self._runner._adapter_for_source(ctx.source)
         if adapter is None:
             return None

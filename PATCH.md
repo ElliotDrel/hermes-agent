@@ -440,6 +440,125 @@ history when upstream makes the behavior unnecessary.
   tests/gateway/test_progress_steer.py tests/gateway/test_progress_compositor.py
   tests/gateway/test_busy_steer_origin.py tests/gateway/test_discord_slash_commands.py
   --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/steer-ack-green-0924`.
+- **Pre-agent compression extension and manual protected override:** After the
+  timing/history/cache, bounded-test, and rollback assessment, Elliot directly
+  said `Builds this.` in Discord message `1555368017964302468`, thread
+  `1553613254721282169`. This approval covers a configured 120-second pre-agent
+  hygiene hold and 30-second Discord progress updates, not summary routing,
+  fallback, history truncation, or a global default change. The supported
+  `compression.hygiene_max_turn_hold_seconds: 120` remains an operator config
+  change, outside this source patch; the existing source default is unchanged.
+- **Compression display behavior:** When detached pre-agent hygiene runs with
+  Discord `single_message` enabled, its sole initial reply says
+  `⏳ Compacting context`. At elapsed 30/60/90 seconds the compositor edits that
+  same ID. Early completion adopts the existing compressed transcript plus
+  protected tail through the unchanged adoption path. At the configured hold
+  boundary, the same ID says
+  `Compression still running; continuing with existing context`, replacing
+  the former standalone deferral notice. The existing watermark-fenced worker
+  keeps admission, while this turn keeps its original history. TurnRunner
+  inherits the compositor only for the matching generation, tracks its ID for
+  delivery-gated cleanup, and starts normal tool progress without another send.
+  Turn release clears the handoff reference. Initial-send and permanent-edit
+  failures never create replacement messages. Other transports, compositor-off,
+  and native Codex app-server hygiene retain their existing behavior.
+- **Compression safeguards and limits:** The original guarded wait is unchanged.
+  A cancellable display task keeps slow Discord edits outside that wait and is
+  joined on success, expiry, or cancellation. The existing 30-second no-progress
+  timeout can release earlier than 120 seconds; live summary progress permits
+  the longer configured hold. Existing total ceiling, unfenced cancellation,
+  `/stop`/unwind admission revocation, and commit-in-flight adoption remain
+  intact. The 120 seconds bounds inline summary waiting, not agent construction,
+  Discord acknowledgement/deferral transport latency, or an admitted commit's
+  completion. Initial acknowledgements and each compositor edit now have a
+  two-second best-effort transport deadline, separate from the summary hold.
+  Timeout cancellation runs inline, freezes display, and never retries the send
+  or creates a replacement. The updater remains cancelled and joined at release.
+  No worker cancellation is added at watermark-fenced hold expiry.
+- **Compression deterministic evidence:** Tests-first RED against unchanged
+  production at `418e4c699a` returned `4 failed`: three `IndexError: list index
+  out of range` assertions prove hygiene posts no immediate breadcrumb, and
+  `test_turn_clear_releases_preagent_compositor` proves the missing handoff reset.
+  Expanded GREEN covers virtual 12/95-second completion and 30/60/90 updates,
+  exact virtual 120-second release with unchanged history and worker admission,
+  background completion, same-ID tool handoff and confirmed-delivery cleanup,
+  slow/permanent/retryable edits, cancellation and idle guards, and displaced
+  generations. A real executor/fence/adoption path feeds real offline AIAgent
+  requests: enabled/off Discord and Telegram requests compare data-identically
+  across both cache modes, including schemas/options, canonical history,
+  byte-stable system decoration and multi-turn resume. No paid model or real
+  Discord call is made. Runnable adjacent gate:
+  ```text
+  uv run --with pytest --with pytest-asyncio pytest -q tests/gateway/test_compression_progress.py tests/gateway/test_session_hygiene.py tests/gateway/test_session_hygiene_turnhold_adoption.py tests/gateway/test_hygiene_deferred_work_drain.py tests/gateway/test_hygiene_failure_cooldown_ladder.py tests/gateway/test_codex_hygiene_compaction.py tests/gateway/test_progress_compositor.py tests/gateway/test_run_cleanup_progress.py tests/gateway/test_run_progress_topics.py tests/gateway/test_progress_steer.py tests/gateway/test_busy_steer_origin.py tests/gateway/test_turn_lease.py tests/gateway/test_stale_finalize_suppression.py tests/gateway/test_display_config.py tests/hermes_state/test_compression_watermark_commit.py tests/agent/test_prompt_caching.py tests/agent/test_prompt_cache_boundary.py tests/agent/test_hygiene_timeout_cooldown_isolation.py -k 'not test_run_agent_queued_message_delivers_first_response_media and not test_run_agent_queued_message_delivers_streamed_first_response_media' --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/compression-final2-child-1001
+  ```
+  This gate reports `355 passed, 2 deselected`. Before excluding the two existing
+  Windows media-URI assertions, the smaller adjacent gate reports
+  `2 failed, 151 passed`. Both exact failures reproduce with the four edited
+  production modules loaded directly from `418e4c699a` in an isolated subprocess,
+  without rewriting the live checkout (`2 failed`); expected `Path.as_uri()`
+  differs from encoded Windows transport paths. They remain out of scope.
+  Source/test Python compilation and scoped `git diff --check` pass.
+- **Compression review blockers and correction:** Independent review reproduced
+  unbounded initial send and deferral edit, stale worker admission after an
+  awaited initial send, and a breadcrumb advancing Discord's conversational
+  backfill boundary. Five tests-first regressions were added before correction.
+  Initial RED returned `5 failed, 12 deselected`: two cache-boundary assertions
+  (`'222'` instead of `None`/`'111'`), initial-send `TimeoutError`, stale detached
+  worker `Awaited 1 times`, and an incomplete deferral fence fixture. After the
+  fixture matched production, deferral-only RED returned `1 failed, 16 deselected`
+  with `TimeoutError` at the pending edit. Commands:
+  ```text
+  uv run --with pytest --with pytest-asyncio pytest -q tests/gateway/test_compression_progress.py -k 'pending or displacement or breadcrumb_excluded' --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/compression-blockers-red-child-1001
+  uv run --with pytest --with pytest-asyncio pytest -q tests/gateway/test_compression_progress.py -k pending_deferral --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/compression-deferral-red2-child-1001
+  ```
+  Compositor transport calls use inline `asyncio.timeout(2.0)` with no shield or
+  detached send/edit. The initial attempt is latched against duplicate retries.
+  Pending-wire tests patch the cap to `.01` and enforce a `.2` outer safety bound;
+  they verify cancellation completed before continuation and no replacement send.
+  Generation ownership is rechecked after awaited display initialization and
+  immediately before detached hygiene admission, without clearing successor refs.
+  Initial metadata copies thread routing plus `non_conversational=True`; real
+  DiscordAdapter send/backfill/reply scans through mocked wire verify both cold
+  and cached partitions preserve prior human context and exclude the breadcrumb.
+  Handoff retains the deferral explanation until actual activity arrives.
+  The new deferral regression also exposed `RuntimeError: No active exception to
+  reraise` after an awaited transport timeout; the hold handler now explicitly
+  raises `HygieneTurnHoldExceeded`, preserving its intended availability outcome.
+  An intermediate adjacent run (`2 failed, 358 passed, 2 deselected`) caught an
+  overbroad generation guard suppressing two Telegram mock-runner hygiene tests.
+  Restricting the new guard to the pre-agent compositor path restores transport
+  isolation. The exact adjacent command above, with basetemp
+  `compression-blockers-adjacent2-child-1001`, reports
+  `360 passed, 2 deselected in 107.05s`. Added Discord backfill gate and static
+  checks report `23 passed in 1.38s`, compilation success, and clean scoped diff:
+  ```text
+  uv run --with pytest --with pytest-asyncio pytest -q tests/gateway/test_discord_free_response.py --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/compression-backfill-adjacent-child-1001
+  python -m py_compile gateway/progress_compositor.py gateway/run_turn.py gateway/run_turn_runner.py tests/gateway/test_compression_progress.py
+  git diff --check -- gateway/progress_compositor.py gateway/run_turn.py gateway/run_turn_runner.py tests/gateway/test_compression_progress.py PATCH.md
+  ```
+  Virtual 30/60/90/120 timing tests remain unchanged in their clock model because
+  the display deadline uses `asyncio.timeout`, not their patched `wait_for`.
+  All regression/adjacent checks are offline. No summary route, fallback, DB
+  commit, history, configuration, gateway restart, commit, or push changes.
+- **Compression residual risk, activation, and rollback:** Offline deterministic
+  checks do not prove nondeterministic summary quality or live Discord delivery.
+  Discord throttling can coalesce or suppress elapsed updates; a permanent
+  failure leaves the sole breadcrumb frozen. Timeout cancellation relies on the
+  adapter's cooperative cancellation; Discord can accept a send before its
+  response is lost, leaving an unknown remote ID that cannot be cleaned up.
+  That ambiguous initial attempt is never retried. An admitted commit can finish
+  beyond the hold by existing design. Parent review reproduces the correction
+  regressions and the combined adjacent plus Discord backfill gate:
+  `383 passed, 2 deselected in 105.75s`, using the command above plus
+  `tests/gateway/test_discord_free_response.py` and basetemp
+  `compression-parent-reviewed-final`. The parent sets and reads back the
+  supported workspace `compression.hygiene_max_turn_hold_seconds: 120`;
+  its one-line configuration change is versioned separately. No gateway restart
+  or live activation is performed. Elliot must manually restart the gateway
+  to load the progress source. To roll back,
+  restore the prior hold setting and apply a reviewed inverse of only these
+  compositor/hygiene handoff hunks, then manually restart. Existing sessions and
+  archived history need no rewrite. No summary-model/fallback setting changes.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in Discord
   progress lifecycle. Keep active while Elliot relies on immediate acknowledgement
   and delivery-gated cleanup.
