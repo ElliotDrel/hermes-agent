@@ -1288,10 +1288,11 @@ def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     return None in (target_start_time, our_start_time) or target_start_time == our_start_time
 
 
-def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:
+def _consume_pid_marker_record_for_self(path: Path, *, ttl_s: int) -> Optional[dict[str, Any]]:
+    """Return the same record whose identity and freshness were validated."""
     parsed = _read_live_pid_marker(path, ttl_s)
     if parsed is None:
-        return False
+        return None
     record, target_pid, target_start_time = parsed
     # Cross-profile guard: new markers name the verified TARGET home, which permits a deliberate
     # cross-HERMES_HOME --replace while ignoring a marker accidentally written into another
@@ -1301,14 +1302,26 @@ def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:
     target_home = record.get("target_hermes_home")
     if target_home is not None:
         if not isinstance(target_home, str) or not _same_hermes_home(target_home, our_home):
-            return False
+            return None
     else:
         replacer_home = record.get("replacer_hermes_home")
         if replacer_home is not None and not _same_hermes_home(replacer_home, our_home):
-            return False
+            return None
     matches = _pid_marker_names_self(target_pid, target_start_time)
     _unlink_quietly(path)
-    return matches
+    return record if matches else None
+
+
+def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:
+    # Preserve the legacy boolean API for generic stop and takeover callers.
+    return _consume_pid_marker_record_for_self(path, ttl_s=ttl_s) is not None
+
+
+def consume_planned_stop_marker_record_for_self() -> Optional[dict[str, Any]]:
+    """Consume one validated planned-stop record, including its operation metadata."""
+    return _consume_pid_marker_record_for_self(
+        _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S
+    )
 
 
 def write_takeover_marker(
