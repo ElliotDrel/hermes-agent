@@ -984,7 +984,7 @@ def _apply_parked_branch_guard(
 
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, _windows_gateway_resume):
+    switch_branch, _windows_gateway_resume, fork_sync_complete=False):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
     date, -1 when tips differ but the shallow count is unrecoverable."""
@@ -1038,7 +1038,9 @@ def _prepare_checkout_for_update(
     # the official repo, so "Already up to date!" is fully verified there.
     upstream_checked = True
     fork_result = None
-    if commit_count == 0 and is_fork and branch == "main":
+    # A successful --continue already reconciled the pinned release. Starting a
+    # second rebase here would reject its own pending audit before installing deps.
+    if not fork_sync_complete and commit_count == 0 and is_fork and branch == "main":
         pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         try:
             fork_result = _m()._sync_with_upstream_if_needed(
@@ -1761,7 +1763,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            _windows_gateway_resume=_windows_gateway_resume)
+            _windows_gateway_resume=_windows_gateway_resume,
+            fork_sync_complete=fork_continue_result is not None)
         if _plan.fork_paused:
             print("  Run the hermes-fork-update skill before resuming.")
             if _windows_gateway_resume:

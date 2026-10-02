@@ -162,6 +162,29 @@ history when upstream makes the behavior unnecessary.
   with `--no-local --depth 1`; current shutdown/handoff APIs replace old mocks.
   Live conflict recovery already reconnects the clean pre-update checkout.
   Remaining installation/activation still belongs to the updater and operator.
+- **Continuation control-flow repair, 2026-10-02:** The operator's
+  `hermes update --continue --yes` attempt resumed the recorded release, then
+  the checkout planner tried a second fork sync because `HEAD` matched
+  `origin/main`. `rebase_fork_onto_upstream` correctly refused its own pending
+  audit, raising `A maintained-fork patch audit is pending; complete it before
+  starting another rebase.` The failure occurred before dependency installation;
+  the operator restored the gateway separately. Successful continuation now
+  passes an explicit `fork_sync_complete` flag to the planner. Only that path
+  skips the redundant rebase; fresh updates retain upstream checks. The original
+  pre-update head still forces the normal installation/handoff path even with
+  zero origin commits. Audit, conflict, pause, and restart guards are unchanged.
+  This CLI checkout-planning change does not alter model inputs or turn state.
+  The real command and planner, with isolated Git/process/dependency I/O,
+  reproduce `1 failed, 1 passed` before correction with
+  `Continuation started a second fork rebase`; the installed focused updater,
+  fork, conflict-recovery, and Windows reconciliation gate then reports
+  `63 passed in 86.81s`. No live continuation or gateway lifecycle action runs
+  during verification; the installation checkpoint remains pending.
+  Runnable check uses the existing disposable pytest invocation and names
+  `tests/hermes_cli/test_fork_update_continuation.py`,
+  `tests/hermes_cli/test_cmd_update.py`, `tests/hermes_cli/test_fork_update.py`,
+  `tests/hermes_cli/test_conflict_safe_update_recovery.py`, and
+  `tests/hermes_cli/test_windows_update_restart_reconciliation.py`.
 - **Upstream disposition:** Candidate for upstreaming after the local workflow
   proves stable. Keep active until official Hermes offers an equivalent
   resumable maintained-fork contract.
