@@ -324,7 +324,8 @@ class GatewayTopicThreadsMixin:
             or not getattr(source, "auto_thread_initial_name", None)
         ):
             return False
-        adapter = self._adapter_for_source(source)
+        # Visible renames use the replying transport, not intake-policy admission.
+        adapter = self._delivery_adapter_for(source)
         resolver = getattr(adapter, "_manual_thread_rename_enabled", None)
         if callable(resolver):
             return bool(resolver())

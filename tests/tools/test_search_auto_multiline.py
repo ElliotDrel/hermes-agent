@@ -14,7 +14,8 @@ def proj(tmp_path, monkeypatch):
     d.mkdir()
     (d / "mod.py").write_text(
         "def setup():\n    init_db()\n    return True\n\n"
-        "def teardown():\n    close_db()\n"
+        "def teardown():\n    close_db()\n",
+        newline="\n",
     )
     return d
 

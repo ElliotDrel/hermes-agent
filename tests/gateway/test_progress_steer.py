@@ -29,7 +29,7 @@ async def test_explicit_steer_ack_contains_full_payload(text):
     reply = await runner._busy_steer_command(
         MessageEvent(text=f"/steer {text}", source=source), "key", source,
     )
-    assert reply == f"⏩ Steer queued — arrives after the next tool call: '{text}'"
+    assert reply == f"⏩ Steer queued into current run — arrives after the next tool call: '{text}'"
 
 
 @pytest.mark.asyncio

@@ -159,7 +159,7 @@ def test_codex_window_labels_follow_duration_with_positional_fallback(monkeypatc
         "secondary_window": {"used_percent": 21, "limit_window_seconds": 18000},
     }}
     snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
-    assert [w.label for w in snapshot.windows] == ["Weekly", "Session"]
+    assert [w.label for w in snapshot.windows] == ["Weekly", "5-hour"]
     # Missing / unrecognized durations keep the legacy positional labels.
     payload = {"rate_limit": {
         "primary_window": {"used_percent": 4},
@@ -176,7 +176,7 @@ def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, code
     assert snapshot.raw == codex_usage_payload
     assert snapshot.raw["future_field"] == {"nested": [1, 2]}
     assert len(calls) == 1
-    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]  # normalized limits unchanged
+    assert [w.label for w in snapshot.windows] == ["5-hour", "Weekly"]  # duration-based limits unchanged
     # Additive: existing constructor calls stay valid and default to no raw body.
     assert account_usage.AccountUsageSnapshot(provider="anthropic", source="x", fetched_at=snapshot.fetched_at).raw is None
 
@@ -256,7 +256,7 @@ def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_pa
     snapshot = account_usage.fetch_account_usage("openai-codex")
 
     assert snapshot is not None
-    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].label == "5-hour"
     assert credential_calls == [
         {"refresh_if_expiring": True},
         {"refresh_if_expiring": True, "force_refresh": True},

@@ -254,12 +254,3 @@ class TestProgressCompositor:
 
         config = {"display": {"platforms": {"discord": {"progress_compositor": "many_messages"}}}}
         assert resolve_display_setting(config, "discord", "progress_compositor") == "off"
-
-
-
-
-
-
-
-
-

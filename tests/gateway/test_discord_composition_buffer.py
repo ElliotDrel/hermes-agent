@@ -28,7 +28,7 @@ async def test_fixed_window_seals_edits_and_waits_even_when_run_finishes(monkeyp
     runner = object.__new__(GatewayRunner)
     runner._session_state = lambda key: SimpleNamespace(conversation=SimpleNamespace(queued_events=[]))
     runner._peek_session_state = runner._session_state
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     a, b = _event("first", 1), _event("second", 2)
     for event in (a, b):
         raw = event.raw_message
@@ -66,7 +66,7 @@ async def test_deadline_sender_and_security_boundaries_and_waiting_reaction(monk
     overflow = []
     runner._session_state = lambda key: SimpleNamespace(conversation=SimpleNamespace(queued_events=overflow))
     runner._peek_session_state = runner._session_state
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     a, b, c, d = (_event("a", 1), _event("b", 2, "other"),
                   _event("c", 3), _event("d", 4))
     for event in (a, b, c, d):
@@ -110,7 +110,7 @@ def test_media_after_composition_stays_separate_fifo_turn():
     overflow = []
     runner._session_state = lambda key: SimpleNamespace(conversation=SimpleNamespace(queued_events=overflow))
     runner._peek_session_state = runner._session_state
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     a = _event("text", 1)
     from gateway.discord_composition import Composition
     a._discord_composition = Composition(event=a, deadline=30, messages=[a.raw_message])
@@ -156,7 +156,7 @@ async def test_changed_reply_context_cannot_merge_into_first_event():
     overflow = []
     runner._session_state = lambda key: SimpleNamespace(conversation=SimpleNamespace(queued_events=overflow))
     runner._peek_session_state = runner._session_state
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     a, b = _event("a", 1), _event("b", 2)
     b.reply_to_message_id = "different-parent"
     assert runner._queue_discord_composition("s", a, adapter)

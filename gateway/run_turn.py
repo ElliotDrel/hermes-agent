@@ -1421,7 +1421,8 @@ class GatewayTurnMixin:
                         from gateway.progress_compositor import ProgressCompositor
                         # Publish before the worker starts; TurnRunner inherits this exact ID.
                         compositor = ProgressCompositor(
-                            self._adapter_for_source(source), source.chat_id, reply_to=event.message_id,
+                            # Display-only delivery lookup; hygiene admission stays unchanged.
+                            self._delivery_adapter_for(source), source.chat_id, reply_to=event.message_id,
                             # Presentation must not partition Discord backfill or enter reply context.
                             metadata={**(attempt.meta or {}), "non_conversational": True},
                             session_key=session_key, generation=run_generation,

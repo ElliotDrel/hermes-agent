@@ -155,7 +155,7 @@ class SessionMessenger:
             return {'error': 'Only existing Discord sessions belonging to the same profile and user are allowed.'}
         if target.session_id == sender.session_id or target.session_key == sender.session_key:
             return {'error': 'Cannot message the current session.'}
-        adapter = runner._adapter_for_source(dst)
+        adapter = runner._delivery_adapter_for(dst)
         if adapter is None:
             return {'error': 'Destination Discord adapter is unavailable.'}
         digest = hashlib.sha256((target_session_id + '\0' + message).encode('utf-8')).hexdigest()

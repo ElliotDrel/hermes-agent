@@ -779,7 +779,8 @@ class TurnRunner:
             if not (inherited.status_line or "").startswith("Compression still running;"):
                 inherited.publish_status("⏳ Working…")
             return inherited
-        adapter = adapter or self._runner._adapter_for_source(ctx.source)
+        # Progress edits belong to the replying transport; preserve the owned ID.
+        adapter = adapter or self._runner._delivery_adapter_for(ctx.source)
         if adapter is None:
             return None
         compositor = ProgressCompositor(

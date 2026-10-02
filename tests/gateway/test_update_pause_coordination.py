@@ -15,6 +15,7 @@ from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
 
 class Runner:
     request_restart = GatewayShutdownMixin.request_restart
+    _mark_api_runs_shutdown_requested = GatewayShutdownMixin._mark_api_runs_shutdown_requested
     _await_active_work_before_restart = GatewayShutdownMixin._await_active_work_before_restart
 
     def __init__(self):

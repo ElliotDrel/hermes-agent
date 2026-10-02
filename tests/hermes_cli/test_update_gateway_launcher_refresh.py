@@ -104,6 +104,3 @@ def test_restart_spec_can_boot_from_conflict_recovery_source(tmp_path):
 # ---------------------------------------------------------------------------
 # _refresh_windows_gateway_launchers: hermes update regenerates launchers
 # ---------------------------------------------------------------------------
-
-
-

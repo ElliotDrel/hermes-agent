@@ -615,9 +615,7 @@ class TestCmdUpdateBranchFallback:
             hm, "_sync_with_upstream_if_needed", return_value=paused
         ), patch.object(
             hm, "_resume_windows_gateways_after_update"
-        ) as resume, patch.object(
-            hm, "_reload_updated_runtime_modules"
-        ) as post_update_step:
+        ) as resume, patch("hermes_cli.update_cmd._hand_off_post_swap") as post_update_step:
             with pytest.raises(SystemExit) as exit_info:
                 cmd_update(mock_args)
 

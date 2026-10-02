@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import sqlite3
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from cron import jobs, notepad as runtime_notepad
+from hermes_cli import sqlite_util
 
 
 @pytest.fixture
@@ -120,8 +124,9 @@ class TestNotepadProfileIsolation:
         finally:
             reset_hermes_home_override(runtime_token)
 
-        assert (profile_b / "cron" / "notepad.db").exists()
-        assert not (profile_a / "cron" / "notepad.db").exists()
+        assert (profile_b / "cron" / "runtime" / "notepad.db").exists()
+        assert not (profile_a / "cron" / "runtime" / "notepad.db").exists()
+        assert not (profile_b / "cron" / "notepad.db").exists()
 
 
 class TestJobRemovalCleanup:
@@ -283,3 +288,60 @@ class TestNotepadCli:
         ns.cron_command = "notepad"
         assert cron_command(ns) == 0
         assert notepad.get_note("job-9", "k") == "v"
+
+
+def test_optional_override_and_current_path(tmp_path, monkeypatch):
+    notepad = runtime_notepad
+    monkeypatch.setattr(notepad, "NOTEPAD_FILE", None)
+    with jobs.use_cron_store(tmp_path):
+        assert notepad._current_notepad_file() == tmp_path / "cron/runtime/notepad.db"
+        assert notepad.clear_notepad("absent") == 0
+        assert not (tmp_path / "cron").exists()
+    explicit = tmp_path / "explicit.db"
+    monkeypatch.setattr(notepad, "NOTEPAD_FILE", explicit)
+    with jobs.use_cron_store(tmp_path / "other"):
+        assert notepad._current_notepad_file() == explicit
+        notepad.set_note("job", "cursor", "7")
+        assert notepad.get_note("job", "cursor") == "7"
+
+
+def test_canonical_connection_and_transaction(tmp_path, monkeypatch):
+    notepad = runtime_notepad
+    monkeypatch.setattr(notepad, "NOTEPAD_FILE", tmp_path / "notepad.db")
+    opened, transactions = [], []
+    real_open, real_transaction = sqlite_util.open_db, sqlite_util.transaction
+
+    def open_spy(path, **kwargs):
+        conn = real_open(path, **kwargs)
+        opened.append((path, kwargs, conn))
+        return conn
+
+    def transaction_spy(conn):
+        transactions.append(conn)
+        return real_transaction(conn)
+
+    monkeypatch.setattr(sqlite_util, "open_db", open_spy)
+    monkeypatch.setattr(sqlite_util, "transaction", transaction_spy)
+    notepad.set_note("job", "cursor", "7")
+    assert len(opened) == len(transactions) == 1
+    assert opened[0][1]["initialize"] is notepad._initialize_schema
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0][2].execute("SELECT 1")
+    with pytest.raises(RuntimeError, match="rollback"):
+        with notepad._transaction() as conn:
+            conn.execute("DELETE FROM cron_notepad")
+            raise RuntimeError("rollback")
+    assert notepad.get_note("job", "cursor") == "7"
+
+
+def test_runtime_profiles_remain_isolated(tmp_path, monkeypatch):
+    notepad = runtime_notepad
+    monkeypatch.setattr(notepad, "NOTEPAD_FILE", None)
+    for name, value in (("a", "1"), ("b", "2"), ("a", "1")):
+        with jobs.use_cron_store(tmp_path / name):
+            if name == "a" and notepad.get_note("job", "cursor") is not None:
+                assert notepad.get_note("job", "cursor") == value
+            else:
+                notepad.set_note("job", "cursor", value)
+    assert (tmp_path / "a/cron/runtime/notepad.db").exists()
+    assert (tmp_path / "b/cron/runtime/notepad.db").exists()

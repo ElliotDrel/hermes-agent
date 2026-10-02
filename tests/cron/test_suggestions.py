@@ -77,8 +77,9 @@ class TestStore:
         finally:
             reset_hermes_home_override(runtime_token)
 
-        assert (profile_b / "cron" / "suggestions.json").exists()
-        assert not (profile_a / "cron" / "suggestions.json").exists()
+        assert (profile_b / "cron" / "runtime" / "suggestions.json").exists()
+        assert not (profile_a / "cron" / "runtime" / "suggestions.json").exists()
+        assert not (profile_b / "cron" / "suggestions.json").exists()
 
     def test_add_and_list_pending(self, store):
         rec = _add(store)
@@ -224,6 +225,31 @@ class TestCommandHandler:
             with patch.dict("sys.modules"):
                 out = handle_suggestions_command("")
         assert "Daily thing" in out
+
+
+def test_optional_path_override_and_canonical_writer(tmp_path, monkeypatch):
+    from cron import jobs, suggestions
+    monkeypatch.setattr(suggestions, "SUGGESTIONS_FILE", None)
+    with jobs.use_cron_store(tmp_path):
+        assert suggestions._current_suggestions_file() == tmp_path / "cron/runtime/suggestions.json"
+    explicit = tmp_path / "explicit/suggestions.json"
+    monkeypatch.setattr(suggestions, "SUGGESTIONS_FILE", explicit)
+    calls = []
+    real_write = suggestions.atomic_json_write
+
+    def spy(path, payload, **kwargs):
+        calls.append((path, payload, kwargs))
+        return real_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(suggestions, "atomic_json_write", spy)
+    with jobs.use_cron_store(tmp_path / "other"):
+        suggestions._save_raw([{"id": "one"}])
+        assert suggestions.load_suggestions() == [{"id": "one"}]
+    assert len(calls) == 1
+    assert calls[0][0] == explicit
+    assert calls[0][2] == {"mode": 0o600}
+    assert "updated_at" in calls[0][1]
+    assert not (tmp_path / "other/cron").exists()
 
 
 

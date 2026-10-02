@@ -1834,7 +1834,7 @@ class TestRestoreCronJobsIfEmptied:
     def test_restores_when_emptied_after_migration(self, tmp_path):
         from hermes_cli.backup import restore_cron_jobs_if_emptied
         hermes_home = tmp_path / ".hermes"
-        jobs_path = hermes_home / "cron" / "jobs.json"
+        jobs_path = hermes_home / "cron" / "runtime" / "jobs.json"
         # Pre-update: 3 real jobs.
         self._seed_jobs(jobs_path, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
         snap_id = self._make_snapshot(hermes_home)
@@ -1859,7 +1859,7 @@ class TestRestoreCronJobsIfEmptied:
         losing tool-created crons while keeping desktop-tracked ones."""
         from hermes_cli.backup import restore_cron_jobs_if_emptied
         hermes_home = tmp_path / ".hermes"
-        jobs_path = hermes_home / "cron" / "jobs.json"
+        jobs_path = hermes_home / "cron" / "runtime" / "jobs.json"
         # Pre-update: 19 jobs (18 tool-created + 1 desktop watchdog).
         self._seed_jobs(
             jobs_path,

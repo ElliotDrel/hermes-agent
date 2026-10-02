@@ -30,7 +30,7 @@ def harness():
     events, queued = [], []
     adapter.handle_message = handle
     runner = SimpleNamespace(session_store=SimpleNamespace(lookup_by_session_id=entries.get),
-        _adapter_for_source=lambda src: adapter, _session_key_for_source=lambda src: 'a' if src.chat_id == '1' else 'b',
+        _delivery_adapter_for=lambda src: adapter, _session_key_for_source=lambda src: 'a' if src.chat_id == '1' else 'b',
         _is_session_running=lambda key: key in busy,
         _queue_or_replace_pending_event=queue,
         _thread_metadata_for_source=lambda src: {'thread_id': src.thread_id},
@@ -151,7 +151,7 @@ async def test_real_store_real_fifo_cold_admission_and_non_discord_mask(tmp_path
     runner.session_store = store
     runner.config = GatewayConfig()
     runner._draining = runner._external_drain_active = False
-    runner._adapter_for_source = lambda src: adapter
+    runner._delivery_adapter_for = lambda src: adapter
     runner._is_session_running = lambda key: key == target.session_key
     overflow = []
     runner._session_state = lambda key: SimpleNamespace(conversation=SimpleNamespace(queued_events=overflow))
@@ -227,7 +227,7 @@ async def test_compression_sender_resolution_uses_owned_profile_route(tmp_path):
         event._gateway_accepted = True
     adapter = SimpleNamespace(_active_sessions=set(), handle_message=admit,
                               send=AsyncMock(return_value=SimpleNamespace(success=True)))
-    runner._adapter_for_source = lambda src: adapter
+    runner._delivery_adapter_for = lambda src: adapter
     runner._is_session_running = lambda key: False
     messenger = SessionMessenger(runner)
     with bind_session_messenger(messenger, a, parent, None):
@@ -265,7 +265,7 @@ async def test_real_adapter_idle_starts_one_normal_background_turn(tmp_path):
     runner.config = GatewayConfig()
     runner.session_store = store
     runner._draining = runner._external_drain_active = False
-    runner._adapter_for_source = lambda src: adapter
+    runner._delivery_adapter_for = lambda src: adapter
     runner._is_session_running = lambda key: False
     entered, release = asyncio.Event(), asyncio.Event()
     received = []

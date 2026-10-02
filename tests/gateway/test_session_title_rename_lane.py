@@ -70,7 +70,7 @@ def test_manual_thread_lane_requires_opt_in_and_captured_name():
                 config=types.SimpleNamespace(extra={"rename_manual_threads": enabled})
             )
 
-        def _adapter_for_source(self, source):
+        def _delivery_adapter_for(self, source):
             return self.adapter
 
     source = SessionSource(
@@ -96,7 +96,7 @@ def test_manual_thread_lane_uses_the_adapter_environment_aware_resolver(monkeypa
     adapter = DiscordAdapter(PlatformConfig(enabled=True, extra={"rename_manual_threads": False}))
     runner = types.SimpleNamespace(
         adapter=adapter,
-        _adapter_for_source=lambda source: adapter,
+        _delivery_adapter_for=lambda source: adapter,
         _is_discord_manual_thread_lane=GatewayRunner._is_discord_manual_thread_lane,
     )
     source = SessionSource(

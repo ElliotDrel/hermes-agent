@@ -108,10 +108,11 @@ def _build_diverged_repositories(
     _git(upstream_work, "push", "origin", "main")
     upstream_tip = _git(upstream_work, "rev-parse", "HEAD").stdout.strip()
 
-    checkout_source = origin.as_uri() if shallow else str(origin)
+    checkout_source = str(origin)
     clone_args = ["clone", "-b", "main"]
     if shallow:
-        clone_args.extend(["--depth", "1"])
+        # Use Git's transport for a real shallow local clone on Windows and POSIX.
+        clone_args.extend(["--no-local", "--depth", "1"])
     _git(tmp_path, *clone_args, checkout_source, str(checkout))
     _configure_author(checkout)
     _git(checkout, "remote", "add", "upstream", str(upstream))

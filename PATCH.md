@@ -155,6 +155,13 @@ history when upstream makes the behavior unnecessary.
   or restart is performed for this repair. To roll back, revert only this
   repair's source commit with review, then restart manually; no session or
   configuration rewrite is needed.
+- **Stable-port updater verification:** Upstream fresh-interpreter post-swap
+  handoff remains intact; redundant fork synchronization is omitted in the
+  new finish seam. Installed fork/recovery/continuation/pause/launcher-refresh
+  suites report `78 passed`. Native-path shallow cloning uses Git transport
+  with `--no-local --depth 1`; current shutdown/handoff APIs replace old mocks.
+  Live conflict recovery already reconnects the clean pre-update checkout.
+  Remaining installation/activation still belongs to the updater and operator.
 - **Upstream disposition:** Candidate for upstreaming after the local workflow
   proves stable. Keep active until official Hermes offers an equivalent
   resumable maintained-fork contract.
@@ -247,8 +254,13 @@ history when upstream makes the behavior unnecessary.
   footer in persisted response history during this stable-release rebase. The
   upstream finalizer's early, once-only output hook remains in place. This reverses
   the former display-only exclusion; footer bytes can therefore enter later model
-  context. Approval is recorded in Discord message `1555613346903101481`.
+  context. Elliot's specific reversal is Discord message `1555608687802982592`;
+  continuation approval is message `1555613346903101481`.
   No additional prompt assembly or history rewrite is introduced by the port.
+- **Stable-port verification:** The metadata/persistence suites report `64 passed`.
+  New real-agent, temporary-SQLite tests exercise cached and uncached two-turn
+  requests: metadata reaches the early hook, each footer appears once, the
+  saved response matches delivery, and the next request replays that text.
 - **Upstream disposition:** Candidate for upstreaming as richer output-hook
   metadata. Keep active while the workspace footer consumes these fields.
 
@@ -256,9 +268,13 @@ history when upstream makes the behavior unnecessary.
 
 - **Intent:** Let the Windows gateway import dependencies installed in the
   Hermes project virtual environment, including local speech transcription.
-- **Behavior:** The generated VBS launcher places both the source root and the
-  venv `Lib/site-packages` directory on `PYTHONPATH` before starting the uv
-  base interpreter.
+- **Behavior:** Preserve upstream's venv console interpreter and hidden-console
+  launcher. The VBS launcher also exposes the venv `Lib/site-packages` directory
+  on `PYTHONPATH`. Do not restore the obsolete uv-base-interpreter selection.
+- **Stable-port verification:** Launcher tests report `24 passed`; the privileged
+  live Scheduled Task encoding test is deselected after `Access is denied`.
+  A separate actual venv-interpreter probe imports YAML, HTTPX and discord.py
+  from this installation's `venv/Lib/site-packages`. No task or gateway is created.
 - **Touchpoints:** `hermes_cli/gateway_windows.py` and its focused VBS launcher
   regression.
 - **Verification:** The launcher test confirms the generated environment
@@ -276,6 +292,9 @@ history when upstream makes the behavior unnecessary.
 - **Touchpoints:** `agent/account_usage.py` and focused account-usage tests.
 - **Verification:** Focused regressions cover duration labels, retained
   fallback behavior, and parsed duration metadata.
+- **Stable-port verification:** The duration parsing/display gates pass `22`
+  tests. Assertions adopt upstream `5-hour` for known 18,000-second windows;
+  unknown durations retain their positional fallback.
 - **Upstream disposition:** Candidate for upstreaming as more accurate account
   usage parsing. Keep active while the footer consumes recognized durations.
 
@@ -304,6 +323,9 @@ history when upstream makes the behavior unnecessary.
   default, and focused routing tests.
 - **Verification:** Focused regressions cover both strict routing and the
   backward-compatible discovery default.
+- **Stable-port verification:** Both auxiliary routing suites pass `91` tests.
+  Upstream selected-provider protection remains; the explicit no-discovery
+  setting still prevents unrelated credential discovery.
 - **Upstream disposition:** Candidate for upstreaming as an explicit provider
   isolation control. Keep active while auxiliary discovery is otherwise
   implicit.
@@ -319,6 +341,15 @@ history when upstream makes the behavior unnecessary.
   `hermes_cli/backup.py`, and focused migration/storage tests.
 - **Verification:** Focused tests cover legacy migration and the relocated
   execution and usage-audit data.
+- **Stable-port storage revision:** Notepad and suggestions retain upstream
+  canonical SQLite open/transaction handling and atomic JSON writes with mode
+  `0o600`. Optional explicit paths and call-time profile/runtime resolution
+  preserve upstream overrides. Legacy migration uses the existing layout helper;
+  a failed move reads the old store, and an existing runtime store wins conflicts.
+  Deleted named profiles remain refused. Prompt rendering stays unchanged.
+  The parent-installed storage/upgrade/atomic/SQLite/backup-restore gate reports
+  `99 passed, 2 skipped`. Both skips are Linux-only. Backup fixtures seed
+  `cron/runtime/jobs.json`; empty and partial restore assertions remain intact.
 - **Upstream disposition:** Candidate for upstreaming as a clearer persistent
   state boundary. Keep active while runtime files otherwise share the job root.
 
@@ -380,6 +411,11 @@ history when upstream makes the behavior unnecessary.
   explicit true and false test adapter values. No paid title call or live
   post-restart observation was made. Runnable check:
   `uv run --with pytest --with pytest-asyncio --with discord.py pytest -q tests/agent/test_title_generator.py tests/gateway/test_rename_command.py tests/gateway/test_session_title_rename_lane.py tests/gateway/test_discord_slash_commands.py tests/gateway/test_slash_command_profile_scope.py tests/website/test_slash_commands_doc_parity.py -k 'not test_manual_thread_initial_name_uses_current_discord_name_only_when_enabled' --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/initial-title-final-0923`.
+- **Stable-port adapter revision:** Upstream removes `_adapter_for_source`.
+  Manual visible renames now use the existing `_delivery_adapter_for`, with
+  the same source and unchanged admission/no-clobber guards. The installed
+  title/progress/composition gate passes `286` tests, with two previously
+  documented Windows media-URI assertions deselected.
 - **Upstream disposition:** Candidate for upstreaming as a richer session-title
   workflow. Keep active while the workspace relies on this naming contract.
 
@@ -410,6 +446,11 @@ history when upstream makes the behavior unnecessary.
   logic, and focused real-profile tests.
 - **Verification:** Focused regressions cover default-profile holder detection,
   surviving-copy attachment, headed launch, and direct-CDP recovery.
+- **Stable-port verification:** Installed browser-profile tests report
+  `65 passed, 2 deselected`. The failure-path fixture now denies both existing
+  endpoint probes before injecting snapshot failure. No production substitution
+  or Chrome launch occurs. The two excluded mode-bit assertions are POSIX-only
+  expectations on Windows; no ACL/security behavior is changed.
 - **Upstream disposition:** Candidate for upstreaming as Windows Chrome profile
   hardening. Keep active while the real-profile browser workflow depends on it.
 
@@ -423,6 +464,9 @@ history when upstream makes the behavior unnecessary.
 - **Touchpoints:** `tools/file_operations.py` and focused Windows pattern tests.
 - **Verification:** Focused regressions cover backslashes, quoting, globs,
   literal newline escapes, and multiline detection.
+- **Stable-port verification:** Both installed search suites pass `9` tests.
+  The LF-specific fixture writes explicit LF instead of Windows CRLF translation.
+  Backslash transport and production multiline routing remain unchanged.
 - **Upstream disposition:** Candidate for upstreaming as cross-platform search
   correctness. Keep active until upstream preserves the same pattern semantics.
 
@@ -650,6 +694,13 @@ history when upstream makes the behavior unnecessary.
   restore the prior hold setting and apply a reviewed inverse of only these
   compositor/hygiene handoff hunks, then manually restart. Existing sessions and
   archived history need no rewrite. No summary-model/fallback setting changes.
+- **Stable-port adapter revision:** TurnRunner and pre-agent hygiene display
+  resolve the existing replying transport through `_delivery_adapter_for`.
+  No alias, model/history/queue change, or additional timing behavior is added.
+  Tests provide upstream `hard_msg_limit=5000` and use current adapter mocks.
+  The installed joint gate reports `286 passed, 2 deselected`; the exclusions
+  remain the two baseline Windows media-URI expectations described above.
+  Replaying the old pre-agent lookup fails all three tested handoff cases.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in Discord
   progress lifecycle. Keep active while Elliot relies on immediate acknowledgement
   and delivery-gated cleanup.
@@ -695,42 +746,6 @@ history when upstream makes the behavior unnecessary.
   restarted.
 - **Upstream disposition:** Candidate for upstreaming as Discord-specific
   queue composition. Keep active while Elliot uses this conversation contract.
-
-### HERMES-FORK-019: Codex GPT-6 catalog context fidelity
-
-- **Intent:** Budget GPT-6 Sol and Luna against their account-advertised Codex
-  `context_window`, not the direct OpenAI API allocation or an obsolete catalog.
-- **Behavior:** The picker and context probe first query the account-scoped Codex
-  catalog as a newest-compatible client (`99.0.0`). Only a rejected or empty
-  response retries the legacy `0.0.0` catalog. The live slug's `context_window`
-  controls Hermes budgeting; when the catalog is unavailable, Sol and Luna use
-  their observed conservative 272,000-token Codex default, not API metadata.
-  The workspace config separately scopes 85% compression to these two Codex
-  routes (`231,200` tokens at a `272,000` window); it does not change other
-  models or opt into the `-900k` variant.
-- **Touchpoints:** `agent/model_metadata.py`, `hermes_cli/codex_models.py`,
-  `tests/hermes_cli/test_codex_models.py`, and `tests/agent/test_model_metadata.py`.
-- **Incident and hypothesis:** The `0.0.0` catalog returned a nonempty legacy
-  list missing Sol and Luna, so a successful request prevented any cache
-  fallback. Neither model had a Codex-specific static fallback in this fork.
-  A newer compatible version exposes their account entries; a Codex fallback
-  prevents an unavailable probe from using a generic context guess.
-- **Verification:** Focused RED reported `4 failed` (Sol hidden from picker,
-  missing shared helper, and two missing fallback entries). With the fix,
-  `uv run --with pytest pytest tests/hermes_cli/test_codex_models.py
-  tests/agent/test_model_metadata.py -q --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/codex-context-green-0923`
-  reported `140 passed`; the adjacent Codex-header and per-model compressor
-  suites reported `15 passed`. A fresh-process compressor probe using the actual
-  workspace config resolved both Sol and Luna to `231200` at `272000`, while
-  Terra remained at `204000`. Live gateway behavior awaits a manual restart.
-  Falsifying evidence would be an account catalog that returns a different
-  `context_window` ignored by the resolver, or a newly created Sol session
-  continuing to budget against the API window.
-- **Upstream disposition:** Upstream PR #119436 merged the catalog fix after
-  stable `v2026.9.21`; PR #119410 added the Codex GPT-6 fallback separately.
-  Retire this source deviation at the next stable audit only after verifying
-  both contracts in that release. Elliot's 85% workspace preference remains
-  independent of upstream source retirement.
 
 ### HERMES-FORK-020: Opt-in windowed session heartbeats
 
@@ -835,6 +850,10 @@ history when upstream makes the behavior unnecessary.
   `/heartbeat clear` and re-enable existing sixpack cron `105faa3a80d3` if it was
   later disabled. Source rollback belongs to a reviewed inverse source commit
   and another manual restart; legacy heartbeat records remain compatible.
+- **Stable-port verification:** The installed heartbeat and adjacent gate
+  passes `204` tests, including all `58` feature cases and cached/uncached
+  primary-client snapshots. Only obsolete adapter mock names change.
+  CLI child imports inherit the process-local installed dependency directory.
 - **Upstream disposition:** Candidate for upstreaming as an opt-in extension.
   Keep active while Elliot relies on conversation-local daily reminder windows.
 
@@ -967,8 +986,41 @@ history when upstream makes the behavior unnecessary.
   real Discord traffic, gateway restart, commit or push is performed by the
   implementation subagent. Source awaits parent review and activation by a
   manual restart; there is no live post-restart evidence.
+- **Stable-port adapter revision:** `SessionMessenger._send` now resolves the
+  same destination through upstream `_delivery_adapter_for(dst)`. The deleted
+  API previously returned a tool error before destination admission. Routing,
+  authority, event-owned capability, budgets, schemas and FIFO semantics remain
+  unchanged. Persisted installed production passes `211` messaging tests and
+  `64` adjacent cleanup/queue tests. Actual idle/FIFO worker dispatch and
+  cached/uncached primary-client snapshots run without source substitutions.
 - **Upstream disposition:** Candidate for upstreaming as a session-scoped
   Discord edge capability. Keep active while Elliot relies on this contract.
+
+## Stable-release source audit, 2026-10-02
+
+The completed rebase targets `v2026.9.24`, exact upstream commit
+`f97608f178d1ffeca59860195ab7da295f7c8e5f`, from source release `v2026.9.14`.
+Recovery ref `backup/pre-update-20261002-151329` preserves
+`1b39b230abc0a0d4dcacaccdedda0f031a46f8da`. All 49 rebase steps complete;
+no commits are explicitly skipped.
+
+- **Keep:** `002`, `003`, `004`, `008`, `011`, `013`, `014`, `015`, `016`,
+  `018`, `020`.
+- **Revise:** `001`, `005`, `006`, `007`, `009`, `010`, `012`, `017`, `021`.
+- **Retire:** `019`, whose selected-upstream implementations are equivalent.
+- **Verification:** Sixteen parsed passing JUnit gates contain `1350` distinct
+  passing test identities and two Linux-only skips. Counts are deduplicated by
+  test classname/name, not added across overlapping gates. The existing Windows
+  media-URI, POSIX permission-mode and privileged launcher exclusions remain
+  disclosed in their matching entries. An attempted monolithic 74-suite run
+  times out at the tool's 420-second limit without JUnit; it has no pass claim.
+- **Installation boundary:** Source verification does not complete installation.
+  The updater checkpoint stays pending until the normal continuation pipeline
+  finishes. On Windows, `--no-gateway-restart` still pauses running gateways
+  before dependency work. The operator must run continuation manually; the
+  owning agent must not stop/restart its gateway or remove the live recovery
+  checkout. After continuation, verify installation, consume the complete
+  per-patch evidence with the audit completion tool, and verify live readiness.
 
 ## Consolidated local operating record
 
@@ -1084,4 +1136,17 @@ only the audited status, exact fork head, patch count, summary, and timestamp.
 
 ## Retired patches
 
-None.
+### HERMES-FORK-019: Codex GPT-6 catalog context fidelity
+
+- **Intent:** Budget Sol and Luna from the account-scoped Codex catalog, with
+  newest-client-first discovery and conservative 272,000-token fallback.
+- **Retirement:** Official stable `v2026.9.24` contains both original contracts.
+  The catalog helper requests `99.0.0` first and falls back to `0.0.0` after
+  rejection or an empty response. Live slug context wins over static fallback.
+  Sol and Luna both have the 272,000-token Codex fallback.
+- **Evidence:** `agent/model_metadata.py` and `hermes_cli/codex_models.py` are
+  byte-identical to the selected upstream commit after the rebase. Their focused
+  suites pass within the parent metadata gate. The old patch's historical
+  diagnosis and verification remain in the pre-update backup and Git history.
+- **Scope:** Retire the source deviation. Keep Elliot's independent workspace
+  85% compression preference unchanged. No model configuration or session rewrite.

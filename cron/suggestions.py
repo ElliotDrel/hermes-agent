@@ -29,34 +29,37 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-# Per-profile by design (issue #4707): suggestions live alongside the active
-# profile's cron store. Anchor on get_hermes_home() (profile home), not the
-# shared default root. See cron/jobs.py for the full rationale.
-CRON_DIR = get_hermes_home().resolve() / "cron"
-SUGGESTIONS_FILE = CRON_DIR / "runtime" / "suggestions.json"
-_IMPORT_SUGGESTIONS_FILE = SUGGESTIONS_FILE
+# Optional explicit override; otherwise resolve the active profile's runtime
+# store at call time, including the cron store's context-local override.
+SUGGESTIONS_FILE: Optional[Path] = None
 
 
-def _suggestions_file() -> Path:
+def _current_suggestions_file() -> Path:
     """Resolve runtime storage while honoring tests that override the path."""
-    if SUGGESTIONS_FILE != _IMPORT_SUGGESTIONS_FILE:
+    if SUGGESTIONS_FILE is not None:
         return SUGGESTIONS_FILE
-    from cron.jobs import _current_cron_store
+    from cron.jobs import _current_cron_store, _migrate_legacy_runtime
 
-    return _current_cron_store().runtime_dir / "suggestions.json"
+    store = _current_cron_store()
+    path = store.runtime_dir / "suggestions.json"
+    legacy = store.cron_dir / "suggestions.json"
+    if legacy != path and legacy.exists() and not path.exists():
+        # Keep existing migration conflict behavior; a failed move must not
+        # turn a persisted suggestion backlog into an empty store.
+        _migrate_legacy_runtime(store)
+        if not path.exists() and legacy.exists():
+            return legacy
+    return path
 
 # In-process lock protecting load->modify->save cycles (the background review
 # fork and the main agent can both write).
@@ -72,21 +75,16 @@ _STATUS_ACCEPTED = "accepted"
 _STATUS_DISMISSED = "dismissed"
 
 
-def _secure_file(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
 def _ensure_dir() -> None:
-    from cron.jobs import _ensure_cron_dir
+    from cron.jobs import _current_cron_store, _ensure_cron_dir
 
-    _ensure_cron_dir(_suggestions_file().parent)
+    if SUGGESTIONS_FILE is None:
+        _ensure_cron_dir(_current_cron_store().cron_dir)
+    _ensure_cron_dir(_current_suggestions_file().parent)
 
 
 def _load_raw() -> Dict[str, Any]:
-    path = _suggestions_file()
+    path = _current_suggestions_file()
     if not path.exists():
         return {"suggestions": []}
     try:
@@ -105,25 +103,8 @@ def _load_raw() -> Dict[str, Any]:
 
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
-    path = _suggestions_file()
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".sugg_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(
-                {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()},
-                f,
-                indent=2,
-            )
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, path)
-        _secure_file(path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    payload = {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()}
+    atomic_json_write(_current_suggestions_file(), payload, mode=0o600)
 
 
 def load_suggestions() -> List[Dict[str, Any]]:

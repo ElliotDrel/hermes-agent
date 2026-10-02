@@ -26,22 +26,32 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
-NOTEPAD_FILE = get_hermes_home().resolve() / "cron" / "runtime" / "notepad.db"
-_IMPORT_NOTEPAD_FILE = NOTEPAD_FILE
+NOTEPAD_FILE: Optional[Path] = None
 
 
-def _notepad_file() -> Path:
+def _current_notepad_file() -> Path:
     """Resolve runtime storage while honoring tests that override the path."""
-    if NOTEPAD_FILE != _IMPORT_NOTEPAD_FILE:
+    if NOTEPAD_FILE is not None:
         return NOTEPAD_FILE
-    from cron.jobs import _current_cron_store
+    from cron.jobs import _current_cron_store, _migrate_legacy_runtime
 
-    return _current_cron_store().runtime_dir / "notepad.db"
+    store = _current_cron_store()
+    path = store.runtime_dir / "notepad.db"
+    legacy = store.cron_dir / "notepad.db"
+    if legacy != path and legacy.exists() and not path.exists():
+        # Reuse the layout migration, including SQLite sidecars. On failure,
+        # keep reading the legacy store rather than silently losing notes.
+        _migrate_legacy_runtime(store)
+        if not path.exists() and legacy.exists():
+            return legacy
+    return path
+
+
 MAX_VALUE_BYTES = 16 * 1024
 MAX_KEY_CHARS = 128
 MAX_JOB_TOTAL_BYTES = 64 * 1024
@@ -49,19 +59,19 @@ _lock = threading.RLock()
 
 
 def _connect() -> sqlite3.Connection:
-    from cron.jobs import _ensure_cron_dir
+    # Resolve canonical upstream I/O lazily for daemons spanning upgrades.
+    from cron.jobs import _current_cron_store, _ensure_cron_dir
+    from hermes_cli.sqlite_util import open_db
 
-    path = _notepad_file()
+    path = _current_notepad_file()
+    if NOTEPAD_FILE is None:
+        # Create cron before runtime; never resurrect a deleted named profile.
+        _ensure_cron_dir(_current_cron_store().cron_dir)
     _ensure_cron_dir(path.parent)
-    return sqlite3.connect(path, timeout=5)
+    return open_db(path, db_label="cron/notepad.db", initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import apply_wal_with_fallback
-
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    apply_wal_with_fallback(conn, db_label="cron/notepad.db")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS cron_notepad (
              job_id TEXT NOT NULL,
@@ -75,20 +85,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, always close.
+    from hermes_cli.sqlite_util import transaction
 
-    Mirrors ``cron.executions._transaction``: schema init runs inside the
-    ``try`` so a PRAGMA/DDL failure still closes the connection instead of
-    leaking it.
-    """
-    with _lock:
-        conn = _connect()
-        try:
-            _initialize_schema(conn)
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    with _lock, transaction(_connect()) as conn:
+        yield conn
 
 
 def _validate(job_id: str, key: str, value: str) -> None:
@@ -168,7 +168,7 @@ def clear_notepad(job_id: str) -> int:
     Called from ``cron.jobs.remove_job`` so deleted jobs don't orphan their
     rows. No-ops without creating the DB when no notepad file exists yet.
     """
-    if not _notepad_file().exists():
+    if not _current_notepad_file().exists():
         return 0
     with _transaction() as conn:
         cur = conn.execute(
