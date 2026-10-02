@@ -1062,6 +1062,62 @@ source rebase and do not become upstream product behavior:
 - [`hermes-fork-change`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-change/SKILL.md) is required before every installed-source edit. It contains the source-fork commit, diagnosis, verification, and `PATCH.md` evidence contract.
 - [`hermes-fork-update`](https://github.com/ElliotDrel/Hermes-Workspace/blob/main/skills/software-development/hermes-fork-update/SKILL.md) is required only for an update, rebase, or patch audit.
 
+### Standalone update workflow, 2026-10-02
+
+Elliot approved the replacement in Discord message `1555706950489210944`:
+two skills plus deterministic preparation and activation scripts. This changes
+the workspace maintenance procedure, not the product `/update` implementation.
+
+- `hermes-fork-change` owns source edits, customization intent, focused tests,
+  the matching ledger entry, and source commits. The update skill owns sequence.
+- `hermes-fork-update/scripts/prepare.py` pins the official published stable,
+  verifies remote recovery refs, rebases an isolated candidate worktree, and
+  binds passing existing tests to its committed SHA without changing the live
+  source or dependencies. Git retains unresolved conflicts.
+- `hermes-fork-update/scripts/activate.py` uses an external stdlib guardian and
+  fresh children for upstream install, maintenance, and lifecycle stages. It
+  installs that tested SHA, verifies a fresh gateway, storage, and connected
+  platforms, then publishes with the inspected remote lease. Failures restore
+  source, snapshotted dependencies, and WAL-safe home state before rechecking
+  the original installation. Dependencies and state are copied after pause
+  so a live lazy install cannot race the recovery snapshot.
+  Failed-candidate home state is preserved before schema/state restoration;
+  SQLite sidecars and post-snapshot files are handled from verified archives.
+  Known installer lockfile churn is archived before restoration, while unknown
+  source changes stop recovery without discarding them. A healthy install with
+  failed Git publication remains running as `installed_unpublished`; the same
+  helper's `--publish` reconciles it without another lifecycle cycle.
+- The core installer is upstream's stdlib-only `_install_repair.run_core_install`.
+  Importing the normal CLI first maps `brotlicffi` on this Windows host and
+  triggers the native self-lock guard. The core stage runs before those imports,
+  requires managed uv explicitly targeting the project venv, and refuses a
+  fallback that would install into the external guardian's system interpreter.
+- The obsolete workspace `complete_audit.py` and per-patch JSON handshake are
+  removed. `fork-update-state.json` is preserved as historical evidence and is
+  neither trusted nor cleared by the replacement. The earlier source-audit
+  installation instructions above describe the legacy attempt, not this flow.
+- Existing product updater, gateway scheduling, and shutdown hooks stay active
+  and unchanged. Retiring those protected source paths needs its own data-flow
+  assessment and explicit manual override. The owning gateway agent cannot
+  launch activation when its standing lifecycle permissions forbid it.
+- Helper tests use isolated real Git, state, and dependency directories with
+  simulated lifecycle/installer boundaries. Read-only native probes check the
+  upstream API seam and external-interpreter install targeting. These checks
+  do not establish live installation, detached gateway survival, or reconnect;
+  no live update, dependency mutation, config change, or restart occurs here.
+  Run `python -m unittest discover -s skills/software-development/hermes-fork-update/scripts -p test_helpers.py -v`
+  from the paired workspace and inspect a real activation's `result.json` before
+  reporting an update complete.
+  The final helper selection reports `16 tests` passing, including real Windows
+  detached-child survival after launcher exit, stable-only worktree preparation,
+  resumable conflicts, stale evidence invalidation, installer-churn recovery,
+  SQLite-sidecar removal, and publication reconciliation without lifecycle work.
+  Read-only native probes confirm API compatibility, explicit managed-uv target,
+  and external/project interpreter ABI. Claude's one implementation review found
+  stale test expectations, dirty rollback, state preservation, publication
+  rollback, and candidate-targeting defects; those concrete findings were
+  corrected and covered by the final helper gate, without repeated review loops.
+
 ### Shared host conventions
 
 - On this Windows host, run pytest with a unique external
@@ -1125,8 +1181,9 @@ Recreate a new watch only when fresh production evidence warrants it.
   cron job and deterministic script were removed. Source regressions remain the
   verification mechanism when the affected code changes.
 
-### Update-audit evidence lifecycle
+### Legacy update-audit evidence lifecycle
 
+This describes the older product-hook workflow, not the standalone replacement.
 `HERMES-FORK-001` uses `fork-update-state.json` as the machine checkpoint for
 an active update. It records source and target releases, backup and rebase
 heads, and whether the required audit remains pending. A per-patch evidence
