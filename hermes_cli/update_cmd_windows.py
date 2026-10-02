@@ -4,6 +4,7 @@ Split out of ``update_cmd.py``; names are re-imported there so ``hermes_cli.upda
 Origin helpers are imported lazily per function (no cycle; test patches on the origin stay effective).
 """
 
+import json
 import logging
 from contextlib import contextmanager, suppress
 import os
@@ -11,6 +12,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,14 +43,14 @@ def _abort_on_error(prefix: str):
 
 
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
-    """Write a planned-stop marker into a specific profile home."""
+    """Label update pauses so marker-first shutdown uses the socket drain contract."""
     try:
         from gateway.status import _get_process_start_time
         from utils import atomic_json_write
         atomic_json_write(
             Path(profile_path) / ".gateway-planned-stop.json",
             {"target_pid": pid, "target_start_time": _get_process_start_time(pid), "stopper_pid": os.getpid(),
-             "written_at": datetime.now(timezone.utc).isoformat()},
+             "written_at": datetime.now(timezone.utc).isoformat(), "operation": "pause-for-update"},
             indent=None, separators=(",", ":"),
         )
         return True
@@ -1188,24 +1190,115 @@ def _resume_windows_services(token: dict) -> None:
         print("\n  ✓ Restarted Windows gateway service(s): " + ", ".join(restarted_services))
 
 
+def _launch_conflict_safe_gateway_restart(source_root: str, payload: dict) -> bool:
+    """Run the recovery checkout's existing launch helper without cached updater modules."""
+    # A rebase can replace lazily imported helpers while old gateway.py stays cached.
+    # A fresh interpreter also gives the detached watcher a recovery-root import path.
+    # Keep profile/home/venv settings, but discard mutable source paths from PYTHONPATH.
+    dependency_paths = [p for p in sys.path if p and Path(p).name.lower() in {"site-packages", "dist-packages"}]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([source_root, *dependency_paths]),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    child = """
+import json
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+stage = 'import-helper'
+def report(reason, exception='None'):
+    # Only bounded vocabulary is emitted. Never format exception messages or argv/env.
+    print(json.dumps({'reason': reason, 'stage': stage, 'class': exception}), file=sys.stderr)
+try:
+    from hermes_cli import gateway
+    stage = 'verify-helper'
+    if Path(gateway.__file__).resolve() != root / 'hermes_cli' / 'gateway.py':
+        raise RuntimeError('Recovery helper resolved outside recovery checkout')
+    stage = 'read-request'
+    request = json.load(sys.stdin)
+    if 'profile' in request:
+        stage = 'profile-helper'
+        launched = gateway.launch_detached_profile_gateway_restart(
+            request['profile'], request['old_pid'], source_root=str(root))
+    else:
+        stage = 'cmdline-helper'
+        launched = gateway.launch_detached_gateway_restart_by_cmdline(
+            request['old_pid'], request['argv'], source_root=str(root))
+except Exception as exc:
+    classes = (TypeError, ImportError, SyntaxError, RuntimeError, ValueError, OSError, KeyError, AttributeError)
+    name = next((kind.__name__ for kind in classes if isinstance(exc, kind)), 'Exception')
+    report('exception', name)
+    sys.exit(3)
+if not launched:
+    report('helper-false')
+sys.exit(0 if launched else 2)
+"""
+    try:
+        # A file avoids PIPE EOF hangs from inherited grandchild handles. Watchers
+        # retain their existing DEVNULL streams. Read at most 1024 bytes on failure.
+        with tempfile.TemporaryFile() as diagnostics:
+            result = subprocess.run(
+                [sys.executable, "-B", "-s", "-c", child, source_root],
+                input=json.dumps(payload), text=True, encoding="utf-8", cwd=source_root, env=env,
+                stdout=subprocess.DEVNULL, stderr=diagnostics, timeout=30, check=False,
+            )
+            diagnostics.seek(0)
+            detail = diagnostics.read(1024).decode('utf-8', errors='replace') if result.returncode else ''
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        reason = 'timeout' if isinstance(exc, subprocess.TimeoutExpired) else 'launch'
+        logger.warning("Conflict-safe Windows gateway restart helper failed (reason=%s stage=child-launch class=%s)",
+                       reason, 'TimeoutExpired' if reason == 'timeout' else 'OSError')
+        return False
+    if result.returncode != 0:
+        reason, stage, exception = 'exit', 'child', 'None'
+        # Ignore all raw stderr, including helper logs. Accept only our fixed vocabulary.
+        stages = {'import-helper', 'verify-helper', 'read-request', 'profile-helper', 'cmdline-helper'}
+        classes = {'None', 'TypeError', 'ImportError', 'SyntaxError', 'RuntimeError', 'ValueError',
+                   'OSError', 'KeyError', 'AttributeError', 'Exception'}
+        for line in detail.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(record, dict)
+                    and all(isinstance(record.get(key), str) for key in ('reason', 'stage', 'class'))
+                    and record.get('reason') in {'exception', 'helper-false'}
+                    and record.get('stage') in stages and record.get('class') in classes):
+                reason, stage, exception = record['reason'], record['stage'], record['class']
+                break
+        logger.warning("Conflict-safe Windows gateway restart helper failed (reason=%s class=%s stage=%s exit=%s)",
+                       reason, exception, stage, result.returncode)
+        return False
+    return True
+
+
 def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tuple[list[str], int]:
     """Relaunch profile gateways and replay unmapped argv; ``(relaunched_profiles, unmapped_count)``.
 
     Failed relaunches stay on the token (and off ``relaunched_profiles``) so plan-vs-execution
     reconciliation still surfaces them — Windows has no watcher to recover them."""
-    with _abort_on_error("Could not load Windows gateway restart helper"):
-        from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline, launch_detached_profile_gateway_restart
-
     restart_source_root = token.get("restart_source_root")
-    if restart_source_root and not Path(str(restart_source_root)).is_dir():
-        raise RuntimeError(f"Conflict-safe Windows gateway runtime is missing: {restart_source_root}")
-    launch_kwargs = {"source_root": str(restart_source_root)} if restart_source_root else {}
+    if restart_source_root:
+        root = Path(str(restart_source_root)).resolve()
+        required = ("hermes_cli/__init__.py", "hermes_cli/gateway.py", "hermes_cli/gateway_windows.py",
+                    "hermes_cli/_subprocess_compat.py")
+        if not root.is_dir() or any(not (root / name).is_file() for name in required):
+            raise RuntimeError(f"Conflict-safe Windows gateway runtime is missing: {restart_source_root}")
+        source_root = str(root)
+        # Import no gateway code from the conflicted checkout, even for helper selection.
+        def launch_detached_profile_gateway_restart(profile, old_pid):
+            return _launch_conflict_safe_gateway_restart(source_root, {"profile": profile, "old_pid": old_pid})
+
+        def launch_detached_gateway_restart_by_cmdline(old_pid, argv):
+            return _launch_conflict_safe_gateway_restart(source_root, {"old_pid": old_pid, "argv": argv})
+    else:
+        with _abort_on_error("Could not load Windows gateway restart helper"):
+            from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline, launch_detached_profile_gateway_restart
     # An exception from a launch (incl. bad pid/argv coercion) logs at debug and reads as a failed relaunch.
     relaunched = []
     failed_profiles = {}
     for profile, old_pid in sorted(profiles.items()):
         if _try_call(lambda p=profile, o=old_pid: launch_detached_profile_gateway_restart(
-            str(p), int(o), **launch_kwargs),
+            str(p), int(o)),
                      "Could not restart Windows gateway profile %s after update: %s", profile):
             relaunched.append(str(profile))
         else:
@@ -1224,7 +1317,7 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     for entry in unmapped:
         argv, old_pid = entry.get("argv"), entry.get("pid")
         if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(
-            int(o), list(a), **launch_kwargs),
+            int(o), list(a)),
                                           "Could not restart unmapped Windows gateway (pid %s) after update: %s", old_pid):
             unmapped_relaunched += 1
         else:

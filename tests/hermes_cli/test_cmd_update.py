@@ -362,7 +362,7 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+        ), patch.object(hm, "_sync_with_upstream_if_needed", return_value=True) as sync_mock:
             cmd_update(mock_args)
 
         expected_git_cmd = (
@@ -446,7 +446,7 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+        ), patch.object(hm, "_sync_with_upstream_if_needed", return_value=True), patch.object(
             update_cmd,
             "_venv_core_imports_healthy",
             side_effect=[
@@ -500,7 +500,7 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+        ), patch.object(hm, "_sync_with_upstream_if_needed", return_value=True), patch.object(
             update_cmd,
             "_repair_node_deps_on_current_checkout",
             return_value=False,
@@ -568,7 +568,7 @@ class TestCmdUpdateBranchFallback:
             "hermes_cli.gateway._get_service_pids",
             return_value=set(),
         ), patch.object(
-            hm, "_sync_with_upstream_if_needed"
+            hm, "_sync_with_upstream_if_needed", return_value=True
         ), patch.object(
             hm,
             "_upgrade_pip_before_lazy_refresh",

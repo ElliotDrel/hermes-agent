@@ -70,6 +70,91 @@ history when upstream makes the behavior unnecessary.
   ancestry checks, explicit lease push, and the exit-`3` boundary before
   post-update work. Gateway notification regressions cover both live streaming
   and restart-recovery delivery of the PATCH.md audit handoff.
+- **Recovery/shutdown repair and protected override (2026-10-02):** After the
+  timing, interruption/resume, bounded-test and rollback assessment, Elliot
+  directly approved `ok execute on this. no other seesions are running` in
+  Discord message `1555575601753104446`, thread `1555552001478107226`.
+  Scope is conflict-safe recovery and update-pause shutdown coordination.
+  Shutdown sequencing, staging architecture, live updates and automatic gateway
+  restarts are excluded. Supported manual recovery remains the fallback.
+- **Incident and mechanism:** The update stopped the gateway, paused the rebase
+  on conflicts, then failed with `Could not restart every paused Windows
+  gateway`. Cached pre-update `hermes_cli.gateway` later imported the rebased
+  Windows helper, whose signature rejected `source_root` before spawning.
+  Independently, a marker callback queued before socket pause called immediate
+  `stop()` after coordinated waiting began, interrupting active conversations.
+- **Repair contract:** Recovery delegates to a bounded fresh interpreter rooted
+  in the verified pre-update recovery tree. Source imports and the existing
+  detached watcher use that tree; profile/home and shared venv dependencies are
+  preserved. Failed launches retain their retry obligations. Ordinary restarts
+  keep their existing path. Update marker and socket scheduling must use one
+  existing coordinated restart wait, including the two-minute update cap.
+  Generic stop markers, real signals and takeover keep their original behavior.
+  Marker metadata must come from the same validated record as its identity.
+- **Repair touchpoints:** `hermes_cli/update_cmd_windows.py`, `gateway/run.py`,
+  `gateway/status.py`, `tests/hermes_cli/test_conflict_safe_update_recovery.py`,
+  `tests/gateway/test_update_pause_coordination.py`, and the legacy boolean mock
+  fixtures in `tests/hermes_cli/test_cmd_update.py`.
+- **Tests-first evidence:** Offline parent baseline-function replay from
+  `8d61d27d5a`, without rewriting the installed checkout, reports
+  `17 failed, 8 passed`. Failure assertions include `Queued marker bypassed the
+  accepted after-turn wait`, `Update marker bypassed coordinated after-turn
+  restart`, and the exact generic recovery error above. The initial repair
+  passes all `25` new tests; the unchanged adjacent gate passes `178` tests
+  before and after the edits. Independent review then catches an unlabelled
+  production marker writer and separate metadata/identity reads; the final
+  repair must cover the real writer, not only constructed test markers.
+  Five older updater tests fail identically on baseline because bare MagicMock
+  returns are interpreted as paused maintained-fork results. Explicit legacy
+  `True` returns repair those fixtures. The corrected updater plus model-boundary
+  selection reports `59 passed`, including real offline provider-request
+  snapshots across cached/uncached multi-turn compaction adoption and Telegram
+  isolation. No model-request assembly, schemas, cache or persistence code is
+  changed.
+- **Review corrections and final parent gate:** The production update marker
+  now explicitly labels `pause-for-update`. A record-returning consume helper
+  supplies the validated identity and operation in one read; legacy boolean
+  consumers retain their API. Real-writer tests cover both callback orderings.
+  Recovery diagnostics report only allowlisted reason, stage and exception
+  class through a bounded file read, never arbitrary exception text, argv or
+  environment. Correction tests first report `11 failed, 18 passed` for the
+  missing writer label, duplicate reads and missing diagnostics; the final
+  focused gate reports `30 passed`. The combined named offline gate reports
+  `355 passed, 1 deselected in 98.19s`. The deselection is
+  `TestReadProcessCmdlinePsFallback::test_ps_fallback_when_proc_unavailable`,
+  whose `/usr/libexec/bluetoothuserd` POSIX expectation fails identically with
+  the original function loaded from `8d61d27d5a` on Windows (`1 failed`).
+  The six edited Python modules/tests compile and `git diff --check` passes.
+  The actual AIAgent snapshot tests cover message bytes/data, schemas, request
+  options, cached/uncached multi-turn history and compaction adoption, including
+  Telegram isolation. Final independent read-only review reports `passed: true`
+  with empty security and logic-error lists. These checks are offline and do
+  not prove live readiness.
+- **Recovery test harness incident:** The initial delegated RED invocation did
+  not stub every watcher creation boundary and attempted real watcher spawns.
+  The autouse creation guard was installed before rerunning RED and editing
+  production. Parent process inspection finds no detached restart watchers;
+  gateway PID `2380` still reports the original `8d61d27d5a` runtime. This is
+  not a live activation test, and the earlier invocation is not claimed hermetic.
+- **Repair verification command:** On this host, the source venv lacks pytest.
+  Use the disposable pytest interpreter with process-local access to installed
+  dependencies; do not sync or modify the running gateway's environment:
+  ```text
+  uv run --no-project --with pytest --with pytest-asyncio python -c "import pytest,sys; sys.path.append('C:/Users/2supe/AppData/Local/hermes/hermes-agent/venv/Lib/site-packages'); raise SystemExit(pytest.main(['-q','tests/gateway/test_update_pause_coordination.py','tests/hermes_cli/test_conflict_safe_update_recovery.py','tests/hermes_cli/test_cmd_update.py','tests/gateway/test_restart_after_turn.py','tests/gateway/test_restart_resume_pending.py','tests/gateway/test_restart_drain.py','tests/gateway/test_restart_drain_recovery_dedup.py','tests/hermes_cli/test_windows_update_restart_reconciliation.py','tests/gateway/test_compression_progress.py::test_real_detached_adoption_and_model_requests_ignore_display','tests/agent/test_session_message_payload.py','tests/agent/test_prompt_cache_boundary.py','tests/agent/test_prompt_cache_scope.py','--basetemp=C:/Users/2supe/Hermes-Workspace/.scratchpad/updater-repair-final']))"
+  ```
+- **Repair residual risk and activation:** Offline tests cannot prove live
+  process creation, Discord reconnect, nondeterministic turn behavior or
+  readiness after a real conflict. Recovery still uses the shared venv and can
+  fail if dependencies are damaged. Interpreter site initialization and inherited
+  package directories remain trusted; the helper-source check is not a sandbox
+  or a complete editable-install/import-isolation proof. A child timeout can be
+  ambiguous if its
+  detached watcher was already spawned; retain the obligation and let the
+  existing fleet/readiness checks decide. The active gateway must be restarted
+  manually before `/update` uses the changed shutdown handler. No live update
+  or restart is performed for this repair. To roll back, revert only this
+  repair's source commit with review, then restart manually; no session or
+  configuration rewrite is needed.
 - **Upstream disposition:** Candidate for upstreaming after the local workflow
   proves stable. Keep active until official Hermes offers an equivalent
   resumable maintained-fork contract.
@@ -158,6 +243,12 @@ history when upstream makes the behavior unnecessary.
   `agent/codex_runtime.py`, and focused persistence regressions.
 - **Verification:** Focused tests cover metadata exposure, durable count reload,
   compression-boundary carry, and the Codex app-server increment path.
+- **2026-10-02 port decision:** Elliot explicitly accepts retaining the transformed
+  footer in persisted response history during this stable-release rebase. The
+  upstream finalizer's early, once-only output hook remains in place. This reverses
+  the former display-only exclusion; footer bytes can therefore enter later model
+  context. Approval is recorded in Discord message `1555613346903101481`.
+  No additional prompt assembly or history rewrite is introduced by the port.
 - **Upstream disposition:** Candidate for upstreaming as richer output-hook
   metadata. Keep active while the workspace footer consumes these fields.
 

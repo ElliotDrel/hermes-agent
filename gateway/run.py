@@ -5282,9 +5282,18 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             return consume_takeover_marker_for_self()
 
         # Planned stop: CLI marks first, else its SIGTERM looks like an external kill. SIGINT = Ctrl+C.
+        update_pause = False
+
         def _planned_stop() -> bool:
-            from gateway.status import consume_planned_stop_marker_for_self
-            return consume_planned_stop_marker_for_self()
+            nonlocal update_pause
+            from gateway.status import consume_planned_stop_marker_record_for_self
+            record = consume_planned_stop_marker_record_for_self()
+            planned = record is not None
+            # Metadata only selects the update wait after the normal PID/start-time/TTL
+            # validation succeeds. Unlabelled markers retain ordinary gateway-stop behavior.
+            update_pause = planned and record.get("operation") == "pause-for-update"
+            # No separate metadata read: a replaced marker cannot change classification.
+            return planned
 
         # Fast (<10ms) sync snapshot: stdlib + /proc, no subprocesses (`ps aux` here once blocked ~3s).
         def _snapshot():
@@ -5300,6 +5309,23 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             planned_stop_seen[0] = True
         elif planned_stop_seen[0] and not planned_takeover:
             planned_stop = True
+        if received_signal is None and not planned_takeover:
+            # Only the watcher uses None. Revalidate on the loop thread: a queued
+            # marker may disappear, or the socket may already own the restart wait.
+            # Real SIGINT/SIGTERM and takeover must still reach ordinary stop().
+            if not planned_stop:
+                return
+            if getattr(runner, "_restart_task_started", False) and getattr(runner, "_draining", False):
+                return
+            if update_pause:
+                # Marker-first updates must use the same bounded after-turn path
+                # as socket-first updates, without launching a detached helper.
+                from gateway.control_socket import UPDATE_PAUSE_AFTER_TURN_TIMEOUT
+                runner.request_restart(
+                    detached=False, via_service=True,
+                    after_turn_timeout=UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
+                )
+                return
         _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
