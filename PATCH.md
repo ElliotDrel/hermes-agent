@@ -1117,6 +1117,27 @@ the workspace maintenance procedure, not the product `/update` implementation.
   stale test expectations, dirty rollback, state preservation, publication
   rollback, and candidate-targeting defects; those concrete findings were
   corrected and covered by the final helper gate, without repeated review loops.
+- **Scoped lifecycle follow-up:** A late feasibility lookup exposed that the
+  first workspace helper called fleet-wide pause/resume APIs despite its
+  default-profile-only contract. The replacement uses only the home-scoped
+  socket pause, update marker, wait-only exit, and detached-spawn primitives.
+  It refuses named/dead profiles, services, foreign/unmapped gateways, shared
+  venv holders, and unsupported interpreter layouts before stopping or changing
+  dependencies. Inventory is rechecked before installation and recovery;
+  original recovery obligations survive failed ACKs, quiesce, and resume.
+  No force-kill or fleet lifecycle call belongs in this seam.
+  One bounded Claude Opus 5.5 review confirms scoped calls and identifies an
+  insufficient lost-ACK recovery budget. Parent RED reports `1 failure, 1 error`:
+  `150 not greater than or equal to 1030` and the absent phase-deadline helper.
+  Before requesting stop, the fallback now includes the upstream update
+  after-turn cap plus normal/cron drain and teardown grace. Lifecycle child
+  deadlines refresh from the persisted budget rather than using a shorter fixed
+  cap. The final parent helper gate reports `32 tests in 128.308s`, all passing.
+  Module and embedded-bridge compilation and scoped whitespace checks pass.
+  Lifecycle tests use fixture APIs, including the real bridge fragment; native
+  live probes are not run because CLI imports can perform recovery mutations.
+  No live activation/restart, installed product code, config, history, or legacy
+  checkpoint change is made. Live installation and reconnect remain unproven.
 
 ### Shared host conventions
 
