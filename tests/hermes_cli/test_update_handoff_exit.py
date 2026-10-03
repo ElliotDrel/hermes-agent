@@ -22,7 +22,8 @@ import pytest
 
 import hermes_cli.main as main_mod
 from hermes_cli import update_cmd
-from hermes_cli.main import cmd_update
+# Exercise retained installer core, never the maintained-fork agent route.
+from hermes_cli.main import _cmd_native_update as cmd_update
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 
 

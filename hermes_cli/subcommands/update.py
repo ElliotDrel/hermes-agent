@@ -10,7 +10,9 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     """Attach the ``update`` subcommand to ``subparsers``."""
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies")
+        description="Run the profile's hermes-fork-update skill through native chat. "
+                    "Native installer flags are retained for parser compatibility but refused "
+                    "by this maintained-fork workflow.")
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",

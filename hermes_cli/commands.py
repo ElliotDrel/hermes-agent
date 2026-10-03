@@ -300,8 +300,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, desktop="terminal"),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>", desktop="terminal"),
+    # Update is now an agent workflow turn. Reject while busy rather than
+    # stopping, steering, or starting a second agent beside the current run.
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
-               busy_policy="dispatch", desktop="terminal"),
+               busy_policy="reject", desktop="terminal"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",

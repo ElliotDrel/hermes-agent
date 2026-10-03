@@ -1,7 +1,7 @@
 """Tests for /update gateway slash command.
 
-Tests both the _handle_update_command handler (spawns update process) and
-the _send_update_notification startup hook (sends results after restart).
+Retained upstream binary-resolution and legacy notification compatibility checks.
+Command routing and skill execution are covered by test_fork_update_entry.py.
 """
 
 import json
@@ -44,52 +44,8 @@ def _make_runner():
 # ---------------------------------------------------------------------------
 
 
-class TestHandleUpdateCommand:
-    """Tests for GatewayRunner._handle_update_command."""
-
-    @pytest.mark.asyncio
-    async def test_no_git_directory(self, tmp_path):
-        """Returns an error when .git does not exist."""
-        runner = _make_runner()
-        event = _make_event()
-        # Point _hermes_home to tmp_path and project_root to a dir without .git
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        with patch("gateway.run._hermes_home", tmp_path), \
-             patch("gateway.run.Path") as MockPath:
-            # Path(__file__).parent.parent.resolve() -> fake_root
-            MockPath.return_value = MagicMock()
-            MockPath.__truediv__ = Path.__truediv__
-            # Easier: just patch the __file__ resolution in the method
-            pass
-
-        # Simpler approach — mock at method level using a wrapper
-        runner = _make_runner()
-
-        with patch("gateway.run._hermes_home", tmp_path):
-            # The handler does Path(__file__).parent.parent.resolve()
-            # We need to make project_root / '.git' not exist.
-            # Since Path(__file__) resolves to the real gateway/run.py,
-            # project_root will be the real hermes-agent dir (which HAS .git).
-            # Patch Path to control this.
-            original_path = Path
-
-            class FakePath(type(Path())):
-                pass
-
-            # Actually, simplest: just patch the specific file attr.
-            # The _handle_update_command handler lives in gateway/slash_commands.py
-            # (extracted from run.py in the god-file decomposition); it resolves
-            # project_root via Path(__file__).parent.parent, so fake that file.
-            fake_file = str(fake_root / "gateway" / "slash_commands.py")
-            (fake_root / "gateway").mkdir(parents=True)
-            (fake_root / "gateway" / "slash_commands.py").touch()
-
-            with patch("gateway.slash_commands.__file__", fake_file):
-                result = await runner._handle_update_command(event)
-
-        assert "Not a git repository" in result
-
+class TestResolveHermesBin:
+    """Retained native binary resolution used by ordinary restart paths."""
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_module_argv(self):
@@ -119,129 +75,6 @@ class TestHandleUpdateCommand:
         with patch("shutil.which", return_value=None), \
              patch("importlib.util.find_spec", side_effect=ImportError):
             assert _resolve_hermes_bin() is None
-
-
-    @pytest.mark.asyncio
-    async def test_writes_pending_marker(self, tmp_path):
-        """Writes .update_pending.json with correct platform and chat info."""
-        runner = _make_runner()
-        event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
-        event.message_id = "m-update"
-
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
-             patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
-
-        pending_path = hermes_home / ".update_pending.json"
-        assert pending_path.exists()
-        data = json.loads(pending_path.read_text())
-        assert data["platform"] == "telegram"
-        assert data["chat_id"] == "99999"
-        assert data["chat_type"] == "dm"
-        assert data["message_id"] == "m-update"
-        assert "timestamp" in data
-        assert not (hermes_home / ".update_exit_code").exists()
-
-
-    @pytest.mark.asyncio
-    async def test_fallback_when_no_setsid(self, tmp_path):
-        """Falls back to start_new_session=True when setsid is not available."""
-        runner = _make_runner()
-        event = _make_event()
-
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
-        mock_popen = MagicMock()
-
-        def which_no_setsid(x):
-            if x == "hermes":
-                return "/usr/bin/hermes"
-            if x == "setsid":
-                return None
-            return None
-
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", side_effect=which_no_setsid), \
-             patch("subprocess.Popen", mock_popen):
-            await runner._handle_update_command(event)
-
-        # Verify plain bash -c fallback (no nohup, no setsid)
-        call_args = mock_popen.call_args[0][0]
-        assert call_args[0] == "bash"
-        assert "nohup" not in call_args[2]
-        assert ".update_exit_code" in call_args[2]
-        # start_new_session=True should be in kwargs
-        call_kwargs = mock_popen.call_args[1]
-        assert call_kwargs.get("start_new_session") is True
-
-
-# ---------------------------------------------------------------------------
-# Platform allowlist gate
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateCommandPlatformGate:
-    """Tests for the platform-allowlist gate at the top of
-    ``_handle_update_command``.  Built-in messaging platforms are listed in
-    ``_UPDATE_ALLOWED_PLATFORMS``; plugin-migrated platforms (discord,
-    mattermost, teams, …) are NOT in the frozenset and rely on the
-    registry's ``allow_update_command=True`` fallback.  Programmatic
-    interfaces (ACP, API server, webhooks) must be blocked.
-    """
-
-
-    @pytest.mark.asyncio
-    async def test_allows_plugin_platform_via_registry_fallback(self, monkeypatch):
-        """A plugin-migrated platform (DISCORD) is no longer in
-        ``_UPDATE_ALLOWED_PLATFORMS`` but must still pass the gate via
-        the registry's ``allow_update_command=True`` flag.
-
-        This test is the empirical guarantee that removing DISCORD from
-        the hardcoded frozenset does not regress the /update command for
-        Discord users.
-        """
-
-        # Make sure the plugin registry is populated so the fallback fires.
-        from hermes_cli.plugins import PluginManager
-        PluginManager().discover_and_load(force=True)
-        from gateway.platform_registry import platform_registry
-        discord_entry = platform_registry.get("discord")
-        assert discord_entry is not None
-        assert discord_entry.allow_update_command is True
-
-        runner = _make_runner()
-        event = _make_event(platform=Platform.DISCORD)
-        monkeypatch.setenv("HERMES_MANAGED", "")
-
-        with patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
-
-        # The gate must NOT have rejected us — anything other than the
-        # ``platform_not_messaging`` rejection string is acceptable here.
-        # Later steps may legitimately return success ("Starting Hermes
-        # update…") or fail for environment reasons.
-        assert "only available from messaging platforms" not in result
-
-
 
 
 # ---------------------------------------------------------------------------

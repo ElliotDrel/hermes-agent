@@ -76,7 +76,7 @@ update_cmd._desktop_app_present = _phase
 
 Path(os.environ["HERMES_TEST_READY"]).touch()
 try:
-    cli_main.cmd_update(SimpleNamespace(post_swap=None, yes=True, gateway=False))
+    cli_main._cmd_native_update(SimpleNamespace(post_swap=None, yes=True, gateway=False))
 except Stop:
     pass
 seen["marker_after"] = update_lock.update_marker_path().exists()

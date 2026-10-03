@@ -7,7 +7,8 @@ from unittest.mock import ANY, patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+# These are upstream installer-core checks, not maintained-fork command routing.
+from hermes_cli.main import _cmd_native_update as cmd_update, PROJECT_ROOT
 from hermes_cli import main_web_build
 from hermes_cli import main_install_repair
 from hermes_cli import update_cmd

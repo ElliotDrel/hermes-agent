@@ -126,38 +126,18 @@ class TestRestoreStashWithInputFn:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateCommandGatewayFlag:
-    """Verify the gateway spawns hermes update --gateway."""
+class TestUpdateCommandSkillTurn:
+    """Command rendering no longer starts the legacy detached updater."""
 
     @pytest.mark.asyncio
-    async def test_spawns_with_gateway_flag(self, tmp_path):
-        """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
+    async def test_renders_skill_without_spawning(self):
         runner = _make_runner()
         event = _make_event()
-
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
-        mock_popen = MagicMock()
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
-             patch("subprocess.Popen", mock_popen):
-            await runner._handle_update_command(event)
-
-        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
-        call_args = mock_popen.call_args[0][0]
-        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
-        assert "--gateway" in cmd_string
-        assert "PYTHONUNBUFFERED" in cmd_string
-        assert "rc=$?" in cmd_string
-        assert "status=$?" not in cmd_string
+        runner._run_in_executor_with_context = AsyncMock(return_value="offline loaded skill")
+        with patch("subprocess.Popen", side_effect=AssertionError("Detached updater launched")):
+            result = await runner._handle_update_command(event)
+        assert result == "offline loaded skill"
+        runner._run_in_executor_with_context.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

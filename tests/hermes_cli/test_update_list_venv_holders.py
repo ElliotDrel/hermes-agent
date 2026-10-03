@@ -38,7 +38,7 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
     monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: holders)
 
     with pytest.raises(SystemExit) as exc:
-        cli_main.cmd_update(_args())
+        cli_main._cmd_native_update(_args())
 
     assert exc.value.code == update_cmd_windows.VENV_HOLDERS_EXIT == 3
     payload = json.loads(capsys.readouterr().out)
@@ -56,5 +56,5 @@ def test_list_venv_holders_empty_list_exits_zero_without_updating(monkeypatch, c
 
     monkeypatch.setattr("hermes_cli.update_cmd._cmd_update_impl", _boom)
 
-    assert cli_main.cmd_update(_args()) is None
+    assert cli_main._cmd_native_update(_args()) is None
     assert json.loads(capsys.readouterr().out) == []

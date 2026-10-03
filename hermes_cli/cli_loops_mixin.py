@@ -220,8 +220,20 @@ class CLILoopsMixin:
         self._console_print(f"  Status bar {'visible' if self._status_bar_visible else 'hidden'}")
 
     def _cmd_update(self, cmd_original: str) -> bool:
-        # A truthy result means the process is relaunching — leave the REPL.
-        return not self._handle_update_command()
+        from hermes_cli.fork_update_entry import build_update_invocation
+
+        # In an existing terminal session, reuse the ordinary skill-turn queue
+        # instead of relaunching the CLI or creating a second updater agent.
+        if len(cmd_original.split(maxsplit=1)) > 1:
+            self._console_print("Usage: /update. Native installer flags are unsupported.")
+            return True
+        try:
+            prompt = build_update_invocation(cmd_original, task_id=self.session_id, platform="cli")
+        except ValueError as exc:
+            self._console_print(str(exc))
+            return True
+        self._queue_loaded_skills(prompt, "Loading skill: hermes-fork-update", None)
+        return True
 
     def _cmd_version(self, cmd_original: str):
         from hermes_cli.main import _print_version_info

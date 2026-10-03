@@ -109,7 +109,7 @@ def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):
     _patch_update_deps(monkeypatch, tmp_path, _make_head_pinned_side_effect())
 
     with pytest.raises(SystemExit) as exc_info:
-        hermes_main.cmd_update(args)
+        hermes_main._cmd_native_update(args)
 
     assert exc_info.value.code == 1
     out = capsys.readouterr().out

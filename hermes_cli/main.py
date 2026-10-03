@@ -2414,7 +2414,24 @@ def _update_preflight_handled(args) -> bool:
 
 
 def cmd_update(args):
-    """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
+    """Enter the maintained-fork workflow through native chat/skill execution."""
+    from hermes_cli.fork_update_entry import chat_args_for_update
+
+    try:
+        chat_args = chat_args_for_update(args)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    # The command is an ordinary explicit user turn, with existing profile,
+    # provider, session/resume and chat dispatch. No updater lock or pause here.
+    # main() skips agent discovery for native update, so reuse chat startup only
+    # after validation. Refused inspection/installer flags never reach discovery.
+    _prepare_agent_startup(chat_args)
+    return cmd_chat(chat_args)
+
+
+def _cmd_native_update(args):
+    """Upstream installer core retained for compatibility tests, not command dispatch."""
     if _update_preflight_handled(args):
         return
     gateway_mode = getattr(args, "gateway", False)

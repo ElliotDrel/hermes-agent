@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update
+# Exercise retained installer core, never the maintained-fork agent route.
+from hermes_cli.main import _cmd_native_update as cmd_update
 from hermes_cli.update_cmd import _cmd_update_check
 
 

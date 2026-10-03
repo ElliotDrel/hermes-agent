@@ -884,6 +884,17 @@ class GatewayInboundMixin:
         _ack = f"Learning a skill from {'what you described' if req else 'this conversation'}…"
         return await self._hm_rewrite_turn_to_prompt(event, source, "learn", _ack, lambda: build_learn_prompt(req))
 
+    async def _hm_cmd_update(self, event, source, _quick_key):
+        # Use the existing user-turn skill renderer and ordinary agent admission.
+        # Scope disk-bound skill discovery to this source's profile, preserving
+        # the original event, session, reply and thread metadata.
+        try:
+            async with self._async_profile_scope_for_source(source):
+                event.text = await self._handle_update_command(event)
+        except ValueError as exc:
+            return True, str(exc)
+        return False, None
+
     async def _hm_cmd_plan(self, event, source, _quick_key):
         from agent.plan_prompt import build_plan_prompt
 
@@ -988,7 +999,7 @@ class GatewayInboundMixin:
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa", "update",
     })
 
     async def _hm_dispatch_canonical_command(

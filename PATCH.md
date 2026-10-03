@@ -4,9 +4,9 @@ This file records every deliberate behavior change carried by
 `ElliotDrel/hermes-agent:main` relative to the selected stable release of
 `NousResearch/hermes-agent`.
 Each active entry has a stable ID and lives in the same normal commit as the
-behavior it describes. `hermes update` performs deterministic rebases. The
-`hermes-fork-update` skill decides whether each entry still belongs after an
-upstream change.
+behavior it describes. Maintained-fork update commands load the existing
+`hermes-fork-update` skill. That workflow decides whether each entry still
+belongs after an upstream change; command entry points contain no updater algorithm.
 
 ## Fork baseline
 
@@ -33,7 +33,7 @@ history when upstream makes the behavior unnecessary.
 
 ## Active patches
 
-### HERMES-FORK-001: Resumable PatchMD fork updates (retired)
+### HERMES-FORK-001: Native skill-driven updates (legacy updater retired)
 
 - **Retirement, 2026-10-03:** Elliot explicitly authorizes candidate-only retirement
   after the protected shutdown/turn/input assessment. Restore updater, shutdown,
@@ -47,6 +47,74 @@ history when upstream makes the behavior unnecessary.
   commits. No live source, dependency, profile, checkpoint, publication, installer
   or gateway control action is authorized. `fork-update-state.json` stays intact.
   The existing workspace skill owns the replacement workflow, not updater code.
+
+- **Replacement behavior, 2026-10-03:** `hermes update` renders the profile's
+  existing `hermes-fork-update` skill into an ordinary USER query and reuses
+  native chat startup and execution. Terminal `/update` queues that same skill
+  through the existing loaded-skill turn queue. Gateway `/update` preserves its
+  event, source, thread, session key, reply/channel context and request metadata,
+  then falls through to normal agent admission. Busy or pending gateway sessions
+  reject the command before skill loading. No second updater agent is spawned.
+- **Authorization:** Elliot's direct candidate-only override follows the protected
+  shutdown, turn and request-input assessment. It covers retiring the legacy
+  hooks and these two native entry paths. It excludes live mutation, installation,
+  publication, dependencies, gateway control, and global permission-gate removal.
+  Ordinary explicit update requests authorize the skill workflow, not a new
+  protected-source override. Internal/bot/control-disabled events, quoted text,
+  historical commands and tool results cannot authorize this command route.
+- **Activation boundary:** An owning Discord/gateway agent prepares and verifies,
+  then reports the independently authorized machine-side handoff. It must not
+  launch its own restart through a helper. A user-invoked terminal agent is an
+  independent machine-side context, subject to the same skill's profile,
+  recovery, publication and lifecycle gates. No global no-restart rule changes.
+- **Flags and failure behavior:** Legacy `--continue` and `--abort` are absent
+  from the update parser and fail with exit `2`. Native installer switches remain
+  parseable for compatibility but fail with exit `2` before chat startup or agent
+  execution. This explicitly includes read-only `--check`, `--plan` and
+  `--list-venv-holders`; they neither inspect the fleet nor start an updater.
+  Gateway and terminal `/update` reject all arguments. Missing or disabled
+  `hermes-fork-update` fails closed. No fallback to the native updater exists.
+- **Touchpoints:** `hermes_cli/fork_update_entry.py`, `hermes_cli/main.py`,
+  `hermes_cli/cli_loops_mixin.py`, `hermes_cli/commands.py`,
+  `hermes_cli/subcommands/update.py`, `gateway/run_busy.py`,
+  `gateway/run_inbound.py`, and `gateway/slash_commands.py`. Upstream installer
+  tests call the retained private `_cmd_native_update` core explicitly, preventing
+  their existing mocks from entering the maintained-fork agent route.
+- **Offline verification:** `tests/gateway/test_fork_update_entry.py` intercepts
+  native chat/startup before commands execute and fakes the model provider.
+  Real skill rendering and request assembly cover USER roles, unchanged system
+  prefix/tool schemas/options, history and multi-turn resume, caching on/off,
+  request metadata, busy/pending ordering, authorization, flags, fail-closed skill
+  loading, terminal queuing, Discord and Telegram text dispatch. No live model,
+  installer or gateway lifecycle probe runs. Passing deterministic fixtures do
+  not establish nondeterministic agent safety or installed health.
+- **Baseline evidence:** Commit `d2f1ec57500543623f498e06bd5a69179fc321d9`
+  precedes routing. Nine updater-only source files and six restored upstream test
+  files match the pinned stable blobs. Only the documented progress compositor,
+  auxiliary/title defaults and Windows venv-site-packages regions remain in the
+  three selectively restored files. `AGENTS.md` remains unchanged.
+- **Measured checks:** The final bounded selection passes `218` tests with `2`
+  platform skips. One independently reproduced baseline parity failure is
+  explicitly deselected. The earlier undeselected selection reports `197 passed,
+  2 skipped, 1 failed`; its sole failure is the same missing-`usage` parity test.
+  Candidate-only import checks pass. Logs and JUnit XML are retained in the
+  isolated candidate job, not the live installation. The command test module
+  includes `33` offline route/request cases after all boolean flag checks.
+- **Runnable selection:** Use the job's `run_source_tests.py` launcher through
+  `uv run --no-project --with pytest --with pytest-asyncio python`, with explicit
+  `--basetemp` under `C:/Users/2supe/AppData/Local/Temp/hermes-pytest/` outside
+  the real workspace kanban root. Select `tests/gateway/test_fork_update_entry.py`,
+  the existing update command/control-socket/drain/streaming files, CLI updater
+  and launcher tests, command registry, Discord parity, prompt-cache boundary,
+  and apt/docker/handoff/yes-option compatibility files. `acceptance-final.xml`
+  lists the exact cases; `source-evidence.json` retains the full command and results.
+- **Known baseline issue:** The bounded registry run reproduces
+  `TestSlackNativeSlashes::test_telegram_parity` failing for missing `usage`.
+  Rerunning that exact test with baseline `hermes_cli/commands.py` reproduces the
+  identical failure. The replacement file is restored byte-for-byte afterward.
+  This pre-existing platform-cap issue is out of updater scope.
+
+The following bullets retain the retired implementation's historical record.
 
 - **Intent:** Keep the installed checkout on fork `main` while preserving every
   deliberate local behavior as reviewable commits rebased onto official stable.
@@ -1217,8 +1285,8 @@ Recreate a new watch only when fresh production evidence warrants it.
 
 ### Legacy update-audit evidence lifecycle
 
-This describes the older product-hook workflow, not the standalone replacement.
-`HERMES-FORK-001` uses `fork-update-state.json` as the machine checkpoint for
+This describes retired product-hook history, not active authority. The old
+`HERMES-FORK-001` implementation used `fork-update-state.json` as its checkpoint for
 an active update. It records source and target releases, backup and rebase
 heads, and whether the required audit remains pending. A per-patch evidence
 payload exists only while `complete_audit.py` validates a pending audit. On a
