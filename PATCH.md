@@ -673,6 +673,18 @@ The following bullets retain the retired implementation's historical record.
   activates both input fixes. Roll back this extension with a reviewed inverse
   of its source commit and manual restart; the earlier automatic-title fix is
   independent and existing history remains compatible.
+- **Candidate preservation, 2026-10-03:** Elliot authorizes carrying the two
+  existing title-fix commits unchanged in Discord message `1556040242304262215`,
+  thread `1555552001478107226`. Cherry-pick source commits
+  `ae5a217781b97bc77f75d4fb52c9bc05b793b9a8` and
+  `d6266c3acecd08f8e744e8a5029f29ae736b7bde` into the isolated updater candidate.
+  All five transferred Python/test files match the installed title-fix commit
+  byte-for-byte and compile; the existing title contract and its verification
+  history transfer unchanged. No additional test suite, model call, review,
+  installed-source change, dependency change or gateway action runs. Earlier
+  passing suite results belong to their recorded commits, not a newly executed
+  combined-candidate run. This preservation adds no title behavior; live
+  activation remains a separate machine-side operation.
 - **Upstream disposition:** Candidate for upstreaming as a richer session-title
   workflow and original-input isolation fix. Keep active while the workspace
   relies on this naming contract.
