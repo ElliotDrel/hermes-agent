@@ -44,8 +44,9 @@ TitleCallback = Callable[[str, str], None]
 # Validation callback: () -> bool. See #19027.
 RuntimeValidator = Callable[[], bool]
 
-# Text budget handed to the model (Claude Code / OpenClaw converged on 1000).
-MAX_TITLE_INPUT_CHARS = 1000
+# HERMES-FORK-012: Bound title-only input at the operator's requested 5,000 characters.
+# This does not change the main agent's input or the title output limit.
+MAX_TITLE_INPUT_CHARS = 5_000
 _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
 _ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
 # Footers the @-reference expander appends below the typed text (agent/context_references.py).

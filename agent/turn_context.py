@@ -181,8 +181,13 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
             if isinstance(msg, dict) and msg.get("role") == "user":
                 user_text = flatten_message_text(msg.get("content")).strip()
                 metadata = msg.get("display_metadata")
-                if isinstance(metadata, dict) and isinstance(metadata.get("title_preview"), str):
-                    title_preview = metadata["title_preview"]
+                if isinstance(metadata, dict):
+                    # HERMES-FORK-012: Gateway-bound skills precede the opener in content.
+                    # Use the captured opener only for titles; never rewrite that content.
+                    if isinstance(metadata.get("title_user_message"), str):
+                        user_text = metadata["title_user_message"].strip()
+                    if isinstance(metadata.get("title_preview"), str):
+                        title_preview = metadata["title_preview"]
                 break
         if not user_text:
             return

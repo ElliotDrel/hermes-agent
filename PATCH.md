@@ -576,8 +576,59 @@ The following bullets retain the retired implementation's historical record.
   the same source and unchanged admission/no-clobber guards. The installed
   title/progress/composition gate passes `286` tests, with two previously
   documented Windows media-URI assertions deselected.
+- **Original-opening input repair and protected override, 2026-10-03:** After
+  the title-only input, main-message isolation, global 5,000-character budget,
+  deterministic-test and rollback assessments, Elliot approves the global
+  automatic-title correction in Discord messages `1555979321682694227` and
+  `1555980399820406905`, thread `1550164926771765370`. This repair extends
+  `HERMES-FORK-012`; it does not authorize unrelated prompt or skill policy.
+- **Original-opening incident and repair:** Channel-bound skills prepend their
+  complete bodies to the opening user message. The old 1,000-character title
+  slice excludes the actual request and titles the coding instructions. The
+  gateway now captures the original opener before prepending skills, forwards
+  it through existing DB-only `display_metadata.title_user_message`, and retains
+  it in fallback transcript rows. The turn-start titler reads that field instead
+  of the skill-expanded content. Main role/content, system prompts, schemas,
+  routing, cache rules and turn timing remain unchanged. Shared automatic-title
+  input now takes up to 5,000 characters, including Desktop paste-preview paths.
+  Empty original text does not turn an image-only opener into a skill title.
+  `/rename` history selection and limits are unchanged by this repair.
+- **Repair touchpoints:** `agent/title_generator.py`, `agent/turn_context.py`,
+  `gateway/run_turn.py`, and `tests/gateway/test_auto_skill_title_input.py`.
+- **Tests-first and adjacent evidence:** The new offline regression reports
+  `8 failed in 5.29s` before repair, including absent original-input metadata
+  (`KeyError: 'title_user_message'`) and the 5,000-character input assertion.
+  The corrected worktree gate reports `217 passed, 1 deselected in 45.16s`.
+  The exact tested diff is applied to the clean installed checkout; its final
+  gate also adds `tests/gateway/test_compression_progress.py::test_real_detached_adoption_and_model_requests_ignore_display`
+  and reports `219 passed, 1 deselected in 45.23s`. That additional real detached
+  compression/adoption check exercises cached/uncached main requests offline.
+  Actual cached/uncached AIAgent request snapshots compare data-identically with
+  and without the title metadata, including resumed history, tools and request
+  options. Single and multiple bound skills preserve the original expanded main
+  message exactly; the title request contains only the opener. Existing paste,
+  ordinary-turn, rename, synthetic-turn, session and cache suites run alongside.
+  The deselected manual-thread adapter test fails identically on untouched
+  installed `c1f2886c1a` (`1 failed in 2.17s`) because the existing environment
+  override wins over its explicit false fixture. No adapter behavior is changed.
+  Runnable check uses the installed dependency directories process-locally:
+  ```text
+  uv run --no-project --with pytest --with pytest-asyncio python -c "import sys;sys.path.extend(['C:/Users/2supe/AppData/Local/hermes/hermes-agent/.venv/Lib/site-packages','C:/Users/2supe/AppData/Local/hermes/hermes-agent/venv/Lib/site-packages']);import pytest;raise SystemExit(pytest.main(['-q','tests/gateway/test_auto_skill_title_input.py','tests/agent/test_title_generator.py','tests/agent/test_turn_context.py','tests/agent/test_prompt_cache_boundary.py','tests/agent/test_prompt_cache_scope.py','tests/gateway/test_rename_command.py','tests/gateway/test_session_title_rename_lane.py','tests/agent/test_prompt_caching.py','tests/agent/test_synthetic_turn_display_kind.py','tests/agent/test_session_message_payload.py','-k','not test_manual_thread_initial_name_uses_current_discord_name_only_when_enabled','--basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/title-input-final-1003']))"
+  ```
+- **Repair route, limits and activation:** A read-only production auxiliary
+  resolver returns `title_generation provider=openai-codex model=gpt-6-luna`.
+  Both automatic and regenerated titles already use that task; configuration
+  and provider fallback rules need no edit. No paid model or live Discord call,
+  session/history rewrite, dependency modification or gateway restart occurs.
+  The fix records originals for newly loaded skill turns; it does not retroactively
+  recover originals from older unframed skill-expanded transcript rows.
+  Offline tests do not establish nondeterministic title quality or live activation.
+  A manual gateway restart loads the source. Rollback is a reviewed inverse of
+  this repair's source commit and another manual restart; existing sessions remain
+  compatible and need no migration.
 - **Upstream disposition:** Candidate for upstreaming as a richer session-title
-  workflow. Keep active while the workspace relies on this naming contract.
+  workflow and original-input isolation fix. Keep active while the workspace
+  relies on this naming contract.
 
 ### HERMES-FORK-013: Seven-day Discord thread retention
 
