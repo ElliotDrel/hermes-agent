@@ -596,11 +596,21 @@ class GatewayTurnMixin:
                     _combined_parts.append(_part)
                     _loaded_names.append(_sname)
             if _combined_parts:
+                # HERMES-FORK-012: Retain the real opener as title-only metadata.
+                # The skill-loaded main message below stays byte-identical.
+                if not isinstance(getattr(event, "_title_user_message", None), str):
+                    event._title_user_message = event.text
                 _combined_parts.append(event.text)  # user's original text after the payloads
                 event.text = "\n\n".join(_combined_parts)
                 logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
         except Exception as e:
             logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+
+    @staticmethod
+    def _hmwa_title_display_metadata(event):
+        """Only captured auto-skill openers carry an auxiliary-only original text."""
+        original = getattr(event, "_title_user_message", None)
+        return {"title_user_message": original} if isinstance(original, str) else {}
 
     async def _hmwa_acquire_turn_lease(self, _quick_key, run_generation, session_entry, _session_env_tokens):
         """Serialize [load history → run → flush] per resolved SESSION_ID so another routing key on
@@ -1882,7 +1892,10 @@ class GatewayTurnMixin:
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
         if prepared.persistence_owner:
-            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+            _user_entry["display_metadata"] = {
+                "gateway_input_owner": prepared.persistence_owner,
+                **GatewayTurnMixin._hmwa_title_display_metadata(event),
+            }
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -2266,7 +2279,8 @@ class GatewayTurnMixin:
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
+                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event),
+                    **self._hmwa_title_display_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
