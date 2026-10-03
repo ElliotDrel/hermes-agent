@@ -982,27 +982,17 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(
-    old_pid: int, run_argv: list[str], *, source_root: str | Path | None = None,
-) -> bool:
+def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
     """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(
-        old_pid, list(run_argv), source_root=source_root,
-    )
+    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
 
 
-def launch_detached_profile_gateway_restart(
-    profile: str, old_pid: int, *, source_root: str | Path | None = None,
-) -> bool:
+def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
-    return old_pid > 0 and _spawn_gateway_restart_watcher(
-        old_pid, _gateway_run_args_for_profile(profile), source_root=source_root,
-    )
+    return old_pid > 0 and _spawn_gateway_restart_watcher(old_pid, _gateway_run_args_for_profile(profile))
 
 
-def _spawn_gateway_restart_watcher(
-    old_pid: int, run_argv: list[str], *, source_root: str | Path | None = None,
-) -> bool:
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
@@ -1021,12 +1011,8 @@ def _spawn_gateway_restart_watcher(
     if sys.platform == "win32":
         try:
             from hermes_cli.gateway_windows import windowless_gateway_restart_spec
-            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(
-                list(run_argv), source_root=source_root,
-            )
+            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(list(run_argv))
         except Exception:
-            if source_root is not None:
-                return False
             # Fall back to the original argv: a visible window beats a failed respawn.
             respawn_cwd = ""
             respawn_env_overlay = {}

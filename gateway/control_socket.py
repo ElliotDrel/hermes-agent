@@ -35,11 +35,6 @@ _MAX_REQUEST_BYTES = 64 * 1024
 _MAX_RESPONSE_BYTES = 512 * 1024
 _DEFAULT_CLIENT_TIMEOUT = 2.0
 
-# An update must free the checkout promptly enough to remain interactive. It
-# still uses the ordinary restart drain path, but it does not inherit the
-# 30-minute after-turn allowance intended for a user-requested /restart.
-UPDATE_PAUSE_AFTER_TURN_TIMEOUT = 120.0
-
 
 def _home_hash(home: Path) -> str:
     return hashlib.sha256(os.path.normcase(str(Path(home).expanduser().resolve(strict=False))).encode("utf-8")).hexdigest()[:16]
@@ -347,32 +342,10 @@ def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) ->
     return query_gateway_control(home, "identify", timeout=timeout)
 
 
-def pause_for_update_wait_budget(
-    *,
-    restart_after_turn_timeout: float,
-    restart_drain_timeout: float,
-    cron_drain_timeout: float,
-) -> float:
-    """Maximum gateway lifetime after accepting ``pause-for-update``.
-
-    Restart first waits for active turns, then ``stop()`` applies the larger
-    of the ordinary and cron drain budgets. The updater must cover both phases
-    before it falls back to a Windows process-tree kill, otherwise that kill can
-    also terminate the detached updater it spawned.
-    """
-    after_turn = min(
-        max(0.0, float(restart_after_turn_timeout)),
-        UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
-    )
-    restart_drain = max(0.0, float(restart_drain_timeout))
-    cron_drain = max(0.0, float(cron_drain_timeout))
-    return after_turn + max(restart_drain, cron_drain)
-
-
 def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to drain and exit for an update. Returns the ACK ``{"pausing",
-    "already_stopping", "pid", "drain_timeout"}``, whose wait budget covers the complete after-turn plus
-    stop/drain lifecycle, or None when no gateway answers (old gateway without the verb, no/dead socket).
+    "already_stopping", "pid", "drain_timeout"}`` or None when no gateway answers (old gateway without
+    the verb, no/dead socket) — the caller then uses the legacy signal/tree-kill pause path.
 
     Step 2 of the socket migration (#92091).
     """

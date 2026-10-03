@@ -33,7 +33,20 @@ history when upstream makes the behavior unnecessary.
 
 ## Active patches
 
-### HERMES-FORK-001: Resumable PatchMD fork updates
+### HERMES-FORK-001: Resumable PatchMD fork updates (retired)
+
+- **Retirement, 2026-10-03:** Elliot explicitly authorizes candidate-only retirement
+  after the protected shutdown/turn/input assessment. Restore updater, shutdown,
+  marker, control-socket and notification code to pinned official stable
+  `v2026.9.24` (`f97608f178d1ffeca59860195ab7da295f7c8e5f`). Remove
+  `hermes_cli/fork_update.py` and custom-only legacy updater tests. Preserve
+  unrelated progress, auxiliary/title and Windows venv behavior, ledger history,
+  and the maintained-fork gates in `AGENTS.md`. The history below describes the
+  retired implementation; it is no longer an active contract.
+- **Scope:** Baseline restoration precedes replacement routing in separate local
+  commits. No live source, dependency, profile, checkpoint, publication, installer
+  or gateway control action is authorized. `fork-update-state.json` stays intact.
+  The existing workspace skill owns the replacement workflow, not updater code.
 
 - **Intent:** Keep the installed checkout on fork `main` while preserving every
   deliberate local behavior as reviewable commits rebased onto official stable.

@@ -5282,18 +5282,9 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             return consume_takeover_marker_for_self()
 
         # Planned stop: CLI marks first, else its SIGTERM looks like an external kill. SIGINT = Ctrl+C.
-        update_pause = False
-
         def _planned_stop() -> bool:
-            nonlocal update_pause
-            from gateway.status import consume_planned_stop_marker_record_for_self
-            record = consume_planned_stop_marker_record_for_self()
-            planned = record is not None
-            # Metadata only selects the update wait after the normal PID/start-time/TTL
-            # validation succeeds. Unlabelled markers retain ordinary gateway-stop behavior.
-            update_pause = planned and record.get("operation") == "pause-for-update"
-            # No separate metadata read: a replaced marker cannot change classification.
-            return planned
+            from gateway.status import consume_planned_stop_marker_for_self
+            return consume_planned_stop_marker_for_self()
 
         # Fast (<10ms) sync snapshot: stdlib + /proc, no subprocesses (`ps aux` here once blocked ~3s).
         def _snapshot():
@@ -5309,23 +5300,6 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             planned_stop_seen[0] = True
         elif planned_stop_seen[0] and not planned_takeover:
             planned_stop = True
-        if received_signal is None and not planned_takeover:
-            # Only the watcher uses None. Revalidate on the loop thread: a queued
-            # marker may disappear, or the socket may already own the restart wait.
-            # Real SIGINT/SIGTERM and takeover must still reach ordinary stop().
-            if not planned_stop:
-                return
-            if getattr(runner, "_restart_task_started", False) and getattr(runner, "_draining", False):
-                return
-            if update_pause:
-                # Marker-first updates must use the same bounded after-turn path
-                # as socket-first updates, without launching a detached helper.
-                from gateway.control_socket import UPDATE_PAUSE_AFTER_TURN_TIMEOUT
-                runner.request_restart(
-                    detached=False, via_service=True,
-                    after_turn_timeout=UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
-                )
-                return
         _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
@@ -5620,7 +5594,7 @@ async def _start_gateway_start_control_socket(runner):
         # a truthful liveness/identity query for updater and fleet consumers. Strictly non-fatal: a bind
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
-        from gateway.control_socket import GatewayControlServer, UPDATE_PAUSE_AFTER_TURN_TIMEOUT, pause_for_update_wait_budget
+        from gateway.control_socket import GatewayControlServer
         from gateway.run_profile_reconcile import (
             migrate_profile_identity_verb, purge_profile_identity_verb,
             unserve_profile_verb, serve_profile_verb,
@@ -5635,23 +5609,17 @@ async def _start_gateway_start_control_socket(runner):
         _main_loop = asyncio.get_running_loop()
 
         def _pause_for_update_handler() -> dict:
-            _drain = pause_for_update_wait_budget(
-                restart_after_turn_timeout=getattr(runner, "_restart_after_turn_timeout", 0.0),
-                restart_drain_timeout=getattr(runner, "_restart_drain_timeout", 30.0),
-                cron_drain_timeout=getattr(runner, "_cron_drain_timeout", 30.0),
-            )
+            try:
+                from hermes_cli.gateway import _get_restart_drain_timeout
+                _drain = float(_get_restart_drain_timeout())
+            except Exception:
+                _drain = 30.0
             accepted_box: list[bool] = []
             _done = threading.Event()
 
             def _request() -> None:
                 try:
-                    accepted_box.append(
-                        runner.request_restart(
-                            detached=False,
-                            via_service=True,
-                            after_turn_timeout=UPDATE_PAUSE_AFTER_TURN_TIMEOUT,
-                        )
-                    )
+                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
                 finally:
                     _done.set()
 

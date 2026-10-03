@@ -24,17 +24,6 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "kind (git/docker/nix), every running Hermes service across all "
             "profiles with its supervisor and running code version, and how "
             "each will be restarted. Read-only; safe on a live fleet.")
-    fork_resume = update_parser.add_mutually_exclusive_group()
-    fork_resume.add_argument(
-        "--continue", dest="continue_fork_update", action="store_true", default=False,
-        help=("Finish a maintained-fork update after conflicts were resolved and "
-              "`git rebase --continue` completed."),
-    )
-    fork_resume.add_argument(
-        "--abort", dest="abort_fork_update", action="store_true", default=False,
-        help=("Abort a paused maintained-fork rebase and restore its recorded "
-              "backup ref. The backup branch is retained."),
-    )
     update_parser.add_argument(
         "--list-venv-holders", action="store_true", default=False,
         help="Print the processes the Windows venv-holder guard would refuse on as a JSON list "

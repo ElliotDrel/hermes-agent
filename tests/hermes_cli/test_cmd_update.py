@@ -362,7 +362,7 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed", return_value=True) as sync_mock:
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
             cmd_update(mock_args)
 
         expected_git_cmd = (
@@ -446,7 +446,7 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed", return_value=True), patch.object(
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
             update_cmd,
             "_venv_core_imports_healthy",
             side_effect=[
@@ -500,7 +500,7 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed", return_value=True), patch.object(
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
             update_cmd,
             "_repair_node_deps_on_current_checkout",
             return_value=False,
@@ -568,7 +568,7 @@ class TestCmdUpdateBranchFallback:
             "hermes_cli.gateway._get_service_pids",
             return_value=set(),
         ), patch.object(
-            hm, "_sync_with_upstream_if_needed", return_value=True
+            hm, "_sync_with_upstream_if_needed"
         ), patch.object(
             hm,
             "_upgrade_pip_before_lazy_refresh",
@@ -586,43 +586,6 @@ class TestCmdUpdateBranchFallback:
         post_update_step.assert_called_once()
         captured = capsys.readouterr()
         assert "Already up to date!" not in captured.out
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_fork_rebase_conflict_exits_three_before_post_update_steps(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        """A paused fork rebase releases the gateway pause and runs no tail work."""
-        from hermes_cli import main as hm
-        from hermes_cli.fork_update import ForkSyncResult
-
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
-        )
-        paused = ForkSyncResult(
-            verified=True,
-            paused=True,
-            needs_audit=True,
-            pre_update_head="aaaaaaa",
-            conflicts=("hermes_cli/example.py",),
-        )
-
-        with patch.object(
-            hm,
-            "_get_origin_url",
-            return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(
-            hm, "_sync_with_upstream_if_needed", return_value=paused
-        ), patch.object(
-            hm, "_resume_windows_gateways_after_update"
-        ) as resume, patch("hermes_cli.update_cmd._hand_off_post_swap") as post_update_step:
-            with pytest.raises(SystemExit) as exit_info:
-                cmd_update(mock_args)
-
-        assert exit_info.value.code == 3
-        resume.assert_called()
-        post_update_step.assert_not_called()
-        assert "hermes-fork-update" in capsys.readouterr().out
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

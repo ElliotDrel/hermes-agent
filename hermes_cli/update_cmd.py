@@ -13,7 +13,7 @@ import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules res
 import subprocess
 import sys
 import time as _time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
@@ -933,9 +933,6 @@ class _CheckoutPlan:
     prompt_for_restore: bool
     switch_block_reason: "str | None"
     upstream_checked: bool
-    fork_pre_update_sha: str | None = None
-    fork_paused: bool = False
-    fork_recovery_worktree: str | None = None
 
 
 def _apply_parked_branch_guard(
@@ -984,7 +981,7 @@ def _apply_parked_branch_guard(
 
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, _windows_gateway_resume, fork_sync_complete=False):
+    switch_branch, _windows_gateway_resume):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
     date, -1 when tips differ but the shallow count is unrecoverable."""
@@ -1037,38 +1034,21 @@ def _prepare_checkout_for_update(
     # "Already up to date!" and verified nothing). Non-fork checkouts have no upstream question: origin IS
     # the official repo, so "Already up to date!" is fully verified there.
     upstream_checked = True
-    fork_result = None
-    # A successful --continue already reconciled the pinned release. Starting a
-    # second rebase here would reject its own pending audit before installing deps.
-    if not fork_sync_complete and commit_count == 0 and is_fork and branch == "main":
+    if commit_count == 0 and is_fork and branch == "main":
         pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
-        try:
-            fork_result = _m()._sync_with_upstream_if_needed(
-                git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
-        except Exception as exc:
-            print(f"  ✗ Maintained-fork update refused: {exc}")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            sys.exit(1)
-        upstream_checked = bool(fork_result)
-        if getattr(fork_result, "paused", False):
-            return _CheckoutPlan(
-                auto_stash_ref=auto_stash_ref, commit_count=0, in_place_update=in_place_update,
-                parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
-                switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
-                fork_pre_update_sha=getattr(fork_result, "pre_update_head", None), fork_paused=True,
-                fork_recovery_worktree=getattr(fork_result, "recovery_worktree", None))
+        upstream_checked = _m()._sync_with_upstream_if_needed(
+            git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
         post_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         if pre_sync_sha and post_sync_sha and pre_sync_sha != post_sync_sha:
             synced_count = _count_commits_between(
                 git_cmd, _m().PROJECT_ROOT, pre_sync_sha, post_sync_sha)
+            # HEAD moving is proof of an update even if the count can't be read.
             commit_count = max(1, synced_count)
 
     return _CheckoutPlan(
         auto_stash_ref=auto_stash_ref, commit_count=commit_count, in_place_update=in_place_update,
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
-        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
-        fork_pre_update_sha=getattr(fork_result, "pre_update_head", None),
-        fork_paused=bool(getattr(fork_result, "paused", False)))
+        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked)
 
 
 @dataclass
@@ -1535,7 +1515,10 @@ def _finish_pulled_update(
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
     _windows_gateway_resume) -> None:
     """Post-swap tail (git path): sync Python/Node/web/Desktop, maintenance, fleet restart."""
-    # The maintained-fork pre-swap phase already rebased; do not sync twice.
+    if is_fork and branch == "main":
+        _m()._sync_with_upstream_if_needed(
+            git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
+
     # .[all], falling back to base + extras individually so one broken extra doesn't strip
     # the rest; the ownership preflight refuses first on foreign-owned (sudo-pip) venv files.
     _sync_python_dependencies_after_pull(
@@ -1561,10 +1544,8 @@ def _finish_pulled_update(
     # Exit code *before* the restart: under --gateway this process lives in the gateway's
     # systemd cgroup and the systemctl-restart fallback SIGKILLs it (KillMode=mixed), so
     # the marker would never land and the new gateway's watcher would time out spuriously.
-    from hermes_cli.fork_update import fork_audit_pending
     if gateway_mode:
-        _write_gateway_update_exit_code(
-            update_complete, exit_code=(3 if update_complete and fork_audit_pending() else None))
+        _write_gateway_update_exit_code(update_complete)
 
     if opts.no_gateway_restart:
         # Cron inside the gateway's own cgroup: restarting the fleet now would
@@ -1593,57 +1574,12 @@ def _finish_pulled_update(
     _verify_fleet_after_update(
         _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
         node_failures=node_failures, update_complete=update_complete)
-    if fork_audit_pending():
-        print("\n⚠ Deterministic fork update complete; PATCH.md audit required.")
-        print("  Run the hermes-fork-update skill. Exiting with code 3.")
-        sys.exit(3)
-
-
-def _fork_update_preflight(args) -> bool:
-    """Validate a maintained-fork handoff before backup or gateway mutation."""
-    from hermes_cli.fork_update import ForkUpdateError, abort_fork_rebase, fork_audit_pending, load_fork_update_state
-
-    continue_fork_update = bool(getattr(args, "continue_fork_update", False))
-    abort_fork_update = bool(getattr(args, "abort_fork_update", False))
-    state = load_fork_update_state()
-    if abort_fork_update:
-        git_cmd = ["git"]
-        if sys.platform == "win32":
-            git_cmd += ["-c", "windows.appendAtomically=false"]
-        try:
-            restored = abort_fork_rebase(git_cmd, _m().PROJECT_ROOT)
-        except ForkUpdateError as exc:
-            print(f"✗ Could not abort maintained-fork update: {exc}")
-            sys.exit(1)
-        print(f"✓ Aborted maintained-fork update; restored {restored[:10]}.")
-        print("  The backup/pre-update-* recovery branch was retained.")
-        sys.exit(0)
-    if continue_fork_update and state is None:
-        print("✗ No paused maintained-fork update exists to continue.")
-        sys.exit(1)
-    if not continue_fork_update and fork_audit_pending():
-        print("⚠ A maintained-fork update still requires judgment.")
-        print("  Run the hermes-fork-update skill to audit every active PATCH.md entry.")
-        sys.exit(3)
-    return continue_fork_update
-
-def _arm_conflict_safe_gateway_restart(result, token: dict | None) -> None:
-    """Route a paused maintained-fork restart through its clean recovery checkout."""
-    if not token or not getattr(result, "conflicts", ()):
-        return
-    recovery_root = getattr(result, "recovery_worktree", None)
-    if not recovery_root or not Path(recovery_root).is_dir():
-        raise RuntimeError(
-            "The maintained-fork rebase paused, but its conflict-safe gateway runtime is unavailable."
-        )
-    token["restart_source_root"] = str(Path(recovery_root))
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
-    continue_fork_update = _fork_update_preflight(args)
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
@@ -1708,25 +1644,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         return
 
     try:
-        fork_continue_result = None
-        if continue_fork_update:
-            from hermes_cli.fork_update import ForkUpdateError, continue_fork_rebase
-            try:
-                fork_continue_result = continue_fork_rebase(git_cmd, _m().PROJECT_ROOT)
-            except ForkUpdateError as exc:
-                print(f"✗ Could not continue maintained-fork update: {exc}")
-                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-                sys.exit(1)
-            if fork_continue_result.paused:
-                print("⚠ Maintained-fork update is still paused.")
-                for conflict in fork_continue_result.conflicts:
-                    print(f"  conflict: {conflict}")
-                if fork_continue_result.detail:
-                    print(f"  {fork_continue_result.detail}")
-                _arm_conflict_safe_gateway_restart(fork_continue_result, _windows_gateway_resume)
-                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-                sys.exit(3)
-
         # Scoped fetch: a bare `git fetch origin` pulls thousands of branches and can stall.
         branch = _m()._resolve_update_branch(args)
 
@@ -1763,25 +1680,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            _windows_gateway_resume=_windows_gateway_resume,
-            fork_sync_complete=fork_continue_result is not None)
-        if _plan.fork_paused:
-            print("  Run the hermes-fork-update skill before resuming.")
-            if _windows_gateway_resume:
-                recovery_root = _plan.fork_recovery_worktree
-                if not recovery_root or not Path(recovery_root).is_dir():
-                    raise RuntimeError("The maintained-fork rebase paused without a conflict-safe gateway runtime.")
-                _windows_gateway_resume["restart_source_root"] = str(Path(recovery_root))
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            sys.exit(3)
-        if fork_continue_result is not None:
-            _plan = replace(
-                _plan,
-                commit_count=max(1, _count_commits_between(
-                    git_cmd, _m().PROJECT_ROOT,
-                    fork_continue_result.pre_update_head or "HEAD^", "HEAD")),
-                fork_pre_update_sha=fork_continue_result.pre_update_head,
-            )
+            _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
 
         if commit_count == 0:
@@ -1803,30 +1702,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("→ Updates available (commit count unknown on this shallow checkout)")
 
         print("→ Pulling updates...")
-        if _plan.fork_pre_update_sha:
-            # The maintained-fork helper already rebased and lease-pushed. Run
-            # the normal pull helper only to settle an autostash, while keeping
-            # the pre-rebase SHA for syntax rollback and HEAD verification.
-            _pull_updates(
-                git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
-                gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-                keep_stash=opts.keep_stash)
-            pre_pull_sha = _plan.fork_pre_update_sha
-        else:
-            pre_pull_sha = _pull_updates(
-                git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
-                gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-                keep_stash=opts.keep_stash)
-            if is_fork and branch == "main":
-                sync_result = _m()._sync_with_upstream_if_needed(
-                    git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
-                if getattr(sync_result, "paused", False):
-                    print("  Run the hermes-fork-update skill before resuming.")
-                    _arm_conflict_safe_gateway_restart(sync_result, _windows_gateway_resume)
-                    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-                    sys.exit(3)
-                if getattr(sync_result, "pre_update_head", None):
-                    _plan = replace(_plan, fork_pre_update_sha=sync_result.pre_update_head)
+        pre_pull_sha = _pull_updates(
+            git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
+            gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
+            keep_stash=opts.keep_stash)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
             is_fork=is_fork, desktop_dir=desktop_dir,
