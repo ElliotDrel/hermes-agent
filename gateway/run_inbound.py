@@ -890,9 +890,14 @@ class GatewayInboundMixin:
         # the original event, session, reply and thread metadata.
         try:
             async with self._async_profile_scope_for_source(source):
-                event.text = await self._handle_update_command(event)
+                prompt = await self._handle_update_command(event)
         except ValueError as exc:
             return True, str(exc)
+        # Skill loading yields before the ordinary session claim. A competing
+        # run must not receive this explicit update as steering or queued text.
+        if self._is_session_running(_quick_key):
+            return True, "The session is busy; /update can't run until it is idle."
+        event.text = prompt
         return False, None
 
     async def _hm_cmd_plan(self, event, source, _quick_key):
@@ -1322,6 +1327,7 @@ class GatewayInboundMixin:
         if self._is_session_running(_quick_key):
             return await self._hm_handle_running_session_message(event, source, _quick_key)
 
+        _explicit_update = event.get_command() == "update"
         _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
         if _handled:
             return _result
@@ -1345,6 +1351,10 @@ class GatewayInboundMixin:
                     "please resend shortly."
                 )
 
+        # Command rendering and lobby checks yield before the claim. Keep the
+        # literal update's reject policy through the final synchronous boundary.
+        if _explicit_update and self._is_session_running(_quick_key):
+            return "The session is busy; /update can't run until it is idle."
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.

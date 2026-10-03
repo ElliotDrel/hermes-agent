@@ -187,6 +187,48 @@ async def test_busy_policy_refuses_before_loading_or_interrupting(isolated_skill
 
 
 @pytest.mark.asyncio
+async def test_update_rechecks_busy_after_skill_load(isolated_skill):
+    runner, _ = make_runner()
+    event = event_for()
+    key = runner._session_key_for_source(event.source)
+    async def load(_event):
+        runner._running_agents = {key: object()}
+        return "rendered skill"
+    runner._handle_update_command = load
+    handled, reply = await runner._hm_cmd_update(event, event.source, key)
+    assert handled and reply, "Update entered admission after another run claimed its session"
+    assert event.text == "/update"
+
+
+@pytest.mark.asyncio
+async def test_update_rechecks_busy_at_final_admission(isolated_skill):
+    runner, _ = make_runner()
+    event = event_for()
+    key = runner._session_key_for_source(event.source)
+    runner._hm_admit_event = AsyncMock(return_value=(event, event.source, False))
+    runner._hm_estop_gate = lambda *args: None
+    runner._hm_pending_reply_intercepts = AsyncMock(return_value=None)
+    runner._hm_evict_idle_stale_agent = lambda *args: None
+    runner._is_telegram_topic_root_lobby = lambda *args: False
+    runner._external_drain_active = False
+    async def dispatch(*args):
+        event.text = "rendered skill"
+        runner._running_agents = {key: object()}
+        return False, None
+    runner._hm_dispatch_idle_commands = dispatch
+    runner._claim_active_session_slot = MagicMock(side_effect=AssertionError("Update displaced a competing turn"))
+    reply = await runner._handle_message(event)
+    assert reply and "busy" in reply
+    runner._claim_active_session_slot.assert_not_called()
+
+
+def test_managed_install_refuses_skill_before_loading(isolated_skill, monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: True)
+    with pytest.raises(ValueError, match="managed"):
+        build_update_invocation("hermes update")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["no-control", "internal", "bot", "quoted", "ordinary", "argument"])
 async def test_untrusted_or_nonliteral_input_cannot_authorize_update(isolated_skill, kind):
     runner, _ = make_runner()

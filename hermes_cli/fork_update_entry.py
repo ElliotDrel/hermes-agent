@@ -25,6 +25,9 @@ def build_update_invocation(literal_command: str, *, task_id: str | None = None,
     Keep this a user-turn skill block: no system prompt, schema, past transcript
     or cached-agent mutation. The literal command remains visible in the block.
     """
+    from hermes_cli.config import is_managed
+    if is_managed():
+        raise ValueError("This managed installation must use its package manager to update Hermes.")
     from agent.skill_commands import build_skill_invocation_message
     from agent.skill_utils import get_disabled_skill_names
 

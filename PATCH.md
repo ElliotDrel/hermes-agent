@@ -114,6 +114,27 @@ history when upstream makes the behavior unnecessary.
   identical failure. The replacement file is restored byte-for-byte afterward.
   This pre-existing platform-cap issue is out of updater scope.
 
+- **Parent adversarial correction, 2026-10-03:** The first requested Opus 5.5
+  medium review identifies a managed-install refusal regression and a possible
+  busy-session race during skill loading. Parent reproduces both with `2 failed`,
+  then reproduces the later admission window with `1 failed`. The shared skill
+  builder now refuses package-managed installs before loading. Gateway routing
+  rechecks session ownership after skill loading and at the final synchronous
+  claim boundary without changing ordinary-message admission. The bounded parent
+  acceptance selection reports `221 passed, 2 skipped, 1 deselected in 84.27s`.
+  The deselection remains the independently reproduced Slack usage baseline issue.
+  Logs `parent-source-red.log`, `parent-admission-red.log`, and
+  `parent-acceptance.log/.xml` are candidate-local. No live activation occurs.
+- **Review disposition:** Registry error handling and a missing-field suggestion
+  are fail-closed availability concerns, not introduced authorization bypasses;
+  production MessageEvent declares allow_gateway_control. Prompt-rewrite helper
+  only acknowledges and assigns text, so direct text assignment preserves data.
+  The first review packet was truncated; its partial coverage is not treated as
+  complete approval. A second bounded review receives full source and helpers.
+- **Transition:** An old running gateway invoking new `hermes update --gateway`
+  fails closed with exit `2`; it must be manually activated before new routing
+  is available. No restart is authorized by this candidate review.
+
 The following bullets retain the retired implementation's historical record.
 
 - **Intent:** Keep the installed checkout on fork `main` while preserving every
