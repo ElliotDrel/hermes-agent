@@ -626,6 +626,53 @@ The following bullets retain the retired implementation's historical record.
   A manual gateway restart loads the source. Rollback is a reviewed inverse of
   this repair's source commit and another manual restart; existing sessions remain
   compatible and need no migration.
+- **Rename input extension and protected override, 2026-10-03:** After the
+  auxiliary-history inclusion, cost, unchanged main-input/history, offline-test
+  and independent-rollback assessment, Elliot's Discord message
+  `1555987488345161789` in thread `1550164926771765370` selects `10k characters`
+  instead of the proposed 16,000. This extends `HERMES-FORK-012`: bare `/rename`
+  uses at most 10,000 characters of clean conversation history. Automatic
+  titles remain capped at 5,000; the existing 2,000-character opening pin,
+  recent-tail selection, truncation labels, explicit-title lane and provider
+  rules remain unchanged. No main-model, saved-history or configuration rewrite.
+- **Rename mechanism:** `agent/title_generator.py::_format_regenerated_title_section`
+  selects `display_metadata.title_user_message` when present, including empty
+  originals, before spending the history budget. Manual skill expansions reuse
+  the native instruction extractor instead of retaining their bodies. Recognized
+  older automatic-load rows lack an unambiguous body/opener boundary: omit that
+  entire auxiliary section rather than fabricate the original or reload a
+  possibly changed skill. Recognize native sender/backfill wrappers for this
+  check; later conversation and ordinary assistant/user messages stay available.
+  This can lose an old opening's topic evidence, but never edits the transcript;
+  supported explicit `/rename <title>` remains the fallback. No new parser is
+  added to main input, persistence, compaction, hooks or cache assembly.
+- **Rename verification:** Tests-first on unchanged `ae5a217781` reports
+  `8 failed, 2 passed in 2.11s`: seven body-leak assertions include
+  `SKILL_BODY_ONLY`, and the budget assertion reports `8000 == 10000`.
+  The corrected worktree gate reports `231 passed, 1 deselected in 56.41s`.
+  Applying that exact tested index diff to the clean installed checkout and
+  rerunning the gate reports `231 passed, 1 deselected in 45.94s`. A fresh
+  read-only auxiliary resolver again returns `openai-codex/gpt-6-luna`.
+  Its two new invariant tests cover native auto/manual skill builders, empty
+  originals, sender/backfill wrappers, untouched ordinary conversation,
+  actual auxiliary request data, history nonmutation, and real temporary-SQLite
+  close/reopen with `include_compacted=True`. Overlong history retains the opener
+  and newest tail within exactly 10,000 characters; automatic input stays 5,000.
+  Existing cached/uncached AIAgent requests, resume, detached compaction adoption,
+  skill-input isolation, title and gateway rename suites run alongside. The
+  single excluded manual-thread override test is the same baseline failure
+  documented above. Runnable check uses that installed-dependency pytest command,
+  adds `tests/agent/test_regenerated_title_input.py` and
+  `tests/gateway/test_compression_progress.py::test_real_detached_adoption_and_model_requests_ignore_display`,
+  and sets external basetemp `rename-input-final-1003`.
+- **Rename activation and rollback:** Both title paths keep the verified
+  `title_generation` route `openai-codex/gpt-6-luna`. Python compilation and
+  scoped whitespace checks precede the source commit. No paid model test, live
+  Discord rename, history/DB migration or gateway restart is performed. Offline
+  checks do not prove nondeterministic title quality. A manual gateway restart
+  activates both input fixes. Roll back this extension with a reviewed inverse
+  of its source commit and manual restart; the earlier automatic-title fix is
+  independent and existing history remains compatible.
 - **Upstream disposition:** Candidate for upstreaming as a richer session-title
   workflow and original-input isolation fix. Keep active while the workspace
   relies on this naming contract.
