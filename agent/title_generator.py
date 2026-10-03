@@ -738,7 +738,8 @@ def maybe_auto_title(
     return upgrade
 
 # Explicit /rename preserves T3 conversation-aware title regeneration.
-MAX_REGENERATED_TITLE_CONTEXT_CHARS = 8_000
+# HERMES-FORK-012: User-selected auxiliary-only history budget; main context is unchanged.
+MAX_REGENERATED_TITLE_CONTEXT_CHARS = 10_000
 MAX_FIRST_USER_REGENERATED_TITLE_CHARS = 2_000
 _EARLIER_TITLE_CONTEXT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n"
 _FIRST_USER_TITLE_CONTEXT_TRUNCATION_MARKER = "\n[First user message truncated]"
@@ -790,6 +791,27 @@ def _format_regenerated_title_section(message: Any) -> Optional[tuple[str, str]]
     content = message.get("content")
     text = content if isinstance(content, str) else flatten_message_text(content)
     text = (text or "").strip()
+    if role == "user":
+        # HERMES-FORK-012: Select title-only originals, never rewrite the saved/main turn.
+        metadata = message.get("display_metadata")
+        original = metadata.get("title_user_message") if isinstance(metadata, dict) else None
+        if isinstance(original, str):
+            text = original.strip()
+        else:
+            # Old automatic loads have no reliable end marker. Omit that title section
+            # rather than guess where the body ends; later chat remains available.
+            # Recognize the existing gateway backfill/sender wrappers only for this check.
+            scaffold = text.rsplit("\n\n[New message]\n", 1)[-1]
+            scaffold = re.sub(r"^\[[^\]\r\n]+\] ", "", scaffold, count=1)
+            if re.match(
+                r'^\[IMPORTANT: The "[^"\r\n]+" skill is auto-loaded\. '
+                r'Follow its instructions for this session\.\]', scaffold
+            ):
+                return None
+            from agent.skill_commands import extract_user_instruction_from_skill_message
+            instruction = extract_user_instruction_from_skill_message(scaffold)
+            if instruction != scaffold:
+                text = instruction or ""
     # Hermes stores some control scaffolding as user turns. It is not the
     # user's durable goal and would poison the pinned opening or recency.
     if role == "user" and not is_titleable_user_message(text):
