@@ -131,6 +131,41 @@ history when upstream makes the behavior unnecessary.
   only acknowledges and assigns text, so direct text assignment preserves data.
   The first review packet was truncated; its partial coverage is not treated as
   complete approval. A second bounded review receives full source and helpers.
+- **Final bounded review, 2026-10-03:** Both authorized Opus 5.5 reviews run at
+  medium effort; serving-model metadata confirms `claude-opus-5-5`. No extra
+  reviewers run. The second review receives complete operational scripts, skills,
+  inbound/busy routing, entry code, tests and replacement diff, with read-only
+  access to remaining source. It reports no blockers in inspected code, two
+  medium findings and four low findings. It does not review the baseline
+  restoration diff, full slash_commands or every upstream installer internal.
+- **Final source corrections:** Four new offline tests reproduce emergency-pause
+  bypass, CLI-specific disabled-skill bypass, resolved-alias final-admission race
+  and FIFO orphan replacement (`4 failed`). Update routing now refuses emergency
+  pause before loading and again at final claim, carries a transient update marker
+  across alias/rendering awaits, removes that marker before model admission and
+  skips orphan rescue for this explicit command. CLI native update checks the
+  `cli` disabled list. Permission wording explicitly grants local preparation
+  only, with separate remote-write and activation authorization. Relevant prompt,
+  metadata, cache, resume and schema tests remain passing.
+- **Final helper corrections:** The parent verifies the interrupted worker's
+  read-only Windows ownership fix, with real exclusive/shared-lock tests under a
+  filesystem-write audit. Recovery selects installed candidate dependencies after
+  a persisted resume attempt, avoiding candidate modules mixed with saved old
+  packages; a real child import test reproduces and fixes this mismatch. Partial
+  dependency installations remain fail-closed and cannot guarantee recovery when
+  neither package generation imports. Dependency mutation is not live-tested.
+- **Measured final selection:** `225 passed, 2 skipped, 1 deselected`; the same
+  documented baseline Slack failure is the sole deselection. `43` helper tests
+  pass. Guarded actual-home source/API, external interpreter/managed-installer
+  targeting and ownership preflight all pass; only the canonical gateway worker
+  and its matching venv trampoline hold either environment. These are readiness
+  checks, not live activation proof. No installed source, dependencies, lifecycle,
+  profile, global permission or active checkpoint is changed.
+- **Publication authorization, 2026-10-03:** Elliot explicitly says "push, no need
+  to just be local. I trust you". Publish the two candidate branches without
+  rewriting either remote main or installing them; verify exact remote SHAs.
+  This expands publication scope only and does not authorize live installation
+  or gateway restart. Local logs retain RED/GREEN, read-only and review evidence.
 - **Transition:** An old running gateway invoking new `hermes update --gateway`
   fails closed with exit `2`; it must be manually activated before new routing
   is available. No restart is authorized by this candidate review.

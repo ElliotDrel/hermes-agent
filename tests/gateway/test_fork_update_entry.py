@@ -118,7 +118,8 @@ async def test_idle_native_dispatch_keeps_session_metadata_and_loaded_user_turn(
     assert "required independently authorized machine-side handoff" in event.text
     assert scopes == [("enter", "default"), ("exit", "default")]
     assert event.source is source and runner._session_key_for_source(source) == key
-    assert {k: v for k, v in vars(event).items() if k != "text"} == {k: v for k, v in before.items() if k != "text"}
+    assert event._explicit_update is True
+    assert {k: v for k, v in vars(event).items() if k not in {"text", "_explicit_update"}} == {k: v for k, v in before.items() if k != "text"}
 
 
 @pytest.mark.asyncio
@@ -220,6 +221,69 @@ async def test_update_rechecks_busy_at_final_admission(isolated_skill):
     reply = await runner._handle_message(event)
     assert reply and "busy" in reply
     runner._claim_active_session_slot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paused_update_refuses_before_skill_loading(isolated_skill, monkeypatch):
+    runner, _ = make_runner()
+    event = event_for()
+    monkeypatch.setattr("agent.estop.paused_reply", lambda: "maintenance paused")
+    runner._handle_update_command = AsyncMock(side_effect=AssertionError("Paused update loaded skill"))
+    assert await runner._hm_cmd_update(event, event.source, "key") == (True, "maintenance paused")
+    runner._handle_update_command.assert_not_awaited()
+
+
+def test_cli_specific_disabled_skill_applies_to_native_update(isolated_skill, monkeypatch):
+    import hermes_cli.main as main
+    monkeypatch.setattr("agent.skill_utils.get_disabled_skill_names",
+        lambda *, platform=None: {"hermes-fork-update"} if platform == "cli" else set())
+    with pytest.raises(SystemExit) as result:
+        main.cmd_update(Namespace())
+    assert result.value.code == 2
+    main.cmd_chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolved_update_alias_keeps_final_admission_guard(isolated_skill):
+    runner, _ = make_runner()
+    event = event_for(text="/refresh")
+    key = runner._session_key_for_source(event.source)
+    runner._hm_admit_event = AsyncMock(return_value=(event, event.source, False))
+    runner._hm_estop_gate = lambda *args: None
+    runner._hm_pending_reply_intercepts = AsyncMock(return_value=None)
+    runner._hm_evict_idle_stale_agent = lambda *args: None
+    runner._external_drain_active = False
+    runner._is_telegram_topic_root_lobby = lambda *args: False
+    async def dispatch(*args):
+        event.text = "/update"
+        runner._handle_update_command = AsyncMock(return_value="rendered skill")
+        result = await runner._hm_cmd_update(event, event.source, key)
+        runner._running_agents = {key: object()}
+        return result
+    runner._hm_dispatch_idle_commands = dispatch
+    runner._claim_active_session_slot = MagicMock(side_effect=AssertionError("Alias displaced competing turn"))
+    reply = await runner._handle_message(event)
+    assert reply and "busy" in reply
+    runner._claim_active_session_slot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rendered_update_is_not_replaced_by_orphan_rescue(isolated_skill):
+    runner, _ = make_runner()
+    event = event_for()
+    runner._hm_admit_event = AsyncMock(return_value=(event, event.source, False))
+    runner._hm_estop_gate = lambda *args: None
+    runner._hm_pending_reply_intercepts = AsyncMock(return_value=None)
+    runner._hm_evict_idle_stale_agent = lambda *args: None
+    runner._external_drain_active = False
+    runner._is_telegram_topic_root_lobby = lambda *args: False
+    runner._handle_update_command = AsyncMock(return_value="rendered skill")
+    runner._claim_active_session_slot = MagicMock(return_value=(None, None))
+    runner._hm_rescue_orphaned_fifo = MagicMock(side_effect=AssertionError("Update replaced by queued orphan"))
+    runner._session_state = MagicMock(side_effect=asyncio.CancelledError)
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_message(event)
+    runner._hm_rescue_orphaned_fifo.assert_not_called()
 
 
 def test_managed_install_refuses_skill_before_loading(isolated_skill, monkeypatch):
