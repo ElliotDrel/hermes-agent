@@ -1318,6 +1318,18 @@ The following bullets retain the retired implementation's historical record.
   configuration, dependencies or gateway lifecycle is changed. A manual gateway
   restart loads this source. Rollback is a reviewed inverse of this source commit
   followed by manual restart; existing transcripts remain compatible.
+- **Candidate transfer override, 2026-10-04:** After the restored-task/model-input,
+  exact-transfer, bounded-verification and rollback assessment, Elliot directly
+  says `Carry the backport into the candidate` in Discord message
+  `1556423974509084775`, thread `1555552001478107226`. Preserve source commit
+  `ca8a20d1dec36dc77a941c46d23d9f827a7c471c` with a provenance cherry-pick,
+  including its existing request/cache/hostile-history regressions and ledger.
+  Verify transferred executable/test blobs against that source commit; retain
+  the prior published candidate `87842a5ac741df7aab7c9a48c04747a4e8f18ab9`
+  for rollback. One bounded existing-test selection seals the combined candidate;
+  earlier test counts remain attributed to their original commits. No new task
+  behavior, model call, installed-source/dependency mutation or restart is part
+  of this transfer. Installation remains pending Elliot's separate `go`.
 - **Upstream disposition:** Already merged in
   `https://github.com/NousResearch/hermes-agent/pull/125161`; no duplicate PR.
   Retire this backport when the selected stable baseline contains the fix.
