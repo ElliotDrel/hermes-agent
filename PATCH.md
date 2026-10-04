@@ -1266,6 +1266,62 @@ The following bullets retain the retired implementation's historical record.
 - **Upstream disposition:** Candidate for upstreaming as a session-scoped
   Discord edge capability. Keep active while Elliot relies on this contract.
 
+### HERMES-FORK-022: Backport task restoration across turns
+
+- **Intent:** Reload unfinished tasks from saved history before a fresh agent
+  continues, including deferred `tool_call` wrappers and legacy `todo` calls.
+- **Manual protected override:** After the task-context inclusion, forged-result,
+  call-ID pairing, bounded-test and rollback assessment, Elliot directly approved
+  `fix it, make sure there is a PR filed with a fix. If not, make one` in Discord
+  message `1556413504683245641`, thread `1550164926771765370`.
+  Restored task context affects subsequent model input across surfaces. The
+  supported fallback is explicit full-list reconstruction each turn; it does
+  not repair transparent resume. No unrelated prompt/schema/queue changes.
+- **Incident:** Stable `v2026.9.24` advertises `todo_list`, but restoration only
+  accepts `todo`. Real saved-session replay returns empty revision `0`; adding
+  documentation then loses unfinished setup/testing tasks. Restoring the paired
+  prior snapshot first preserves those tasks.
+- **Behavior and touchpoints:** Backport upstream PR `#125161`, merged September
+  27, 2026, commit `6d88dc1fe5339c378cf85172aa2b904a01973c63`.
+  `tools/todo_tool.py` owns canonical/legacy predicates and single-call bridge
+  recognition; `run_agent.py` retains existing call-ID pairing and user-boundary
+  validation. `model_tools.py` derives its existing legacy alias from that
+  declaration. `tui_gateway/tool_progress.py` shares the predicate for resume.
+  Stable-layout adaptations avoid importing the newer upstream module structure.
+- **Tests-first evidence:** Loading only the original matcher from parent HEAD
+  into an isolated test process yields `4 failed, 2 passed, 7 deselected`.
+  Current-name and wrapper cases return `{'todos': [], 'revision': 0}` instead
+  of the saved setup/testing list; legacy cases pass. The corrected named
+  restoration selection reports `6 passed, 263 deselected`. New offline tests
+  cover JSON history reload, cached/uncached actual AIAgent request snapshots,
+  unchanged schemas/options/history, next-turn merge retention, compression
+  rendering, and rejection of unpaired, wrong-ID, user-boundary, unrelated,
+  malformed, multi-call and missing-ID results.
+- **Adjacent verification:** Twelve named files under the clean-environment
+  serial runner pass `179` tests, including task tools, skill/compression
+  retention parity, TUI events, registry/distribution, session requests and
+  prompt-cache invariants. The broader `test_run_agent.py` file exceeds its
+  runner's 300-second timeout; no full-file pass is claimed. Its six task cases
+  pass separately. A parallel invocation with one shared explicit basetemp
+  causes Windows file-lock setup errors; serialize that invocation instead.
+  Edited modules compile and scoped `git diff --check` passes.
+- **Runnable check:** Use the source's disposable Python 3.11 pytest environment
+  with process-local installed dependency directories, then run
+  `python -m pytest -q tests/agent/test_run_agent.py -k todo --basetemp=C:/Users/2supe/AppData/Local/Temp/hermes-pytest/todo-focused-<unique>`.
+  Also name `tests/agent/test_todo_restore_backport.py`, the three todo tool
+  suites, `test_skill_todo_retention_parity.py`, `test_todo_state_events.py`,
+  session request, prompt-cache and registry/distribution suites; use a fresh
+  external basetemp and `scripts/run_tests.sh -j 1` for the per-file runner.
+- **Residual risk and rollback:** Offline checks do not establish nondeterministic
+  model behavior or live post-restart activation. Compacted history lacking a
+  surviving paired snapshot cannot reconstruct deleted tasks. No saved history,
+  configuration, dependencies or gateway lifecycle is changed. A manual gateway
+  restart loads this source. Rollback is a reviewed inverse of this source commit
+  followed by manual restart; existing transcripts remain compatible.
+- **Upstream disposition:** Already merged in
+  `https://github.com/NousResearch/hermes-agent/pull/125161`; no duplicate PR.
+  Retire this backport when the selected stable baseline contains the fix.
+
 ## Stable-release source audit, 2026-10-02
 
 The completed rebase targets `v2026.9.24`, exact upstream commit
