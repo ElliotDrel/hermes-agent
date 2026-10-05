@@ -707,6 +707,30 @@ class TestHydrateTodoStore:
             ],
         }
 
+    @pytest.mark.parametrize(
+        "name,arguments",
+        [
+            ("todo_list", "{}"),
+            ("tool_call", json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]})),
+        ],
+        ids=["direct", "bridged"],
+    )
+    def test_todo_list_name_hydrates(self, agent, name, arguments):
+        """Backport #125161: current and bridged calls restore in agent and TUI."""
+        from tui_gateway.server import _todo_state_from_history
+
+        todos = [{"id": "t", "content": "Task", "status": "pending"}]
+        history = [
+            {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function",
+             "function": {"name": name, "arguments": arguments}}]},
+            {"role": "tool", "tool_call_id": "c1",
+             "content": json.dumps({"todos": todos, "revision": 3})},
+        ]
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+        assert agent._todo_store.snapshot() == {"todos": todos, "revision": 3}
+        assert _todo_state_from_history(history)["todos"] == todos
+
     def test_no_todo_in_history(self, agent):
         history = [
             {"role": "user", "content": "hello"},

@@ -102,3 +102,23 @@ semantics: scripts/run_tests.sh -j 1 tests/tools/test_search_pattern_backslash_w
 tests/tools/test_search_auto_multiline.py, 9 passed. Native schemas remain unchanged.
 Candidate upstream correctness fix; retire when stable preserves these semantics.
 Source-only restoration, no live activation or provider calls.
+
+## HERMES-FORK-022: Restore paired task snapshots across turns
+
+Recognize the registered todo_list name, legacy todo alias and a single-call
+native tool_call bridge when restoring task state. Preserve existing call-ID
+pairing and user-boundary checks; unrelated, malformed and multi-call results
+cannot seed the store. Native tool schemas and cached request inputs stay intact.
+The TUI consumes the same name predicate. No new persistence layer is introduced.
+
+Touchpoints: tools/todo_tool.py, run_agent.py, model_tools.py,
+tui_gateway/tool_progress.py. Restore the stable-layout adaptation of upstream
+PR https://github.com/NousResearch/hermes-agent/pull/125161 from archived a2b80f0135.
+Elliot explicitly approved the history/resume restoration after its boundary review.
+Existing temporary-history and real-agent request tests cover cached/uncached
+resume, saved task merging, compression rendering and hostile/unpaired history.
+Verification via scripts/run_tests.sh -j 1: todo restoration 13, three todo tool
+suites 37, TUI events 6, retention parity 11, native test_run_agent.py -k todo 6,
+and registry/distribution 45 tests passed. No live activation observed; model
+behavior remains nondeterministic. Retire when the selected stable includes this
+upstream fix; do not file a duplicate implementation.
