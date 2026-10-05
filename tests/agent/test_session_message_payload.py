@@ -37,7 +37,7 @@ async def test_actual_requests_peer_user_role_resume_stable_tools_options_and_or
         return SimpleNamespace(success=True)
     adapter.send = visible
     runner = SimpleNamespace(session_store=SimpleNamespace(lookup_by_session_id=entries.get),
-        _draining=False, _adapter_for_source=lambda source: adapter,
+        _draining=False, _delivery_adapter_for=lambda source: adapter,
         _session_key_for_source=lambda source: 'a' if source.chat_id == '1' else 'b',
         _is_session_running=lambda key: False, _thread_metadata_for_source=lambda source: {})
     messenger = SessionMessenger(runner)

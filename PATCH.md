@@ -206,9 +206,10 @@ Explicit disabled_toolsets: [session_messaging] disables it; revert this intent
 commit for source rollback. Live installation and nondeterministic behavior remain
 for the user's update-flow test.
 
-Restoration acceptance for 017/018/021: 199 tests pass across 15 named files after
-fixture/API adaptation, including the current updater route and Discord slash
-checks. Two pre-existing Windows image-URI expectations fail identically on the
+Restoration verification for 017/018/021 used 15 named files, including the
+current updater route and Discord slash checks. Earlier aggregate pass counts
+combined runs from different fixture revisions and are not final-SHA acceptance.
+The integrated candidate must rerun these suites before publication. Two pre-existing Windows image-URI expectations fail identically on the
 pre-restoration native-updater-source baseline: test_run_agent_queued_message_delivers_first_response_media
 and test_run_agent_queued_message_delivers_streamed_first_response_media in
 test_run_progress_topics.py. Those two are excluded from the passing rerun only;
@@ -276,3 +277,11 @@ Verification: real discord.py AppCommand serialization in isolated subprocesses
 reproduces unnecessary recreation; equivalent defaults now produce no mutations,
 while explicit mismatches still recreate. No Discord writes occur in tests.
 Upstream disposition: focused native comparison bug fix; old startup policy omitted.
+
+021 fixture correction: the cached/uncached provider-wire fixture now names
+_delivery_adapter_for, matching the restored production API. Audit of every
+restored Python file found no remaining _adapter_for_source reference. The two
+payload cases reproduced failure before this fixture correction and passed after.
+Exact corrected source checks: compression suite 17 passed after 5b8d9adff4;
+payload suite 2 passed after this fixture-only correction. Other earlier results
+are checkpoints, not a claim that the complete final commit was rerun.
