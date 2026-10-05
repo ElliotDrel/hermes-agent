@@ -663,18 +663,18 @@ async def test_update_slash_creates_thread_before_dispatch(adapter):
         response=SimpleNamespace(defer=AsyncMock()),
         edit_original_response=AsyncMock(),
     )
-    adapter._create_thread = AsyncMock(return_value={
-        "success": True, "thread_id": "555", "thread_name": "Hermes update",
-    })
+    created_thread = SimpleNamespace(id=555, name="Hermes update")
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread))
+    adapter._resolve_interaction_channel = AsyncMock(return_value=parent_channel)
+    adapter._thread_parent_channel = MagicMock(return_value=parent_channel)
     adapter._dispatch_thread_session = AsyncMock()
 
     await adapter._run_update_slash(interaction)
 
-    adapter._create_thread.assert_awaited_once_with(
-        interaction,
+    parent_channel.create_thread.assert_awaited_once_with(
         name="Hermes update",
         auto_archive_duration=1440,
-        reason="Hermes /update conversation",
+        reason="Requested by Jezza via /thread",
     )
     interaction.edit_original_response.assert_awaited_once_with(content="Update started in <#555>")
     adapter._dispatch_thread_session.assert_awaited_once_with(

@@ -58,3 +58,8 @@ focused streaming and restart tests also run. Next-release full Discord-triggere
 rebase/install is an acceptance check after deployment, not claimed from unit tests.
 
 Integrated acceptance: 114 source tests and 6 real-Git/handoff helper tests passed.
+
+Main-channel regression: `/update` must call the existing thread helper with its
+supported arguments. The thread-creation test now exercises that real helper,
+mocking only Discord I/O; it reproduced the unsupported `reason` argument before
+the one-line fix. Existing-thread and thread-failure paths remain covered.

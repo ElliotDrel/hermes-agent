@@ -4406,7 +4406,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             interaction,
             name="Hermes update",
             auto_archive_duration=1440,
-            reason="Hermes /update conversation",
         )
         if not result.get("success"):
             if deferred_response:
