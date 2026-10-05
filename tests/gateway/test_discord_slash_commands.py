@@ -741,3 +741,18 @@ async def test_update_slash_reuses_existing_thread(adapter):
     await adapter._run_update_slash(interaction)
 
     adapter._run_simple_slash.assert_awaited_once_with(interaction, "/update", "Update initiated~")
+
+
+@pytest.mark.asyncio
+async def test_manual_thread_default_is_seven_days(adapter):
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()), edit_original_response=AsyncMock())
+    adapter._create_thread = AsyncMock(return_value={"success": True, "thread_id": "555"})
+    adapter._dispatch_thread_session = AsyncMock()
+    await adapter._handle_thread_create_slash(interaction, name="Planning")
+    assert adapter._create_thread.await_args.kwargs["auto_archive_duration"] == 10080
+
+@pytest.mark.parametrize("value", [None, "invalid", 17])
+def test_invalid_auto_archive_duration_uses_native_default(adapter, value):
+    adapter.config.extra["auto_thread_archive_duration"] = value
+    assert adapter._auto_thread_archive_duration() == 1440

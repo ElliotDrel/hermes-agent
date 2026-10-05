@@ -247,3 +247,11 @@ manual-thread suites pass; deterministic request tests cover cache on/off and
 resume without modifying main input. Discord fetch/edit has no atomic compare,
 so a narrow human-rename race remains. Restore via reviewed inverse and restart.
 Upstream disposition: retain the custom title workflow until native equivalent.
+
+## HERMES-FORK-013: Seven-day manual threads
+
+Manual /thread and Discord-tool creation default to10080minutes. Auto, update and
+handoff threads use validated discord.auto_thread_archive_duration (native1440
+when unset/invalid). Preserve shared public-thread creation and requester membership.
+Verification: real shared helper, manual default, tool request and configured/invalid
+archive-duration tests. Upstream disposition: retain this retention preference.

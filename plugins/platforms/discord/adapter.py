@@ -4500,7 +4500,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         async def slash_thread(
             interaction: discord.Interaction, name: str, message: str = "",
-            auto_archive_duration: int = 1440,
+            auto_archive_duration: int = 10080,
         ):
             # defer() happens inside the handler *after* the auth gate.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
@@ -4775,7 +4775,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _handle_thread_create_slash(
         self, interaction: discord.Interaction, name: str, message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = 10080,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
@@ -5378,7 +5378,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _auto_thread_archive_duration(self) -> int:
-        return int(self.config.extra.get("auto_thread_archive_duration", 1440))
+        try:
+            duration = int(self.config.extra.get("auto_thread_archive_duration", 1440))
+        except (TypeError, ValueError):
+            return 1440
+        return duration if duration in VALID_THREAD_AUTO_ARCHIVE_MINUTES else 1440
 
     def _derive_auto_thread_name(self, content: str) -> str:
         """Fast placeholder thread name with mentions stripped (raw <@id> tokens mean nothing to humans).
@@ -5625,7 +5629,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(name=thread_name, auto_archive_duration=self._auto_thread_archive_duration(), reason=reason)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5638,7 +5642,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return None
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
+                name=thread_name, auto_archive_duration=self._auto_thread_archive_duration(), reason=reason,
             )
             return str(thread.id)
         except Exception as fallback_error:
