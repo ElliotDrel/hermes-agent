@@ -221,3 +221,11 @@ before dispatch, history backfill and reply previews. Unrelated words remain inp
 Elliot approved restoring this scoped input filter after reviewing its boundary.
 Verification: focused Discord marker, ingress, backfill and reply tests.
 Upstream disposition: retain while this personal draft convention is used.
+
+## HERMES-FORK-004: Discord auto-thread rate limits
+
+Confirmed thread-create429 records the parent channel retry deadline and skips
+seed fallback/retry. A fallback429 removes its false seed when one exists.
+Ordinary transient retries and configured thread settings remain native.
+Verification: direct429, channel cooldown and fallback429 tests.
+Upstream disposition: retain until native rate-limit behavior is equivalent.
