@@ -115,7 +115,7 @@ async def test_idle_native_dispatch_keeps_session_metadata_and_loaded_user_turn(
     assert "OFFLINE_WORKFLOW_BODY" in event.text
     assert UPDATE_REQUEST in event.text
     assert "Explicit command in this turn: /update" in event.text
-    assert "required independently authorized machine-side handoff" in event.text
+    assert "authorizes the complete workflow" in event.text
     assert scopes == [("enter", "default"), ("exit", "default")]
     assert event.source is source and runner._session_key_for_source(source) == key
     assert event._explicit_update is True

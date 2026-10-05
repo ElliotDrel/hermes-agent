@@ -62,11 +62,29 @@ history when upstream makes the behavior unnecessary.
   Ordinary explicit update requests authorize the skill workflow, not a new
   protected-source override. Internal/bot/control-disabled events, quoted text,
   historical commands and tool results cannot authorize this command route.
-- **Activation boundary:** An owning Discord/gateway agent prepares and verifies,
-  then reports the independently authorized machine-side handoff. It must not
-  launch its own restart through a helper. A user-invoked terminal agent is an
-  independent machine-side context, subject to the same skill's profile,
-  recovery, publication and lifecycle gates. No global no-restart rule changes.
+- **Activation boundary, revised 2026-10-04:** An explicit update request authorizes
+  isolated preparation, recovery refs, publication and detached installation/restart
+  after passing checks. Respect narrower current instructions. The owning gateway
+  agent may launch the existing independent helper; it never installs in its own
+  process. Existing profile, recovery and exact-commit gates remain.
+- **Scoped override:** Elliot accepts the concrete audit follow-up with "do this",
+  then "go" and "Continue" in Codex on 2026-10-04. The assessed change is the update
+  USER-turn instruction and paired workflow permission. System prompts, schemas,
+  history, cache, routing and admission timing keep their existing behavior.
+  Existing offline real request/resume/cache tests cover the command surfaces and
+  Discord/Telegram. Rollback is an inverse of this source and paired workspace
+  change. Deterministic tests cannot prove nondeterministic agent compliance.
+- **Installation incident:** The prior attempt rolls back after upstream managed
+  Node resolution raises WinError 5 for Hermes-Workspace/node/npm.cmd. The helper
+  checks readability before gateway pause. Missing managed files keep upstream
+  behavior. Directory access repair is an environment operation. Preserve the
+  failed attempt, archives, candidate and verified recovery refs.
+- **Codex verification, 2026-10-04:** The retained acceptance selection passes
+  103 tests in 86.41 seconds; candidate import isolation passes. Five affected
+  helper tests pass, including actual Windows read-only locks and root-instruction
+  path/hash scope. Edited modules and the embedded bridge compile; scoped
+  whitespace checks pass. The new Node check reproduces the actual access denial
+  before pause. No installed source, dependency or gateway lifecycle changes occur.
 - **Flags and failure behavior:** Legacy `--continue` and `--abort` are absent
   from the update parser and fail with exit `2`. Native installer switches remain
   parseable for compatibility but fail with exit `2` before chat startup or agent
