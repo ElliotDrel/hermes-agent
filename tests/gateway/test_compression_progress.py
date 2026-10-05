@@ -34,7 +34,7 @@ async def test_hygiene_progress_wait_and_handoff(monkeypatch, finish):
     runner._hmwa_hygiene_settings = AsyncMock(return_value=hs)
     runner._hmwa_hygiene_plan = AsyncMock(return_value=SimpleNamespace(needs_compress=True))
     runner._resolve_session_agent_runtime = lambda **kw: ("unchanged", {"api_key": "fake"})
-    runner._delivery_adapter_for = lambda s: adapter
+    runner.adapters = {Platform.DISCORD: adapter}
     runner._event_thread_metadata = lambda *a: {"thread_id": "thread"}
     runner._is_session_run_current = lambda *a: True
     runner._hmwa_hygiene_notify = AsyncMock()
@@ -147,7 +147,7 @@ async def test_real_detached_adoption_and_model_requests_ignore_display(monkeypa
     for platform, mode in [(Platform.DISCORD, "single_message"), (Platform.DISCORD, "off"), (Platform.TELEGRAM, "single_message")]:
         runner = object.__new__(GatewayRunner)
         adapter = CaptureAdapter()
-        runner._delivery_adapter_for = lambda s: adapter
+        runner.adapters = {Platform.DISCORD: adapter}
         runner._event_thread_metadata = lambda *a: {"thread_id": "thread"}
         runner._is_session_run_current = lambda *a: True
         hs = SimpleNamespace(compression_enabled=True, hard_msg_limit=200, data={"display": {"progress_compositor": mode}}, timeout_seconds=30, total_ceiling_seconds=600, max_turn_hold_seconds=120, failure_cooldown_seconds=-1)
@@ -316,7 +316,7 @@ async def test_successor_does_not_inherit_displaced_hygiene_message():
     from gateway.progress_compositor import ProgressCompositor
     adapter = CaptureAdapter()
     runner = object.__new__(GatewayRunner)
-    runner._delivery_adapter_for = lambda s: adapter
+    runner.adapters = {Platform.DISCORD: adapter}
     old = ProgressCompositor(adapter, "thread", generation=1)
     await old.start()
     runner._session_state("key").turn.progress_compositor = old
@@ -368,7 +368,7 @@ def hygiene_display_runner(adapter):
     runner._hmwa_hygiene_settings = AsyncMock(return_value=hs)
     runner._hmwa_hygiene_plan = AsyncMock(return_value=SimpleNamespace(needs_compress=True))
     runner._resolve_session_agent_runtime = lambda **kw: ("offline", {"api_key": "fake"})
-    runner._delivery_adapter_for = lambda s: adapter
+    runner.adapters = {Platform.DISCORD: adapter}
     runner._event_thread_metadata = lambda *a: {"thread_id": "777"}
     runner._is_session_run_current = lambda *a: True
     runner._hmwa_hygiene_detached_attempt = AsyncMock()

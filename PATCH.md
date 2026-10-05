@@ -255,3 +255,11 @@ handoff threads use validated discord.auto_thread_archive_duration (native1440
 when unset/invalid). Preserve shared public-thread creation and requester membership.
 Verification: real shared helper, manual default, tool request and configured/invalid
 archive-duration tests. Upstream disposition: retain this retention preference.
+
+017 transfer correction: pre-agent compression also uses stable's native delivery
+adapter resolver. The final fixture adaptation exposed the remaining obsolete
+call (10 compression tests failed before correction). Compression tests now use
+the real GatewayRunner delivery resolver with registered adapter data, avoiding
+a stub that could mask another removed API. This fixes a swallowed AttributeError
+that skipped pre-agent compression when single-message progress was enabled.
+Corrected native-resolver compression suite: 17 passed via scripts/run_tests.sh -j 1.
