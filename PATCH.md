@@ -3,8 +3,8 @@
 Base: official stable v2026.9.24, f97608f178d1ffeca59860195ab7da295f7c8e5f.
 `main` stays exact official stable. The gateway runs `live`, which carries only
 the entries below. Rebase these commits on each stable release; audit their intent
-even when Git reports no conflicts. Prior customizations remain on backup branches
-and are not part of this running version.
+even when Git reports no conflicts. Retired intent and high-level implementation
+notes live in PATCH-ARCHIVE.md. That archive is not a restoration backlog.
 
 ## HERMES-FORK-023: Native Windows update drain
 
@@ -29,6 +29,13 @@ The skill prepares a separate clone, rebases live onto official stable, resolves
 conflicts, audits this file and tests before publishing main/live. A small handoff
 calls the existing native detached updater with --branch live --yes. Native Hermes
 owns dependencies, migrations, drain, install, restart and its receipt.
+
+The update skill reviews keep/adapt/retire decisions in the current run's thread.
+Established preferences remain settled; proposed behavior changes wait for Elliot's
+decision. Published live may be ahead of the installed checkout even when stable
+has not changed. Preparation accepts that clean ancestor state, while unpublished
+or divergent installed commits require review. Installation is skipped only when
+installed and prepared revisions match; running revision is verified separately.
 
 The native watcher is armed for this request before preparation. A run ID binds the
 handoff to that marker, and a pending run rejects a concurrent request. No custom
