@@ -63,3 +63,9 @@ Main-channel regression: `/update` must call the existing thread helper with its
 supported arguments. The thread-creation test now exercises that real helper,
 mocking only Discord I/O; it reproduced the unsupported `reason` argument before
 the one-line fix. Existing-thread and thread-failure paths remain covered.
+
+Thread settings: `/update` uses the shared slash-thread helper, which explicitly
+creates public threads and joins the requesting user (including the seed-message
+fallback). Update and ordinary auto-threads share `discord.auto_thread_archive_duration`;
+the existing seven-day setting is passed through the normal profile config bridge.
+Tests exercise the real helper, membership, fallback, and equal configured durations.

@@ -291,7 +291,7 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
 
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_reports_success(adapter):
-    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
+    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock(), add_user=AsyncMock())
     parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread), send=AsyncMock())
     interaction_channel = SimpleNamespace(parent=parent_channel)
     interaction = SimpleNamespace(
@@ -309,6 +309,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         name="Planning",
         auto_archive_duration=1440,
         reason="Requested by Jezza via /thread",
+        type=sys.modules["discord"].ChannelType.public_thread,
     )
     created_thread.send.assert_awaited_once_with("Kickoff")
     # Thread link shown to user
@@ -320,7 +321,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
 
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
-    created_thread = SimpleNamespace(id=555, name="Planning")
+    created_thread = SimpleNamespace(id=555, name="Planning", add_user=AsyncMock())
     seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
     channel = SimpleNamespace(
         create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
@@ -344,6 +345,7 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         reason="Requested by Jezza via /thread",
     )
     interaction.followup.send.assert_awaited()
+    created_thread.add_user.assert_awaited_once_with(interaction.user)
 
 
 # ------------------------------------------------------------------
@@ -656,6 +658,8 @@ async def test_registers_native_update_slash_command(adapter):
 
 @pytest.mark.asyncio
 async def test_update_slash_creates_thread_before_dispatch(adapter):
+    from plugins.platforms.discord.adapter import _apply_yaml_config
+    adapter.config.extra.update(_apply_yaml_config({}, {"auto_thread_archive_duration": 10080}))
     interaction = SimpleNamespace(
         channel=_FakeTextChannel(channel_id=123, name="general"),
         channel_id=123,
@@ -663,7 +667,7 @@ async def test_update_slash_creates_thread_before_dispatch(adapter):
         response=SimpleNamespace(defer=AsyncMock()),
         edit_original_response=AsyncMock(),
     )
-    created_thread = SimpleNamespace(id=555, name="Hermes update")
+    created_thread = SimpleNamespace(id=555, name="Hermes update", add_user=AsyncMock())
     parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread))
     adapter._resolve_interaction_channel = AsyncMock(return_value=parent_channel)
     adapter._thread_parent_channel = MagicMock(return_value=parent_channel)
@@ -673,9 +677,15 @@ async def test_update_slash_creates_thread_before_dispatch(adapter):
 
     parent_channel.create_thread.assert_awaited_once_with(
         name="Hermes update",
-        auto_archive_duration=1440,
+        auto_archive_duration=10080,
         reason="Requested by Jezza via /thread",
+        type=sys.modules["discord"].ChannelType.public_thread,
     )
+    created_thread.add_user.assert_awaited_once_with(interaction.user)
+    ordinary_message = SimpleNamespace(content="Normal conversation", author=interaction.user,
+                                       create_thread=AsyncMock(return_value=created_thread))
+    await adapter._auto_create_thread(ordinary_message)
+    assert ordinary_message.create_thread.await_args.kwargs["auto_archive_duration"] == parent_channel.create_thread.await_args.kwargs["auto_archive_duration"]
     interaction.edit_original_response.assert_awaited_once_with(content="Update started in <#555>")
     adapter._dispatch_thread_session.assert_awaited_once_with(
         interaction, "555", "Hermes update", "/update"
