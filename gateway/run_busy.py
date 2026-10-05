@@ -593,6 +593,8 @@ class GatewayBusySessionMixin:
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )
+                if steered:
+                    self._publish_steer_progress(session_key, event, running_agent, steer_text)
             if not steered:
                 effective_mode = "queue"
         elif (
@@ -648,6 +650,20 @@ class GatewayBusySessionMixin:
             turn.ctx.event_message_id = anchor
             turn.ctx.inbound_message_id = inbound_id
         return True
+
+    def _publish_steer_progress(self, session_key: str, event: MessageEvent, agent: Any, text: str) -> None:
+        """Place accepted steering in the same FIFO as tool updates, without a new message."""
+        if event.source.platform != Platform.DISCORD:
+            return
+        state = self._peek_session_state(session_key)
+        if state is None or state.turn.agent is not agent or state.turn.progress_queue is None:
+            return
+        # Bound untrusted, multiline user text so it cannot forge progress rows or
+        # consume the whole rolling window. The full payload still reaches the agent.
+        preview = " ".join(text.split())
+        if len(preview) > 120:
+            preview = preview[:119] + "…"
+        state.turn.progress_queue.put(("__steer__", f"⏩ Steer received: {preview}"))
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
@@ -1058,9 +1074,10 @@ class GatewayBusySessionMixin:
             return f"⚠️ Steer failed: {exc}"
         if not accepted:
             return "Steer rejected (empty payload)."
-        preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
+        self._publish_steer_progress(quick_key, event, running_agent, steer_text)
+        # Keep the acknowledgement lossless; the editable progress preview stays bounded.
         target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
-        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
+        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{steer_text}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't

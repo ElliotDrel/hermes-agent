@@ -4453,11 +4453,13 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
-            # A muted diagnostic wake ran for the session; its reply is not presented. The
-            # policy read binds the routed profile; delivery itself stays in the launch scope.
+            # A muted diagnostic wake ran for the session; its reply is not presented.
             with self._media_delivery_scope(event.source):
                 if diagnostic_wake_muted(event):
                     response = None
+            # Only the confirmed stream marker authorizes presentation cleanup.
+            if getattr(event, "_streamed_final_response", None):
+                delivery_succeeded = True
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
@@ -4549,7 +4551,10 @@ class BasePlatformAdapter(ABC):
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            # Post-delivery callbacks may delete temporary progress. Preserve the breadcrumb unless
+            # at least one final payload was confirmed delivered by the adapter.
+            if delivery_succeeded:
+                await self._fire_post_delivery_callback(session_key, interrupt_event)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

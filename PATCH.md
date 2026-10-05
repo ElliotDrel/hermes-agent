@@ -139,3 +139,24 @@ scripts/run_tests.sh -j 1 tests/agent/test_account_usage.py
 tests/agent/test_account_usage_fetch.py passed 23 tests, including unknown durations.
 Candidate upstream metadata improvement; retire when stable exposes these fields.
 Source-only verification; no live activation or network/provider calls performed.
+## HERMES-FORK-017: One Discord progress message
+
+Opt-in display.platforms.discord.progress_compositor: single_message acknowledges
+each turn before execution and edits one owned temporary message for compression,
+tools, thinking, interim output and accepted steering. Final delivery stays native;
+confirmed success awaits bounded cleanup, while failed or incomplete turns retain
+the breadcrumb. Status notices are nonconversational; permanent edit failure never
+creates a replacement. Other transports retain native presentation.
+
+Touchpoints: gateway/progress_compositor.py, display_config.py, run_turn.py,
+run_turn_runner.py, run_busy.py, run_inbound.py, session_state.py, turn_context.py,
+platforms/base.py and the Discord adapter.
+Authorization: Elliot approved this exact restored feature after scope/risk review
+on 2026-10-05, including pre-agent compression progress, steering and cleanup.
+Transfer preserves the curated archived implementation, adapting compression test
+fixtures to stable's hard_msg_limit setting. Focused verification uses
+scripts/run_tests.sh -j 1 with test_progress_compositor.py, test_progress_steer.py,
+test_compression_progress.py, test_run_cleanup_progress.py, test_run_progress_topics.py,
+test_queued_final_ledger.py, test_display_config.py and test_discord_message_lifecycle.py.
+Deterministic payload/backfill tests cover history exclusion; live behavior awaits
+the user's update-flow installation test. Revert this intent commit to roll back.

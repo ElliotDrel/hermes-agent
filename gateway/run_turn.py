@@ -811,6 +811,36 @@ class GatewayTurnMixin:
         return self._HygienePlan(_needs_compress, _approx_tokens, _msg_count, _warn_token_threshold)
 
     async def _hmwa_hygiene_wait_for_summary(self, attempt, hs, session_entry):
+        """Keep Discord edits off the deadline/cancellation path of the summary wait."""
+        compositor = getattr(attempt, "progress_compositor", None)
+        if compositor is None:
+            return await self._hmwa_hygiene_wait_for_summary_guarded(attempt, hs, session_entry)
+
+        async def update_progress():
+            next_update = 30
+            while self._is_session_run_current(compositor.session_key, compositor.generation):
+                waited = time.monotonic() - attempt.wait_started
+                if waited >= next_update and next_update < hs.max_turn_hold_seconds:
+                    compositor.publish_status(f"⏳ Compacting context ({next_update}s elapsed)")
+                    next_update += 30
+                await compositor.flush()
+                await asyncio.sleep(0.25)
+
+        # A slow Discord edit cannot extend either the idle guard or the configured hold.
+        progress_task = asyncio.create_task(update_progress())
+        try:
+            return await self._hmwa_hygiene_wait_for_summary_guarded(attempt, hs, session_entry)
+        finally:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # Presentation failures must never replace the guarded compression outcome.
+                logger.debug("Hygiene progress update failed: %s", type(exc).__name__)
+
+    async def _hmwa_hygiene_wait_for_summary_guarded(self, attempt, hs, session_entry):
         """Progress-aware inline wait for the detached hygiene compressor. Returns the compressed
         transcript; raises ``HygieneTurnHoldExceeded`` (turn-hold budget) or
         ``asyncio.TimeoutError`` (idle/ceiling/fence cancel) for the caller's handlers.
@@ -996,10 +1026,18 @@ class GatewayTurnMixin:
             "proceeding without compression this turn%s",
             session_entry.session_id, time.monotonic() - attempt.wait_started, _log_suffix,
         )
-        await self._hmwa_hygiene_notify(
-            source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
-        )
-        raise
+        compositor = getattr(attempt, "progress_compositor", None)
+        if compositor is not None:
+            if self._is_session_run_current(compositor.session_key, compositor.generation):
+                compositor.publish_status("Compression still running; continuing with existing context")
+                await compositor.flush()
+        else:
+            await self._hmwa_hygiene_notify(
+                source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
+            )
+        # This async helper has no active exception frame of its caller after transport awaits.
+        from gateway.run import HygieneTurnHoldExceeded
+        raise HygieneTurnHoldExceeded
 
     async def _hmwa_hygiene_on_timeout(self, attempt, hs, session_entry, session_key, source):
         """``except asyncio.TimeoutError`` body: cancel at the commit fence, record the failure
@@ -1376,6 +1414,27 @@ class GatewayTurnMixin:
                 # to user/assistant starved the compressor (tool results are the bulk of context).
                 _hyg_msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
                 if len(_hyg_msgs) >= 4:
+                    from gateway.display_config import resolve_display_setting
+                    if (source.platform == Platform.DISCORD and session_key
+                            and self._is_session_run_current(session_key, run_generation)
+                            and resolve_display_setting(hs.data, "discord", "progress_compositor", "off") == "single_message"):
+                        from gateway.progress_compositor import ProgressCompositor
+                        # Publish before the worker starts; TurnRunner inherits this exact ID.
+                        compositor = ProgressCompositor(
+                            self._adapter_for_source(source), source.chat_id, reply_to=event.message_id,
+                            # Presentation must not partition Discord backfill or enter reply context.
+                            metadata={**(attempt.meta or {}), "non_conversational": True},
+                            session_key=session_key, generation=run_generation,
+                        )
+                        compositor.publish_status("⏳ Compacting context")
+                        self._session_state(session_key).turn.progress_compositor = compositor
+                        attempt.progress_compositor = compositor
+                        await compositor.start()
+                    # /stop or a successor can displace this turn during the awaited send.
+                    # Refuse new hygiene work without clearing any successor-owned references.
+                    if (getattr(attempt, "progress_compositor", None) is not None
+                            and not self._is_session_run_current(session_key, run_generation)):
+                        return history
                     await self._hmwa_hygiene_detached_attempt(
                         attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
                         source, session_entry, session_key, _quick_key, run_generation,
@@ -3013,6 +3072,13 @@ class GatewayTurnMixin:
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
+        # This compositor relies on Discord's bounded editable-message contract. A global display
+        # value must not replace Slack task cards or create permanent acknowledgements elsewhere.
+        progress_compositor_mode = (
+            resolve_display_setting(user_config, platform_key, "progress_compositor", "off")
+            if source.platform == Platform.DISCORD
+            else "off"
+        )
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
@@ -3042,7 +3108,12 @@ class GatewayTurnMixin:
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
+            # single_message posts immediately even when every optional source is disabled.
+            needs_progress_queue=(
+                tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
+                or progress_compositor_mode == "single_message"
+            ),
+            progress_compositor_mode=progress_compositor_mode,
             _generic_status_phrase=_generic_status_phrase,
         )
 
@@ -3052,6 +3123,7 @@ class GatewayTurnMixin:
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "progress_compositor_mode",
     )
 
     def _run_agent_build_turn_context(
@@ -3719,6 +3791,7 @@ class GatewayTurnMixin:
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
+        _delivered = _already_streamed
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
             if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
@@ -3767,6 +3840,10 @@ class GatewayTurnMixin:
                     # The queued lane already uploaded this response's MEDIA: attachments; without
                     # this the completion path's already_sent rescan uploads every file twice.
                     result["media_already_delivered"] = _deliver_media
+                _delivered = bool(_text_delivered)
+        # Cleanup is presentation-only; keep upstream's fallback and already_sent contract.
+        if _delivered:
+            self._run_agent_schedule_bubble_cleanup(_delivery_result, adapter, turn_ctx)
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
@@ -3979,8 +4056,8 @@ class GatewayTurnMixin:
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
-        ``response["already_sent"]`` and log ``ok``. ``fail_result`` (None = trust the call) logs a
-        returned failure as ``(session, error)``; ``fail_exc`` logs an exception as ``(session, exc)``."""
+        ``response["already_sent"]`` only on a confirmed successful edit and log ``ok``. A refused
+        result or raised exception leaves the normal final-send fallback eligible."""
         try:
             _res = await _sc.adapter.edit_message(
                 chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
@@ -3988,8 +4065,13 @@ class GatewayTurnMixin:
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
-        if fail_result is not None and not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+        if not getattr(_res, "success", False):
+            # An adapter can return a failure instead of raising (notably Discord 503s). A
+            # transformed final must never claim delivery from that refused edit.
+            logger.warning(
+                fail_result or "Streamed final edit failed for session %s (%s); sending complete response via normal final send.",
+                _sk, getattr(_res, "error", None),
+            )
             return
         response["already_sent"] = True
         logger.info(*ok)
@@ -4083,8 +4165,7 @@ class GatewayTurnMixin:
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.
 
-        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures swallowed."""
-        from gateway.run import safe_schedule_threadsafe
+        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures logged."""
         _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
         if not (
             turn_ctx._cleanup_progress
@@ -4093,23 +4174,57 @@ class GatewayTurnMixin:
             and session_key
             and isinstance(response, dict)
             and not response.get("failed")
+            and not response.get("interrupted")
+            and not response.get("cancelled")
+            and response.get("completed", True) is not False
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
             return
-        _ids_snapshot = list(_cleanup_msg_ids)
+        # One owned compositor id can be observed by more than one source callback. Delete it once.
+        _ids_snapshot = list(dict.fromkeys(str(mid) for mid in _cleanup_msg_ids if mid))
         _chat_id_snapshot = turn_ctx.source.chat_id
-        _loop_snapshot = asyncio.get_running_loop()
 
-        def _cleanup_temp_bubbles() -> None:
-            async def _delete_all() -> None:
-                for _mid in _ids_snapshot:
-                    with suppress(Exception):
-                        await _cleanup_adapter.delete_message(_chat_id_snapshot, _mid)
-            with suppress(Exception):
-                safe_schedule_threadsafe(
-                    _delete_all(), _loop_snapshot, logger=logger,
-                    log_message="Temp bubble cleanup scheduling error",
-                )
+        async def _cleanup_temp_bubbles() -> None:
+            # The delivery callback awaits us before releasing the turn. A detached task could be
+            # killed by a gateway drain immediately after the final answer reaches Discord.
+            from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+
+            loop = asyncio.get_running_loop()
+            # Leave one second for the adapter's outer callback timeout to unwind and log any
+            # unattempted IDs. The normal compositor owns one ID; legacy progress can own several.
+            deadline = loop.time() + max(0.0, min(25.0, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS - 1.0))
+            for index, _mid in enumerate(_ids_snapshot):
+                if loop.time() >= deadline:
+                    logger.warning("Temp bubble cleanup budget exhausted chat=%s unattempted=%s",
+                                   _chat_id_snapshot, _ids_snapshot[index:])
+                    break
+                for attempt in range(2):
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        deleted = await asyncio.wait_for(
+                            _cleanup_adapter.delete_message(_chat_id_snapshot, _mid),
+                            timeout=min(5.0, remaining),
+                        )
+                        if deleted:
+                            break
+                    except Exception as exc:
+                        logger.warning(
+                            "Temp bubble delete failed chat=%s message=%s attempt=%s category=%s",
+                            _chat_id_snapshot, _mid, attempt + 1, type(exc).__name__,
+                        )
+                    if attempt == 0:
+                        await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
+                else:
+                    logger.warning(
+                        "Temp bubble delete unconfirmed chat=%s message=%s after 2 attempts",
+                        _chat_id_snapshot, _mid,
+                    )
+                if loop.time() >= deadline:
+                    logger.warning("Temp bubble cleanup budget exhausted chat=%s unattempted=%s",
+                                   _chat_id_snapshot, _ids_snapshot[index + 1:])
+                    break
 
         try:
             _cleanup_adapter.register_post_delivery_callback(
@@ -4188,6 +4303,10 @@ class GatewayTurnMixin:
                 if _long_running_mode == "generic"
                 else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
             )
+            if turn_ctx.progress_compositor_mode == "single_message" and turn_ctx.progress_queue is not None:
+                # The compositor owns the temporary lane. A heartbeat replaces its status header.
+                turn_ctx.progress_queue.put(("__status__", _heartbeat_text))
+                continue
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:
@@ -4262,6 +4381,11 @@ class GatewayTurnMixin:
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
         )
+        # Expose only the current turn's Discord queue to busy steering. A displaced
+        # turn must not publish into a successor; TurnState.clear drops the reference.
+        if (session_key and turn_ctx.progress_compositor_mode == "single_message"
+                and (run_generation is None or self._is_session_run_current(session_key, run_generation))):
+            self._session_state(session_key).turn.progress_queue = turn_ctx.progress_queue
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
@@ -4270,6 +4394,11 @@ class GatewayTurnMixin:
             self._run_agent_start_streaming_tts(
                 source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
             )
+
+        # single_message means the acknowledgement is an execution boundary, not a best-effort race
+        # between a background progress task and the worker thread.
+        if turn_ctx.progress_compositor_mode == "single_message":
+            await turn_runner.start_progress_compositor()
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
