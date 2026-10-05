@@ -229,3 +229,21 @@ seed fallback/retry. A fallback429 removes its false seed when one exists.
 Ordinary transient retries and configured thread settings remain native.
 Verification: direct429, channel cooldown and fallback429 tests.
 Upstream disposition: retain until native rate-limit behavior is equivalent.
+
+## HERMES-FORK-012: Semantic titles and Discord rename
+
+One coherent title customization: concise Title Case automatic titles use the
+original opener (up to5000characters), excluding bound skill bodies. Bare /rename
+regenerates from up to10000characters of clean history; explicit /rename sets the
+thread and session title, including during an active turn, with actionable errors.
+Opt-in discord.rename_manual_threads also titles user-created threads; fresh
+Discord-name comparison preserves a human rename made during title generation.
+Main input/history, provider routing and cached system/tool inputs remain native.
+
+Authorization: Elliot explicitly requested all title customization as one patch,
+then said "execute on this" after the scoped boundary/verification review.
+Verification: title generation, regenerated history, bound-skill input, rename and
+manual-thread suites pass; deterministic request tests cover cache on/off and
+resume without modifying main input. Discord fetch/edit has no atomic compare,
+so a narrow human-rename race remains. Restore via reviewed inverse and restart.
+Upstream disposition: retain the custom title workflow until native equivalent.

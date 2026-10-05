@@ -133,6 +133,9 @@ _NATIVE_SLASH_COMMANDS: tuple = (
     ("title", "Set or show the session title",
      (("name", str, "", "Session title. Leave empty to show current.", None),),
      "/title {name}", None),
+    ("rename", "Generate or set this thread's title",
+     (("name", str, "", "Optional replacement title. Leave empty to generate one.", None),),
+     "/rename {name}", None),
     ("resume", "Resume a previously-named session",
      (("name", str, "", "Session name to resume. Leave empty to list sessions.", None),),
      "/resume {name}", None),
@@ -5405,6 +5408,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             pass
         return thread
 
+    def _manual_thread_rename_enabled(self) -> bool:
+        """Resolve the manual-thread opt-in once for both ingest and title scheduling."""
+        return self._extra_or_env_flag(
+            "rename_manual_threads", "DISCORD_RENAME_MANUAL_THREADS", "false", truthy=True,
+        )
+
+    def _semantic_thread_initial_name(self, channel: Any) -> Optional[str]:
+        """Capture the exact manual-thread name that semantic titling may replace.
+
+        The opt-in fails closed. Reading Discord's own value gives the later rename a no-clobber
+        guard, so a human rename made while title generation is in flight always wins.
+        """
+        if not self._manual_thread_rename_enabled():
+            return None
+        current_name = getattr(channel, "name", None)
+        return str(current_name) if current_name else None
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
@@ -5467,40 +5487,97 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return None
 
     async def rename_thread(
-        self, thread_id: str, name: str, *, only_if_current_name: Optional[str] = None,
+        self,
+        thread_id: str,
+        name: str,
+        *,
+        only_if_current_name: Optional[str] = None,
+        prefer_connector_created: bool = False,
+        parent_chat_id: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> bool:
-        """Best-effort rename; ``only_if_current_name`` protects human-renamed/pre-existing threads (no-op on mismatch)."""
+        """Best-effort Discord thread rename.
+
+        ``only_if_current_name`` prevents overwriting human-renamed or
+        pre-existing threads. ``prefer_connector_created`` and
+        ``parent_chat_id`` are relay-lane hints and are intentionally ignored
+        by the native Discord adapter. This is intentionally a no-op on a
+        current-name mismatch.
+
+        ``raise_on_error`` opts a caller into the real Discord exception
+        instead of a bare ``False``. The default stays best-effort because the
+        auto-title and relay lanes fire on their own schedule and must never
+        fail a turn over a cosmetic rename. ``/rename`` is user-initiated and
+        opts in, so it can report the actual cause (rate limit, permissions)
+        rather than an unfalsifiable "Discord would not rename this thread".
+        The trade-off fails toward noisier user-facing errors on exactly the
+        one path where the user asked for the rename and is waiting on it.
+        """
         if not self._client or not DISCORD_AVAILABLE:
+            if raise_on_error:
+                raise RuntimeError("The Discord adapter is not connected.")
             return False
+
         try:
             thread_id_int = int(str(thread_id))
         except (TypeError, ValueError):
+            if raise_on_error:
+                raise ValueError(f"Invalid Discord thread id: {thread_id!r}")
             return False
+
         cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
         if not cleaned:
+            if raise_on_error:
+                raise ValueError("The requested thread name is empty.")
             return False
-        # Thread names are budgeted in UTF-16 code units (emoji count double) — use the UTF-16 helpers.
+        # Discord thread names are budgeted in UTF-16 code units (emoji count
+        # double) — truncate with the UTF-16 helpers, not code-point slices.
         from gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
         if utf16_len(cleaned) > 80:
             cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
+
         try:
-            thread = self._client.get_channel(thread_id_int)
+            # A guarded semantic rename must compare against fresh Discord state. Channel cache
+            # entries can lag a human rename and would defeat the no-clobber contract. Discord has
+            # no atomic compare-and-edit API, so a narrow race remains between this fetch and edit.
+            thread = (
+                await self._client.fetch_channel(thread_id_int)
+                if only_if_current_name is not None
+                else self._client.get_channel(thread_id_int)
+            )
             if thread is None:
                 thread = await self._client.fetch_channel(thread_id_int)
         except Exception:
-            logger.debug("[%s] Failed to resolve Discord thread %s for rename", self.name, thread_id, exc_info=True)
+            # WARNING, not DEBUG: a swallowed rename failure was previously
+            # invisible at the default log level, which made a live /rename
+            # failure impossible to diagnose from the logs alone.
+            logger.warning(
+                "[%s] Failed to resolve Discord thread %s for rename",
+                self.name, thread_id, exc_info=True,
+            )
+            if raise_on_error:
+                raise
             return False
+
         current_name = getattr(thread, "name", None)
         if only_if_current_name is not None and current_name != only_if_current_name:
             logger.info(
                 "[%s] Discord semantic thread rename skipped for %s: current name %r != expected %r",
                 self.name, thread_id, current_name, only_if_current_name,
             )
+            if raise_on_error:
+                raise RuntimeError(
+                    f"The thread is currently named {current_name!r}, not "
+                    f"{only_if_current_name!r}; skipping the rename."
+                )
             return False
         if current_name == cleaned:
             return True
+
         edit = getattr(thread, "edit", None)
         if edit is None:
+            if raise_on_error:
+                raise RuntimeError(f"Discord channel {thread_id} cannot be renamed.")
             return False
         try:
             await edit(name=cleaned, reason="Hermes semantic session title")
@@ -5510,7 +5587,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             return True
         except Exception:
-            logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
+            logger.warning(
+                "[%s] Failed to rename Discord thread %s to %r",
+                self.name, thread_id, cleaned, exc_info=True,
+            )
+            if raise_on_error:
+                raise
             return False
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -6195,7 +6277,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             auto_thread_initial_name=(
                 getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
                 or self._derive_auto_thread_name(message.content or "")
-            ) if auto_threaded_channel is not None else None,
+            ) if auto_threaded_channel is not None else (
+                self._semantic_thread_initial_name(effective_channel) if is_thread else None
+            ),
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
@@ -7414,6 +7498,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
+        ("rename_manual_threads", "DISCORD_RENAME_MANUAL_THREADS"),
         ("reactions", "DISCORD_REACTIONS"),
     ):
         if key in discord_cfg:

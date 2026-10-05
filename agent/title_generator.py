@@ -44,8 +44,9 @@ TitleCallback = Callable[[str, str], None]
 # Validation callback: () -> bool. See #19027.
 RuntimeValidator = Callable[[], bool]
 
-# Text budget handed to the model (Claude Code / OpenClaw converged on 1000).
-MAX_TITLE_INPUT_CHARS = 1000
+# HERMES-FORK-012: Bound title-only input at the operator's requested 5,000 characters.
+# This does not change the main agent's input or the title output limit.
+MAX_TITLE_INPUT_CHARS = 5_000
 _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
 _ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
 # Footers the @-reference expander appends below the typed text (agent/context_references.py).
@@ -70,19 +71,19 @@ TITLE_MAX_TOKENS = 512
 # rendered from these constants so the guard set and the prompt cannot drift
 # apart. Port of QwenLM/qwen-code#9709.
 _PROMPT_GOOD_EXAMPLES = (
-    "Fix login button on mobile",
-    "Postgres connection pool exhaustion",
-    "Friendly greeting",
+    "Fix Login Button on Mobile",
+    "Postgres Connection Pool Exhaustion",
+    "Friendly Greeting",
 )
-_PROMPT_VAGUE_EXAMPLE = "Code changes"
+_PROMPT_VAGUE_EXAMPLE = "Code Changes"
 
-# "Friendly greeting" is deliberately NOT in the reject set: the prompt
+# "Friendly Greeting" is deliberately NOT in the reject set: the prompt
 # instructs the model to produce it for bare greetings, so it is a legitimate
 # output, not an echo failure. The too-vague example is rejected too — a model
 # repeating the counter-example says nothing about the session, and the
 # derived title the guard falls back to is strictly more informative.
 _EXAMPLE_ECHO_REJECT = frozenset(
-    t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
+    t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly Greeting"
 ) | {_PROMPT_VAGUE_EXAMPLE.lower()}
 
 # "Friendly greeting" is what the prompt asks for when the opener has no topic yet, so
@@ -93,23 +94,41 @@ _EXAMPLE_ECHO_REJECT = frozenset(
 _PROVISIONAL_GREETING_TITLE = "friendly greeting"
 
 
+# HERMES-FORK-012: Restore the opening-turn editorial policy lost during the
+# upstream split. This remains distinct from /rename: no previous title or
+# conversation history exists yet, and the instant derived preview stays intact.
 _TITLE_PROMPT_TEMPLATE = (
-    "You name chat sessions. Given the user's opening message, write a title "
-    "that lets them find this conversation again in a list.\n\n"
-    "Rules:\n"
-    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
-    "- Name what the user wants DONE, not that they asked a question.\n"
-    "- Keep technical terms, filenames, numbers, and error codes exact.\n"
+    "Generate a title that will help the user recognize this chat weeks later.\n"
+    "Return JSON with exactly one key: title.\n\n"
+    "Editorial Rules:\n"
+    "- 5–10 words, fewer than 45 characters, in Title Case.\n"
+    "- Use a compact noun phrase or clear action phrase.\n"
+    "- Prefer shorter, concrete words when equivalent: 'Add' over 'Implement', "
+    "'Fix' over 'Resolve'.\n"
+    "- Capture the umbrella goal when the request lists several symptoms, tasks, or steps.\n"
+    "- Name the product change, decision, problem, or question—not the mock, plan, "
+    "report, branch, PR, or workflow used to produce it.\n"
+    "- Models, subagents, tools, prompts, output formats, tests, CI, commits, "
+    "monitoring, & other process instructions do not belong in the title unless they "
+    "are the topic.\n"
+    "- For reviews, name what is being reviewed & the relevant concern. Avoid generic "
+    "titles such as 'Review PR 123.'\n"
+    "- For research, name the question domain—not the research process.\n"
+    "- Do not claim the work is complete.\n"
+    "- Do not copy, paraphrase, or truncate the user's message.\n"
+    "- Preserve technical terms, product names, filenames, numbers, acronyms, & error "
+    "codes exactly.\n"
+    "- Prefer & or + when they make the title shorter & clearer.\n"
     "- Drop filler words: the, this, my, a, an.\n"
-    "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
-    "- Never answer the message. Name it.\n"
-    "- Always produce something, even for a bare greeting.\n"
+    "- Avoid quotes, labels, trailing punctuation, & a 'Title:' prefix.\n"
+    "- Never answer the message; only name it.\n"
     "__LANGUAGE_RULE__\n"
+    "- Always return a useful title, including for a greeting.\n\n"
+    # Retain upstream's example-echo defense; use Title Case examples so they
+    # reinforce, rather than contradict, the restored editorial policy.
     + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
     + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
-    'Too long: {"title": "Investigate and fix the issue where the login button '
-    'does not respond on mobile devices"}\n\n'
-    'Reply with JSON only: {"title": "..."}'
+    'Reply with JSON only: {"title":"..."}'
 )
 
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
@@ -717,3 +736,207 @@ def maybe_auto_title(
         return upgrade
     start_title_upgrade(upgrade)
     return upgrade
+
+# Explicit /rename preserves T3 conversation-aware title regeneration.
+# HERMES-FORK-012: User-selected auxiliary-only history budget; main context is unchanged.
+MAX_REGENERATED_TITLE_CONTEXT_CHARS = 10_000
+MAX_FIRST_USER_REGENERATED_TITLE_CHARS = 2_000
+_EARLIER_TITLE_CONTEXT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n"
+_FIRST_USER_TITLE_CONTEXT_TRUNCATION_MARKER = "\n[First user message truncated]"
+
+_REGENERATED_TITLE_PROMPT_TEMPLATE = (
+    "Regenerate the title for an existing Hermes conversation so the user can "
+    "recognize it weeks later.\n"
+    "The previous title was __PREVIOUS_TITLE__.\n"
+    "Return JSON with exactly one key: title.\n\n"
+    "Determine the title in this order:\n"
+    "1. Read USER messages first. Identify the latest explicit durable goal. "
+    "The original subject remains the subject until the user clearly changes it.\n"
+    "2. Use ASSISTANT messages only to resolve vague links, unnamed code, and "
+    "discovered product nouns. Do not promote one assistant finding into the "
+    "subject unless the user adopts it as a new goal.\n"
+    "3. Compare that subject with the previous title. Preserve accurate scope "
+    "words, especially when earlier content is truncated.\n"
+    "4. Title the durable subject and desired outcome, not the current workflow state.\n\n"
+    "Editorial Rules:\n"
+    "- 5–10 words, fewer than 45 characters, in Title Case.\n"
+    "- Use a compact noun phrase or clear action phrase.\n"
+    "- Preserve the umbrella subject when later messages focus on one finding, "
+    "provider, platform, or implementation detail.\n"
+    "- Research, planning, implementation, review, CI, merge, and monitoring "
+    "usually do not change the subject.\n"
+    "- Ignore deliverables and operations such as mocks, plans, HTML, branches, "
+    "PRs, tests, CI, commits, merging, and monitoring unless they are the topic.\n"
+    "- Models, subagents, tools, prompts, output formats, and workflow "
+    "instructions do not belong in the title unless they are the topic.\n"
+    "- Do not claim the work is complete or copy and truncate a thread message.\n"
+    "- Preserve technical terms, product names, filenames, numbers, acronyms, "
+    "and error codes exactly.\n"
+    "- Prefer & or + when they make the title shorter and clearer.\n"
+    "- Avoid quotes, labels, trailing punctuation, and a 'Title:' prefix.\n"
+    "- Return a meaningfully improved title, not a cosmetic paraphrase of the "
+    "previous title.\n"
+    "__LANGUAGE_RULE__\n\n"
+    'Reply with JSON only: {"title":"..."}'
+)
+
+
+def _format_regenerated_title_section(message: Any) -> Optional[tuple[str, str]]:
+    """Return one T3-style title-context section for a real chat message."""
+    if not isinstance(message, dict):
+        return None
+    role = str(message.get("role") or "").lower()
+    if role not in {"user", "assistant"}:
+        return None
+    content = message.get("content")
+    text = content if isinstance(content, str) else flatten_message_text(content)
+    text = (text or "").strip()
+    if role == "user":
+        # HERMES-FORK-012: Select title-only originals, never rewrite the saved/main turn.
+        metadata = message.get("display_metadata")
+        original = metadata.get("title_user_message") if isinstance(metadata, dict) else None
+        if isinstance(original, str):
+            text = original.strip()
+        else:
+            # Old automatic loads have no reliable end marker. Omit that title section
+            # rather than guess where the body ends; later chat remains available.
+            # Recognize the existing gateway backfill/sender wrappers only for this check.
+            scaffold = text.rsplit("\n\n[New message]\n", 1)[-1]
+            scaffold = re.sub(r"^\[[^\]\r\n]+\] ", "", scaffold, count=1)
+            if re.match(
+                r'^\[IMPORTANT: The "[^"\r\n]+" skill is auto-loaded\. '
+                r'Follow its instructions for this session\.\]', scaffold
+            ):
+                return None
+            from agent.skill_commands import extract_user_instruction_from_skill_message
+            instruction = extract_user_instruction_from_skill_message(scaffold)
+            if instruction != scaffold:
+                text = instruction or ""
+    # Hermes stores some control scaffolding as user turns. It is not the
+    # user's durable goal and would poison the pinned opening or recency.
+    if role == "user" and not is_titleable_user_message(text):
+        return None
+    if not text:
+        return None
+    return role, f"{role.upper()}:\n{text}"
+
+
+def _collect_recent_regenerated_title_context(
+    sections: list[tuple[str, str]], max_chars: int
+) -> tuple[str, bool]:
+    """Keep newest context, retaining the end of an overlong turn."""
+    context = ""
+    truncated = False
+    for _role, section in reversed(sections):
+        separator = "\n\n" if context else ""
+        available = max_chars - len(context) - len(separator)
+        if len(section) > available:
+            if available > 0:
+                context = f"{section[-available:]}{separator}{context}"
+            truncated = True
+            break
+        context = f"{section}{separator}{context}"
+    return context, truncated
+
+
+def format_regenerated_title_context(messages: list[dict]) -> str:
+    """Format bounded conversation history for an explicit title regeneration.
+
+    Mirrors T3 Code: recent user/assistant exchange gives the latest goal, but
+    an overflow also pins the start of the first real user message and labels
+    the missing middle explicitly.
+    """
+    sections = [
+        section
+        for message in messages
+        if (section := _format_regenerated_title_section(message)) is not None
+    ]
+    context, truncated = _collect_recent_regenerated_title_context(
+        sections, MAX_REGENERATED_TITLE_CONTEXT_CHARS
+    )
+    if not truncated:
+        return context
+
+    first_user_section = next(
+        (section for role, section in sections if role == "user"), None
+    )
+    if not first_user_section:
+        return f"{_EARLIER_TITLE_CONTEXT_TRUNCATION_MARKER}{context}"
+
+    pinned = first_user_section
+    if len(pinned) > MAX_FIRST_USER_REGENERATED_TITLE_CHARS:
+        pinned = (
+            pinned[: MAX_FIRST_USER_REGENERATED_TITLE_CHARS - len(_FIRST_USER_TITLE_CONTEXT_TRUNCATION_MARKER)]
+            + _FIRST_USER_TITLE_CONTEXT_TRUNCATION_MARKER
+        )
+    recent_budget = (
+        MAX_REGENERATED_TITLE_CONTEXT_CHARS
+        - len(pinned)
+        - 2
+        - len(_EARLIER_TITLE_CONTEXT_TRUNCATION_MARKER)
+    )
+    recent_context, _ = _collect_recent_regenerated_title_context(
+        sections, max(0, recent_budget)
+    )
+    return f"{pinned}\n\n{_EARLIER_TITLE_CONTEXT_TRUNCATION_MARKER}{recent_context}"
+
+
+def generate_regenerated_title(
+    conversation_history: list[dict],
+    previous_title: str,
+    timeout: Optional[float] = None,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
+    runtime_validator: Optional[RuntimeValidator] = None,
+) -> Optional[str]:
+    """Generate an explicit replacement title from bounded conversation history."""
+    if not _auto_title_enabled():
+        logger.debug("Title regeneration skipped: auxiliary.title_generation.enabled=false")
+        return None
+    if runtime_validator is not None:
+        try:
+            if not runtime_validator():
+                logger.debug("Title regeneration skipped: runtime validator returned False")
+                return None
+        except Exception:
+            logger.debug("Title regeneration runtime validator raised; proceeding", exc_info=True)
+
+    context = format_regenerated_title_context(conversation_history)
+    if not context:
+        return None
+    language = _title_language()
+    language_rule = (
+        _LANGUAGE_RULE_PINNED.format(language=language)
+        if language
+        else _LANGUAGE_RULE_MATCH_USER
+    )
+    prompt = _REGENERATED_TITLE_PROMPT_TEMPLATE.replace(
+        "__PREVIOUS_TITLE__", json.dumps(previous_title)
+    ).replace("__LANGUAGE_RULE__", language_rule)
+    try:
+        response = call_llm(
+            task="title_generation",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": context},
+            ],
+            max_tokens=64,
+            temperature=0.3,
+            timeout=timeout,
+            main_runtime=main_runtime,
+            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+        )
+        title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
+        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+            logger.debug("Rejecting answer-shaped regenerated title output")
+            return None
+        return title
+    except Exception as exc:
+        logger.warning("Title regeneration failed: %s", exc)
+        logger.debug("Title regeneration traceback", exc_info=True)
+        if failure_callback is not None:
+            try:
+                failure_callback("title regeneration", exc)
+            except Exception:
+                logger.debug("Title regeneration failure_callback raised", exc_info=True)
+        return None

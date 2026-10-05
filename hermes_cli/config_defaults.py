@@ -1523,6 +1523,9 @@ DEFAULT_CONFIG = {
         # Free-response channels reply inline by default; true also gives each top-level
         # message in them its own thread (still mention-free). Env: DISCORD_FREE_RESPONSE_AUTO_THREAD.
         "free_response_auto_thread": False,
+        # Opt in to semantic title replacement for threads created by a Discord user.
+        # The adapter guards on the name observed at ingest so later human renames win.
+        "rename_manual_threads": False,
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
         # Bot authors must type @thisbot to trigger a reply; Discord reply pings alone do not count.
         # Set False only for trusted legacy relays. Humans are unaffected.
