@@ -128,7 +128,7 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     return data
 
 
-def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
+def _spawn_detached_update(hermes_cmd, output_path, exit_code_path, *, extra_args=()) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
     setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
     enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
@@ -141,13 +141,14 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
         subprocess.Popen(
             [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
-             sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
+             sys.executable, "-m", "hermes_cli.main", "update", "--gateway", *extra_args],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
         return
     hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
     update_cmd = (
         f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
-        f" > {shlex.quote(str(output_path))} 2>&1; "
+        + "".join(" " + shlex.quote(arg) for arg in extra_args)
+        + f" > {shlex.quote(str(output_path))} 2>&1; "
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
         f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
@@ -1261,9 +1262,15 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_collect_and_upload)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
-        """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
-        restart it may trigger; marker files let this or the next gateway process notify the user."""
+        """Prepare through the explicit skill turn; retain native run-scoped reporting."""
         import json
+        from uuid import uuid4
+        from hermes_cli.fork_update_entry import build_update_invocation
+        if (not event.allow_gateway_control or getattr(event, "internal", False)
+                or getattr(event.source, "is_bot", False) or event.get_command() != "update"):
+            raise ValueError("Update requires an explicit authorized user /update command.")
+        if event.get_command_args().strip():
+            raise ValueError("Usage: /update")
         from gateway.run import _hermes_home, _resolve_hermes_bin
         from hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
@@ -1274,21 +1281,34 @@ class GatewaySlashCommandsMixin(
                 from gateway.platform_registry import platform_registry
                 entry = platform_registry.get(src.platform.value)
                 if not entry or not entry.allow_update_command:
-                    return t("gateway.update.platform_not_messaging")
+                    raise ValueError(t("gateway.update.platform_not_messaging"))
             except Exception:
-                return t("gateway.update.platform_not_messaging")
+                raise ValueError(t("gateway.update.platform_not_messaging"))
         if is_managed():
-            return f"✗ {format_managed_message('update Hermes Agent')}"
+            raise ValueError(format_managed_message('update Hermes Agent'))
         if not (Path(__file__).parent.parent.resolve() / '.git').exists():
-            return t("gateway.update.not_git_repo")
+            raise ValueError(t("gateway.update.not_git_repo"))
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
-            return t("gateway.update.hermes_cmd_not_found")
+            raise ValueError(t("gateway.update.hermes_cmd_not_found"))
+        if any((_hermes_home / name).exists() for name in
+               (".update_pending.json", ".update_pending.claimed.json")):
+            raise ValueError("An update is already pending. Finish that run before starting another.")
+        prompt = await self._run_in_executor_with_context(
+            lambda: build_update_invocation(event.text, task_id=self._session_key_for_source(src),
+                                             platform=src.platform.value))
+        # Skill discovery yields. Recheck the singleton native run before claiming
+        # its files so concurrent threads cannot redirect an existing watcher.
+        if self._is_session_running(self._session_key_for_source(src)) or any(
+                (_hermes_home / name).exists() for name in
+                (".update_pending.json", ".update_pending.claimed.json")):
+            raise ValueError("An update or session became busy; retry when it finishes.")
+        run_id = uuid4().hex
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         pending = {
-            "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
+            "run_id": run_id, "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
             "timestamp": datetime.now().isoformat()}
         # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
@@ -1299,14 +1319,12 @@ class GatewaySlashCommandsMixin(
         _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
-        try:
-            _spawn_detached_update(hermes_cmd, output_path, exit_code_path)
-        except Exception as e:
-            pending_path.unlink(missing_ok=True)
-            exit_code_path.unlink(missing_ok=True)
-            return t("gateway.update.start_failed", error=e)
+        output_path.write_text("", encoding="utf-8")
+        # Keep native progress/completion reporting alive while the explicit user
+        # turn prepares Git. The skill hands installation to the native launcher.
         self._schedule_update_notification_watch()
-        return t("gateway.update.starting")
+        return prompt + f"\nNative update reporting run ID: {run_id}. Pass this exact ID to install.py."
+
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

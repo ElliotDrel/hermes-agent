@@ -27,11 +27,9 @@ from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_erro
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
-# A failed /update leaves the previous version running; the full pip/git log stays on the host
-# (`hermes update` re-runs it in the terminal) and only a short tail is quoted in chat.
+# The updater exit code proves failure, not which version remains healthy.
 _UPDATE_FAILED_NOTICE = (
-    "❌ Hermes update failed; the previous version is still running. Run `hermes update` on the "
-    "host to see the full error, or try /update again later.")
+    "❌ Hermes update failed. Check the update output and gateway status before retrying.")
 
 # An update's completion notice waits for its target platform adapter to (re)connect before it
 # can be delivered. Nothing bounds that wait, so a marker naming a platform that is not
@@ -143,12 +141,15 @@ class GatewayNotificationsMixin:
         session_key: Optional[str]
         metadata: Any
         platform: Any
+        send_callback: Any = None
 
         def send_metadata(self):
             from gateway.run import _non_conversational_metadata
             return _non_conversational_metadata(self.metadata, platform=self.platform)
 
         async def send(self, text: str):
+            if self.send_callback is not None:
+                return await self.send_callback(text)
             return await self.adapter.send(self.chat_id, text, metadata=self.send_metadata())
 
     @dataclasses.dataclass
@@ -569,6 +570,8 @@ class GatewayNotificationsMixin:
                 # Fallback session key if not stored (old pending files)
                 return self._UpdateTarget(
                     adapter, chat_id, session_key or f"{platform_str}:{chat_id}", metadata, platform,
+                    (lambda text: self._deliver_update_completion(pending, platform, adapter, text))
+                    if platform == Platform.DISCORD else None,
                 )
         return None
 
@@ -589,8 +592,7 @@ class GatewayNotificationsMixin:
                 return
             await asyncio.sleep(poll_interval)
         if paths.any_pending() and not paths.exit_code.exists():
-            paths.exit_code.write_text("124", encoding="utf-8")
-            await self._send_update_notification()
+            logger.warning("Update reporting deadline elapsed; installer result is unknown, retaining markers")
 
     @staticmethod
     def _update_exit_code(paths: "_UpdatePaths") -> int:
@@ -656,6 +658,10 @@ class GatewayNotificationsMixin:
         """
         paths = self._update_paths()
         loop = asyncio.get_running_loop()
+        # Preparation can precede the ordinary restart wait. Do not expire the
+        # reporting watcher while that supported wait is still in progress.
+        from hermes_cli.gateway import _get_restart_exit_wait_budget
+        timeout += _get_restart_exit_wait_budget()
         deadline = loop.time() + timeout
         target = self._resolve_update_target(paths)
         if target is None:
@@ -684,14 +690,13 @@ class GatewayNotificationsMixin:
             if paths.exit_code.exists():
                 _read_new_output()
                 await _flush_buffer()
-                with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
-                    exit_code = self._update_exit_code(paths)
-                    await target.send(
-                        "✅ Hermes update finished." if exit_code == 0 else _UPDATE_FAILED_NOTICE
-                    )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
-                self._clear_update_markers(paths, session_key)
-                return
+                # The shared completion sender checks returned failures, tries the
+                # configured main chat, and retains undelivered receipt files.
+                if await self._send_update_notification():
+                    self._clear_update_markers(paths, session_key)
+                    return
+                await asyncio.sleep(poll_interval)
+                continue
             _read_new_output()
             if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
                 await _flush_buffer()
@@ -711,11 +716,33 @@ class GatewayNotificationsMixin:
             await asyncio.sleep(poll_interval)
         if not paths.exit_code.exists():
             logger.warning("Update watcher timed out after %.0fs", timeout)
-            paths.exit_code.write_text("124", encoding="utf-8")
+            # A reporting deadline is not an installer exit. Preserve its receipt.
             await _flush_buffer()
             with suppress(Exception):
-                await target.send("❌ Hermes update timed out after 30 minutes.")
-            self._clear_update_markers(paths, session_key)
+                await target.send("Update reporting stopped waiting; the installer has not reported a result. Its logs and pending receipt are preserved.")
+
+    async def _deliver_update_completion(self, pending, platform, adapter, text):
+        """Display-only receipt: try this run, then its profile's configured main chat."""
+        from gateway.run import _non_conversational_metadata
+        chat_id = pending.get("chat_id")
+        targets = [(chat_id, self._pending_marker_metadata(platform, chat_id, pending, adapter))] if chat_id else []
+        profile = self._marker_profile(pending)
+        config = (getattr(self, "_profile_configs", {}).get(profile) if profile
+                  else getattr(self, "config", None))
+        platform_config = config.platforms.get(platform) if config else None
+        home = getattr(platform_config, "home_channel", None)
+        # A previous home thread must not become the next update's destination.
+        if platform == Platform.DISCORD and home and home.chat_id and (str(home.chat_id) != str(chat_id) or pending.get("thread_id")):
+            targets.append((str(home.chat_id), None))
+        for target, metadata in targets:
+            try:
+                result = await adapter.send(target, text, metadata=_non_conversational_metadata(metadata, platform=platform))
+                if not _send_failed(result):
+                    return True
+                logger.warning("Update receipt delivery failed to %s:%s: %s", platform.value, target, _send_error(result))
+            except Exception as exc:
+                logger.warning("Update receipt delivery failed to %s:%s: %s", platform.value, target, exc)
+        return False
 
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
@@ -755,7 +782,7 @@ class GatewayNotificationsMixin:
             output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
             platform = Platform(platform_str)
             adapter = self._authorization_adapter(platform, self._marker_profile(pending))
-            if chat_id and not adapter:
+            if not adapter:
                 age = self._marker_age_seconds(pending)
                 if age is not None and age > _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS:
                     # The platform never came back. Deferring forever leaks the markers and re-logs
@@ -771,20 +798,19 @@ class GatewayNotificationsMixin:
                 # Target platform not reconnected yet (common right after the update's restart): keep the
                 # markers for a later retry instead of silently losing the notification.
                 return _defer("Update notification deferred: %s adapter not connected yet", platform_str)
-            if chat_id:
-                metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
-                from tools.ansi_strip import strip_ansi
-                output = strip_ansi(output).strip()
-                if exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
-                    if output:
-                        msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
-                else:
-                    msg = _UPDATE_FAILED_NOTICE
-                    if output:
-                        msg = f"{msg}\n\nLast lines:\n```\n{_update_output_tail(output, 800)}\n```"
-                await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
-                logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
+            from tools.ansi_strip import strip_ansi
+            output = strip_ansi(output).strip()
+            if exit_code == 0:
+                msg = "✅ Hermes update finished successfully."
+                if output:
+                    msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
+            else:
+                msg = _UPDATE_FAILED_NOTICE
+                if output:
+                    msg = f"{msg}\n\nLast lines:\n```\n{_update_output_tail(output, 800)}\n```"
+            if not await self._deliver_update_completion(pending, platform, adapter, msg):
+                return _defer("Update receipt undelivered; retaining completion for retry")
+            logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
         except Exception as e:
             logger.warning("Post-update notification failed: %s", e)
         finally:

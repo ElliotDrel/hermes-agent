@@ -127,37 +127,18 @@ class TestRestoreStashWithInputFn:
 
 
 class TestUpdateCommandGatewayFlag:
-    """Verify the gateway spawns hermes update --gateway."""
-
-    @pytest.mark.asyncio
-    async def test_spawns_with_gateway_flag(self, tmp_path):
-        """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
-        runner = _make_runner()
-        event = _make_event()
-
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
-        mock_popen = MagicMock()
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
-             patch("subprocess.Popen", mock_popen):
-            await runner._handle_update_command(event)
-
-        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
-        call_args = mock_popen.call_args[0][0]
-        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
-        assert "--gateway" in cmd_string
-        assert "PYTHONUNBUFFERED" in cmd_string
-        assert "rc=$?" in cmd_string
-        assert "status=$?" not in cmd_string
+    def test_prepared_handoff_keeps_native_gateway_and_live_flags(self, tmp_path):
+        import sys
+        from gateway.slash_commands import _spawn_detached_update
+        with patch("subprocess.Popen") as spawn:
+            _spawn_detached_update(["hermes"], tmp_path / "output", tmp_path / "exit",
+                                   extra_args=("--branch", "live", "--yes"))
+        argv = spawn.call_args.args[0]
+        if sys.platform == "win32":
+            assert argv[-4:] == ["--gateway", "--branch", "live", "--yes"]
+        else:
+            assert "update --gateway --branch live --yes" in argv[-1]
+            assert "PYTHONUNBUFFERED" in argv[-1]
 
 
 # ---------------------------------------------------------------------------

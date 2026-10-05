@@ -877,6 +877,26 @@ class GatewayInboundMixin:
         _ack = f"Learning a skill from {'what you described' if req else 'this conversation'}…"
         return await self._hm_rewrite_turn_to_prompt(event, source, "learn", _ack, lambda: build_learn_prompt(req))
 
+    async def _hm_cmd_update(self, event, source, _quick_key):
+        from agent.estop import paused_reply
+        if notice := paused_reply():
+            return True, notice
+        # Use the existing user-turn skill renderer and ordinary agent admission.
+        # Scope disk-bound skill discovery to this source's profile, preserving
+        # the original event, session, reply and thread metadata.
+        try:
+            async with self._async_profile_scope_for_source(source):
+                prompt = await self._handle_update_command(event)
+        except ValueError as exc:
+            return True, str(exc)
+        # Skill loading yields before the ordinary session claim. A competing
+        # run must not receive this explicit update as steering or queued text.
+        if self._is_session_running(_quick_key):
+            return True, "The session is busy; /update can't run until it is idle."
+        event._explicit_update = True
+        event.text = prompt
+        return False, None
+
     async def _hm_cmd_plan(self, event, source, _quick_key):
         from agent.plan_prompt import build_plan_prompt
 
@@ -981,7 +1001,7 @@ class GatewayInboundMixin:
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa", "update",
     })
 
     async def _hm_dispatch_canonical_command(
@@ -1304,9 +1324,14 @@ class GatewayInboundMixin:
         if self._is_session_running(_quick_key):
             return await self._hm_handle_running_session_message(event, source, _quick_key)
 
+        _explicit_update = event.get_command() == "update"
         _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
         if _handled:
             return _result
+
+        _explicit_update = _explicit_update or getattr(event, "_explicit_update", False)
+        if hasattr(event, "_explicit_update"):
+            del event._explicit_update
 
         # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
         # conversational "yes" would execute a dangerous command.
@@ -1327,6 +1352,14 @@ class GatewayInboundMixin:
                     "please resend shortly."
                 )
 
+        # Command rendering and lobby checks yield before the claim. Keep the
+        # literal update's reject policy through the final synchronous boundary.
+        if _explicit_update and self._is_session_running(_quick_key):
+            return "The session is busy; /update can't run until it is idle."
+        if _explicit_update:
+            from agent.estop import paused_reply
+            if notice := paused_reply():
+                return notice
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.
@@ -1335,7 +1368,8 @@ class GatewayInboundMixin:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
             return _limit_message
 
-        event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+        if not _explicit_update:
+            event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
