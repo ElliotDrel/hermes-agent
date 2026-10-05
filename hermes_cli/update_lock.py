@@ -50,14 +50,16 @@ def update_marker_path() -> Path:
 def _pid_alive(pid: int) -> bool:
     """True when a process with ``pid`` currently exists.
 
-    Delegates to :func:`gateway.status._pid_exists`. Do NOT hand-roll ``os.kill(pid, 0)``: on
-    Windows CPython routes ``sig=0`` to ``GenerateConsoleCtrlEvent``, which Ctrl+C's the
-    target's whole console process group (bpo-14484). Any pid we cannot evaluate counts as
-    dead so a corrupt marker never wedges the lock.
+    Windows must use the stdlib-only recovery probe: importing gateway.status also
+    imports messaging dependencies, locking DLLs the post-swap child must replace.
+    Keep the gateway's zombie-aware probe on POSIX.
     """
     if pid <= 0:
         return False
     try:
+        if os.name == "nt":
+            from hermes_cli._early_recovery import _pid_is_running
+            return _pid_is_running(pid)
         from gateway.status import _pid_exists
         return bool(_pid_exists(pid))
     except Exception as exc:

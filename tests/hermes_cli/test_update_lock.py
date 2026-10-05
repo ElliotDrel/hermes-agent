@@ -17,9 +17,11 @@ disk.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +38,46 @@ from hermes_cli.update_lock import (
 # updater can never wedge every future update. Deliberately larger than any
 # platform's pid_t so it also covers the corrupt-marker path (OverflowError).
 DEAD_PID = 4294967294
+
+
+@pytest.mark.windows_only
+def test_post_swap_child_reaches_dependency_sync_without_loading_messaging(tmp_path):
+    """A live parent's marker must not import DLLs the child is about to replace."""
+    marker = tmp_path / ".hermes-update-in-progress"
+    _claim(marker, os.getpid())
+    handoff = tmp_path / "handoff.json"
+    handoff.write_text(json.dumps({"branch": "live"}), encoding="utf-8")
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), HANDOFF_PID_ENV: str(os.getpid())}
+    env.pop("HERMES_UPDATE_REEXEC", None)
+    code = r'''
+import sys
+from unittest.mock import patch
+from hermes_cli import main, update_cmd
+
+class ReachedSync(Exception):
+    pass
+
+def before_sync(*args, **kwargs):
+    assert "httpx" not in sys.modules, "PID probe loaded messaging dependencies"
+    assert "brotlicffi" not in sys.modules, "updater locked its own dependency"
+    raise ReachedSync()
+
+sys.argv = ["hermes", "update", "--gateway", "--yes", "--post-swap", sys.argv[1]]
+with patch.object(update_cmd, "_sync_python_dependencies_after_pull", before_sync):
+    try:
+        main.main()
+    except ReachedSync:
+        pass
+    else:
+        raise AssertionError("post-swap child never reached dependency sync")
+'''
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code, str(handoff)],
+        cwd=Path(__file__).resolve().parents[2], env=env,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
 
 
 @pytest.fixture

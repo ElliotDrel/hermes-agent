@@ -285,3 +285,21 @@ payload cases reproduced failure before this fixture correction and passed after
 Exact corrected source checks: compression suite 17 passed after 5b8d9adff4;
 payload suite 2 passed after this fixture-only correction. Other earlier results
 are checkpoints, not a claim that the complete final commit was rerun.
+
+## HERMES-FORK-024: Keep Windows updater lock checks lightweight
+
+The post-swap updater must inspect its parent's update lock without importing
+messaging dependencies it may need to replace. Reuse the existing stdlib-only
+recovery PID probe on Windows; retain the zombie-aware gateway probe on POSIX.
+The native dependency guard, installer, recovery and restart flow remain intact.
+
+Evidence: the parent-lock probe imported gateway.status, whose package imports
+reached httpx and brotlicffi. The updater then refused its own loaded DLL before
+refreshing Discord dependencies. Core recovery did not include that optional
+dependency, so the same refusal repeated.
+Verification: a fresh-process post-swap regression failed before the correction
+and passed afterward; lock, handoff and self-lock suites passed (47 tests, one
+Linux-only skip). A disposable Windows venv also verified that the current uv
+can upgrade brotlicffi while the original parent has its DLL mapped, so no extra
+parent-exit mechanism is needed. Live Discord update verification is pending.
+Upstream disposition: retain until native lock checks avoid these eager imports.
