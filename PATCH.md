@@ -69,3 +69,22 @@ creates public threads and joins the requesting user (including the seed-message
 fallback). Update and ordinary auto-threads share `discord.auto_thread_archive_duration`;
 the existing seven-day setting is passed through the normal profile config bridge.
 Tests exercise the real helper, membership, fallback, and equal configured durations.
+
+## HERMES-FORK-005: Durable response-footer metadata
+
+Restore provider context usage and the lifetime compaction count to the existing
+output hook consumed by the workspace model-context-suffix plugin. Persist counts
+through agent rebuilds, gateway reloads, compression rotation and Codex compaction.
+Native early output transformation remains unchanged: the footer is saved with the
+response and replays in subsequent history, as explicitly approved by Elliot.
+
+Restoration authorization: Elliot approved 005/007 after reviewing this data flow
+and cache/history impact. No system prompt, schema or request routing changes.
+Touchpoints: agent/turn_finalizer.py, agent/context_compressor.py,
+agent/codex_runtime.py. Source restored from archived 852cef97.
+Verification: 24 tests passed across test_transform_llm_output_persistence.py,
+test_compression_anti_thrash_persistence.py and test_codex_app_server_compaction.py
+using scripts/run_tests.sh -j 1. Real SQLite and cached/uncached request tests cover
+one footer per response, persisted response replay, and durable count restoration.
+No live activation observed. Tests cannot guarantee nondeterministic model behavior.
+Upstream candidate: richer output-hook metadata. Remove when stable supplies it.

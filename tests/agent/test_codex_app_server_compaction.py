@@ -207,6 +207,33 @@ def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     assert compressor._verify_compaction_cleared_threshold is True
 
 
+def test_codex_native_boundary_uses_durable_counter_increment():
+    class PersistentCounter:
+        compression_count = 0
+        last_compression_rough_tokens = 0
+        last_prompt_tokens = 0
+        last_completion_tokens = 0
+        awaiting_real_usage_after_compression = False
+
+        def __init__(self):
+            self.persist_calls = 0
+
+        def _increment_compression_count(self):
+            self.compression_count += 1
+            self.persist_calls += 1
+
+    agent = DummyAgent(TurnResult(thread_id="thread-1", turn_id="turn-1"))
+    compressor = PersistentCounter()
+    agent.context_compressor = compressor
+
+    assert _record_codex_app_server_compaction(
+        agent,
+        TurnResult(thread_id="thread-1", turn_id="turn-1", compacted=True),
+    ) is True
+    assert compressor.compression_count == 1
+    assert compressor.persist_calls == 1
+
+
 class RecordingCooldownCompressor(SimpleNamespace):
     """Compressor stub exposing the real cooldown API surface."""
 

@@ -99,3 +99,48 @@ def test_recovery_path_tail_row_carries_transformed_text(db_agent, monkeypatch):
     assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"] == "REWRITTEN:RECOVERED TEXT"
     assert calls.count("transform_llm_output") == 1
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_footer_metadata_persists_and_replays_once_per_turn(db_agent, monkeypatch, cache):
+    """Accepted footer history follows the native persistence seam with caching on/off."""
+    import copy
+
+    agent, db = db_agent
+    agent._use_prompt_caching = cache
+    agent._use_native_cache_layout = False
+    agent.compression_enabled = False
+    agent.context_compressor.compression_count = 3
+    hooks, requests = [], []
+
+    def hook(name, **kwargs):
+        if name != "transform_llm_output":
+            return []
+        hooks.append(dict(kwargs))
+        assert kwargs["context_window_tokens"] > 0
+        assert kwargs["compaction_count"] == 3
+        return [kwargs["response_text"] + "\nRuntime footer: compactions=3"]
+
+    def complete(**kwargs):
+        requests.append(copy.deepcopy(kwargs))
+        return _fake_completion("reply " + str(len(requests)))(**kwargs)
+
+    monkeypatch.setattr("agent.title_generator.auto_title_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+    agent.client.chat.completions.create = complete
+    first = agent.run_conversation("first question")
+    saved_first = first["final_response"]
+    second = agent.run_conversation("second question", conversation_history=first["messages"])
+
+    assert len(hooks) == 2
+    assert saved_first.count("Runtime footer:") == 1
+    assert second["final_response"].count("Runtime footer:") == 1
+    replay = [m["content"] for m in requests[1]["messages"] if m["role"] == "assistant"]
+    replay_text = [
+        "".join(block.get("text", "") for block in value if block.get("type") == "text")
+        if isinstance(value, list) else value
+        for value in replay
+    ]
+    assert saved_first in replay_text
+    stored = [r["content"] for r in db.get_messages("sess-44239") if r["role"] == "assistant"]
+    assert stored == [saved_first, second["final_response"]]
