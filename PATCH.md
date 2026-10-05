@@ -177,3 +177,33 @@ Verification: scripts/run_tests.sh -j 1 tests/gateway/test_discord_composition_b
 passed 16 tests after updating the archived fixture to stable's delivery adapter
 resolver. No model/provider routing changes. Live installation remains pending.
 Revert this intent commit to restore native queue handling.
+
+## HERMES-FORK-021: Scoped Discord session messages
+
+An owned Discord turn can send_session_message to an existing conversation of
+the same user/profile. Reuse native route resolution, adapter admission and busy
+FIFO. Process-local capability supplies identity, generation and shared chain
+budgets; tool arguments cannot forge them. Existing routes only, no direct history
+writes or bot self-message bypass. Peer content cannot authorize gateway control.
+Other transports and delegated/background execution receive no capability.
+
+Touchpoints: gateway/session_messaging.py, run_turn.py, run_inbound.py,
+tools/session_message_tool.py and toolsets.py. Elliot approved restoring this exact
+protected input/tool feature after scope/risk review on 2026-10-05. Adapted the
+archived adapter lookup to stable's existing _delivery_adapter_for; no new resolver.
+Verification: scripts/run_tests.sh -j 1 tests/gateway/test_session_messaging.py
+tests/gateway/test_session_message_lifecycle.py tests/gateway/test_session_message_worker.py
+tests/agent/test_session_message_payload.py. All 19 tests pass, including actual
+worker dispatch, cached/uncached request snapshots, FIFO, persistence and refusals.
+Explicit disabled_toolsets: [session_messaging] disables it; revert this intent
+commit for source rollback. Live installation and nondeterministic behavior remain
+for the user's update-flow test.
+
+Restoration acceptance for 017/018/021: 199 tests pass across 15 named files after
+fixture/API adaptation, including the current updater route and Discord slash
+checks. Two pre-existing Windows image-URI expectations fail identically on the
+pre-restoration native-updater-source baseline: test_run_agent_queued_message_delivers_first_response_media
+and test_run_agent_queued_message_delivers_streamed_first_response_media in
+test_run_progress_topics.py. Those two are excluded from the passing rerun only;
+no unrelated media implementation or expectation was changed. Progress fixture
+adaptations preserve stable's hard_msg_limit and steer target wording.
