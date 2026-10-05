@@ -214,3 +214,10 @@ and test_run_agent_queued_message_delivers_streamed_first_response_media in
 test_run_progress_topics.py. Those two are excluded from the passing rerun only;
 no unrelated media implementation or expectation was changed. Progress fixture
 adaptations preserve stable's hard_msg_limit and steer target wording.
+## HERMES-FORK-002: Discord personal drafts
+
+Ignore explicit draft/drafts markers (optional slash; whitespace or colon boundary)
+before dispatch, history backfill and reply previews. Unrelated words remain input.
+Elliot approved restoring this scoped input filter after reviewing its boundary.
+Verification: focused Discord marker, ingress, backfill and reply tests.
+Upstream disposition: retain while this personal draft convention is used.
