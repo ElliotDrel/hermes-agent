@@ -122,3 +122,20 @@ suites 37, TUI events 6, retention parity 11, native test_run_agent.py -k todo 6
 and registry/distribution 45 tests passed. No live activation observed; model
 behavior remains nondeterministic. Retire when the selected stable includes this
 upstream fix; do not file a duplicate implementation.
+
+## HERMES-FORK-007: Provider duration metadata for quota footers
+
+Expose provider-reported Codex window durations to the existing workspace footer,
+label recognized five-hour and weekly windows, and retain unknown fallback labels.
+Anthropic's named account-wide five_hour/seven_day windows supply 18,000/604,800
+seconds explicitly. Model-specific caps remain distinct and cannot masquerade as
+account-wide quota. No provider request or authentication path changes.
+
+Touchpoint: agent/account_usage.py. Elliot approved restoring accurate quota
+metadata alongside 005, including the discovered Anthropic contract correction.
+Archived code omitted Anthropic durations; the new real-parser regression failed
+with ('5-hour', None) != ('5-hour', 18000) before the correction. Afterward,
+scripts/run_tests.sh -j 1 tests/agent/test_account_usage.py
+tests/agent/test_account_usage_fetch.py passed 23 tests, including unknown durations.
+Candidate upstream metadata improvement; retire when stable exposes these fields.
+Source-only verification; no live activation or network/provider calls performed.

@@ -112,7 +112,8 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot is not None
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
-    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].label == "5-hour"
+    assert snapshot.windows[0].duration_seconds == 18_000
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
@@ -339,3 +340,23 @@ def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch
     finally:
         marker.reset(token)
     assert seen == {"force_fresh": True, "marker": "profile-scope"}
+
+
+def test_anthropic_named_windows_expose_duration_without_guessing_unknowns(monkeypatch):
+    from agent import account_usage
+
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat01-test")
+    monkeypatch.setattr(account_usage, "_get_json", lambda *a, **kw: {
+        "five_hour": {"utilization": 25, "resets_at": "2030-01-01T00:00:00Z"},
+        "seven_day": {"utilization": 50, "resets_at": "2030-01-07T00:00:00Z"},
+        "seven_day_opus": {"utilization": 10},
+    })
+    snapshot = account_usage._fetch_anthropic_account_usage()
+    assert [(w.label, w.duration_seconds) for w in snapshot.windows] == [
+        ("5-hour", 18000), ("Weekly", 604800), ("Opus week", None),
+    ]
+    unknown = account_usage._usage_windows(
+        {"other": {"used_percent": 12, "limit_window_seconds": 86400}},
+        (("other", "Other"),), "used_percent", "reset_at",
+    )
+    assert (unknown[0].label, unknown[0].duration_seconds) == ("Other", 86400)
