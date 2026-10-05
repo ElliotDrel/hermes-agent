@@ -202,7 +202,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
     waited_for = []
 
-    def fake_wait(pids, *, timeout):
+    def fake_wait(pids, *, timeout, profile_homes=None):
         waited_for.extend(pids)
         return set()
 
@@ -625,7 +625,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
     drained_dead: set[int] = set()
 
-    def _drain_marks_workers_dead(pids, *, timeout):
+    def _drain_marks_workers_dead(pids, *, timeout, profile_homes=None):
         drained_dead.update(int(p) for p in pids)
         return set()
 

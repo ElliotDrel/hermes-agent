@@ -56,11 +56,19 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
         return False
 
 
-def _wait_for_windows_update_gateway_exit(pids: list[int], *, timeout: float) -> set[int]:
+def _wait_for_windows_update_gateway_exit(
+    pids: list[int], *, timeout: float, profile_homes: dict[int, Path] | None = None,
+) -> set[int]:
     """Wait for the given gateway PIDs to exit, returning survivors."""
     if not pids:
         return set()
     from gateway.status import _pid_exists
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+
+    # Read only each owned gateway's status; reuse ordinary restart progress without
+    # changing admission, drain, or forced-stop behavior.
+    reporters = {pid: drain_progress_reporter(home, budget_s=timeout)
+                 for pid, home in (profile_homes or {}).items() if pid in pids}
 
     def _alive(pid: int) -> bool:
         try:
@@ -73,6 +81,9 @@ def _wait_for_windows_update_gateway_exit(pids: list[int], *, timeout: float) ->
     def _all_gone() -> bool:
         nonlocal remaining
         remaining = {pid for pid in remaining if _alive(pid)}
+        for pid in remaining:
+            if pid in reporters:
+                reporters[pid]()
         return not remaining
 
     _poll_until(_all_gone, max(timeout, 0.0), 0.25)
@@ -873,7 +884,7 @@ def _discover_windows_gateways():
 
 
 def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids):
-    """Marker + socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
+    """Socket-first pause with marker fallback; ``(profiles, mapped_pids, socket_acks)``.
 
     Socket ACK = the gateway drains and exits by its own graceful path. No answer (older
     gateway) -> the marker poll / force-kill ladder in the caller."""
@@ -886,7 +897,6 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
         try:
             # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
             # relying on the marker poll + force-kill ladder. A positive ACK means the gateway is running
@@ -897,17 +907,22 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             ack = pause_gateway_for_update(Path(proc.path))
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
+                continue
         except Exception as exc:
             logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc)
+        # A marker invokes stop() directly, bypassing restart's after-turn wait.
+        # Only old/unreachable gateways need that fallback; never race an ACKed drain.
+        _write_update_planned_stop_marker(Path(proc.path), int(pid))
     return profiles, mapped_pids, socket_acks
 
 
 def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
-    """Drain budget: configured restart drain (>= 1s), raised to a socket-paused gateway's declared
-    ACTIVE-TURN budget + teardown grace so it isn't force-killed mid-turn."""
-    from hermes_cli.gateway import _get_restart_drain_timeout
+    """Honor the ordinary restart exit budget and any longer gateway-declared drain."""
+    from hermes_cli.gateway import _get_restart_exit_wait_budget
     try:
-        drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
+        # The pause ACK can contain only stop/drain time, excluding the preceding
+        # after-turn wait. Use the existing restart budget so we do not kill mid-turn.
+        drain_timeout = max(float(_get_restart_exit_wait_budget()), 1.0)
     except Exception:
         drain_timeout = 10.0
     if socket_acks:
@@ -943,7 +958,10 @@ def _pause_windows_gateways_for_update() -> dict | None:
     launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     drain_timeout = _gateway_drain_timeout(socket_acks)
-    survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
+    survivors = _m()._wait_for_windows_update_gateway_exit(
+        mapped_pids, timeout=drain_timeout,
+        profile_homes={pid: Path(profile_processes[pid].path) for pid in mapped_pids},
+    )
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
     # Snapshot unmapped gateways' argv *before* force-killing so resume can replay it.
     # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``).
