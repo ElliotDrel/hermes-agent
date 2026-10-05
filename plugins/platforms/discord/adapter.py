@@ -2938,14 +2938,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
         acked = False
-        if self._reactions_enabled() and hasattr(message, "add_reaction"):
+        if self._reactions_enabled() and hasattr(message, "add_reaction") and not getattr(event, "_discord_composition", None):
             acked = await self._add_reaction(message, "👀")
         await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for final reaction and durable state."""
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
+        # Buffered composition has one waiting marker only; ordinary completion emoji
+        # would mark a multi-message turn as multiple independent acknowledgements.
+        if getattr(event, "_discord_composition", None) or not self._reactions_enabled():
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
@@ -6217,7 +6219,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if thread_id:
             await self._threads.mark_async(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
+        # Busy queue composition needs the identity of every physical Discord
+        # message. The older short text batch destroys those IDs and its sliding
+        # timer can join messages across the fixed 30-second boundary.
+        busy_queue_text = (
+            msg_type == MessageType.TEXT
+            and self._busy_text_mode == "queue"
+            and self._event_session_key(event) in self._active_sessions
+        )
+        if (not recovered and msg_type == MessageType.TEXT
+                and self._text_batch_delay_seconds > 0 and not busy_queue_text):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)

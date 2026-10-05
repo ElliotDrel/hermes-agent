@@ -160,3 +160,20 @@ test_compression_progress.py, test_run_cleanup_progress.py, test_run_progress_to
 test_queued_final_ledger.py, test_display_config.py and test_discord_message_lifecycle.py.
 Deterministic payload/backfill tests cover history exclusion; live behavior awaits
 the user's update-flow installation test. Revert this intent commit to roll back.
+
+## HERMES-FORK-018: Fixed Discord composition window
+
+Ordinary busy queue-mode Discord text reserves one FIFO position and groups
+compatible same-sender messages for a fixed 30 seconds. Each physical message
+is fetched once at seal to include edits; edits cannot become control commands.
+The current answer is delivered before waiting for the next composition window.
+Media, other senders, explicit commands and other transports stay separate.
+Only the final queued message receives the waiting reaction, removed on admission.
+
+Touchpoints: gateway/discord_composition.py, run_busy.py, run_turn.py,
+platforms/base.py and the Discord adapter. Elliot explicitly approved restoring
+this protected timing/grouping behavior after review on 2026-10-05.
+Verification: scripts/run_tests.sh -j 1 tests/gateway/test_discord_composition_buffer.py
+passed 16 tests after updating the archived fixture to stable's delivery adapter
+resolver. No model/provider routing changes. Live installation remains pending.
+Revert this intent commit to restore native queue handling.
