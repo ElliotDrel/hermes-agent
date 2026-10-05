@@ -88,3 +88,17 @@ using scripts/run_tests.sh -j 1. Real SQLite and cached/uncached request tests c
 one footer per response, persisted response replay, and durable count restoration.
 No live activation observed. Tests cannot guarantee nondeterministic model behavior.
 Upstream candidate: richer output-hook metadata. Remove when stable supplies it.
+
+## HERMES-FORK-015: Windows search pattern transport
+
+Regex and glob arguments use pattern quoting, while filesystem paths keep native
+path translation. This prevents backslashes such as \d and \( becoming slashes.
+Literal backslash-n remains distinct from a regex newline; multiline parsing is
+selected when ripgrep requires it, without a false newline-intent advisory.
+Touchpoints: tools/file_operations.py and tools/file_operations_search.py.
+Restored from 852cef97 after Elliot explicitly approved the tool-result impact.
+Existing tests exercise real Windows search results, backslashes, globs and newline
+semantics: scripts/run_tests.sh -j 1 tests/tools/test_search_pattern_backslash_windows.py
+tests/tools/test_search_auto_multiline.py, 9 passed. Native schemas remain unchanged.
+Candidate upstream correctness fix; retire when stable preserves these semantics.
+Source-only restoration, no live activation or provider calls.
