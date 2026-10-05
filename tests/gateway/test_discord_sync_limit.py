@@ -51,7 +51,6 @@ def adapter():
 
     adapter._sleep_between_command_sync_mutations = AsyncMock()
     adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
-    adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
     adapter._patchable_app_command_payload = MagicMock(side_effect=lambda p: p)
 
     return adapter
@@ -81,7 +80,6 @@ async def test_safe_sync_deletes_before_creating():
     adapter._client.application_id = "test_app_id"
     adapter._sleep_between_command_sync_mutations = AsyncMock()
     adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
-    adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
     adapter._patchable_app_command_payload = MagicMock(side_effect=lambda p: p)
 
     # Simulate having 100 commands on Discord, with 1 that's no longer desired

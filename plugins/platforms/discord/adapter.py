@@ -2909,6 +2909,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             current_existing_payload = self._existing_command_to_payload(current)
             current_payload = self._canonicalize_app_command_payload(current_existing_payload)
             desired_payload = self._canonicalize_app_command_payload(desired)
+            # Omitted install types inherit Discord application defaults. The API
+            # fills them in, so comparing that default to None recreates every
+            # command on each boot without ever converging. Explicit values stay
+            # managed; contexts and other command fields keep their native checks.
+            if desired.get("integration_types") is None:
+                desired_payload["integration_types"] = current_payload["integration_types"]
             if current_payload == desired_payload:
                 summary["unchanged"] += 1
                 continue

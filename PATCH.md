@@ -263,3 +263,16 @@ the real GatewayRunner delivery resolver with registered adapter data, avoiding
 a stub that could mask another removed API. This fixes a swallowed AttributeError
 that skipped pre-agent compression when single-message progress was enabled.
 Corrected native-resolver compression suite: 17 passed via scripts/run_tests.sh -j 1.
+## HERMES-FORK-003: Convergent Discord command synchronization
+
+Native safe synchronization treats unspecified installation types as Discord-owned
+application defaults. An API-populated default must not trigger delete/recreate.
+Explicit installation types, contexts and other managed fields remain compared.
+Native fingerprint persistence, pacing,429cooldown and timeout policy stay intact.
+
+Evidence: read-only live comparison found all67 existing commands differed only
+in this API-populated field, explaining repeated recreation and rate limits.
+Verification: real discord.py AppCommand serialization in isolated subprocesses
+reproduces unnecessary recreation; equivalent defaults now produce no mutations,
+while explicit mismatches still recreate. No Discord writes occur in tests.
+Upstream disposition: focused native comparison bug fix; old startup policy omitted.
