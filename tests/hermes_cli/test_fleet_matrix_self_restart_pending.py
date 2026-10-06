@@ -96,6 +96,12 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     assert "restart pending" in out.getvalue()
     assert "Update not complete" not in out.getvalue()
     assert cleared == [True]
+    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as partial:
+        fleet_mod._verify_fleet_after_update(
+            restart, _pre_update_plan=None, _windows_gateway_resume=None,
+            node_failures=[], update_complete=False,
+        )
+    assert partial.value.code == 1, "a healthy fleet must not hide a failed dependency update"
     with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
         restart.self_restart_pending_pids = set()  # same fleet, identity not threaded → STALE, exit 1
         fleet_mod._verify_fleet_after_update(

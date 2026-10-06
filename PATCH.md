@@ -331,3 +331,12 @@ Focused checks: installer boundary stays free of HTTP/compression imports; norma
 and oversized auth responses preserve the cap; a failed refresh cannot print
 success even with healthy core probes. Nine affected checks passed. Live native
 update verification follows publication. Retain until stable fixes these paths.
+
+Live follow-up: native update installed 88fb830d, restarted a healthy gateway and
+correctly recorded partial after detecting an empty old brotlicffi dist-info
+directory. Removing that verified empty directory restored metadata discovery.
+The run also exposed an upstream exit-code mismatch: fleet verification wrote a
+partial receipt but returned zero when restart alone succeeded. update_cmd_fleet.py
+now exits one for incomplete installation after clearing a completed restart's
+marker. This keeps the native detached wrapper from overwriting failure with zero.
+Computer-use driver refresh succeeded (already current, 0.34.0) on this run.
