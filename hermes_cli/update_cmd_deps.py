@@ -372,8 +372,7 @@ def _refresh_active_lazy_features(
     features: list[str] | None = None) -> bool:
     """Refresh previously-activated lazy backends (cold ones untouched): the core install never
     touches them, so a bumped :data:`LAZY_DEPS` pin would leave them stale forever. Returns True
-    when the venv is safe (refreshed / nothing active / import repair succeeded), False when a
-    failed lazy install left broken core imports repair couldn't fix. Never raises.
+    when refresh completed, False after a failed refresh even if core import repair succeeds.
 
     See #57828.
     """
@@ -427,7 +426,12 @@ def _refresh_active_lazy_features(
         return True
 
     for feature, status in failed:
-        print(f"  ⚠ {feature} failed to refresh: {_clip(status.split(': ', 1)[-1])}")
+        print(f"  ⚠ {feature} failed to refresh: {status.split(': ', 1)[-1]}")
+
+    # Core probes do not cover every optional backend. Preserve the failed refresh
+    # even when they pass, so completion cannot certify a partially removed package.
+    from hermes_cli.update_cmd import _write_lazy_refresh_incomplete_marker
+    _write_lazy_refresh_incomplete_marker()
 
     if install_cmd_prefix is None:
         print("  ⚠ Lazy refresh failed; rerun `hermes update` once resolved.")
@@ -438,12 +442,11 @@ def _refresh_active_lazy_features(
     # See #57828.
     status = _m()._repair_venv_via_import_probes(install_cmd_prefix, env=env)
     if status == "repaired":
-        print("  Lazy backend(s) keep their previous version until refresh succeeds.")
-        return True
+        print("  Core imports repaired; the failed backend refresh remains incomplete.")
+        return False
     if status == "healthy":
-        print("  Lazy backend(s) keep their previous version; probed packages look intact.")
-        print("  Rerun `hermes update` once the upstream issue is resolved.")
-        return True
+        print("  Core imports passed; this does not verify the failed backend.")
+        return False
     if status == "indeterminate":
         print("  ⚠ Leaving `.lazy-refresh-incomplete` until import probes can confirm health.")
     return False

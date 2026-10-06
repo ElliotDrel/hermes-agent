@@ -335,6 +335,10 @@ def _post_update_sqlite_runtime_status():
 def _print_verified_update_completion(message: str) -> bool:
     """Print a success completion only after probing the next Hermes runtime."""
     from hermes_cli.update_cmd import _post_update_sqlite_runtime_status
+    from hermes_cli.main_install_repair import _lazy_refresh_marker_path
+    if _lazy_refresh_marker_path().exists():
+        _print_update_completion("⚠ Update partially complete — Python backend refresh failed.")
+        return False
     if not message.startswith("✓"):
         _print_update_completion(message)
         return False
@@ -371,13 +375,17 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
     See #88251.
     """
     from hermes_cli.update_cmd import _post_update_sqlite_runtime_status, _update_complete_message
+    from hermes_cli.main_install_repair import _lazy_refresh_marker_path
+    python_deps_ok = not _lazy_refresh_marker_path().exists()
     sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
     if sqlite_info is None:
         # Grace path: only a POSITIVE vulnerable probe demotes success to partial.
         sqlite_runtime_ok = True
     print()
-    if node_failures or not desktop_build_ok or not sqlite_runtime_ok:
+    if node_failures or not desktop_build_ok or not sqlite_runtime_ok or not python_deps_ok:
         parts = []
+        if not python_deps_ok:
+            parts.append("Python backend refresh failed")
         if node_failures:
             parts.append(f"Node.js dependencies for {', '.join(node_failures)} did not refresh")
         if not desktop_build_ok:
@@ -400,7 +408,7 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
         from hermes_cli.gateway_multiplex_mode import consume_rewritten_notice, recorded_standalone_warning_lines
         for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
             print(line)
-    return desktop_build_ok and sqlite_runtime_ok
+    return desktop_build_ok and sqlite_runtime_ok and python_deps_ok
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:

@@ -303,3 +303,31 @@ Linux-only skip). A disposable Windows venv also verified that the current uv
 can upgrade brotlicffi while the original parent has its DLL mapped, so no extra
 parent-exit mechanism is needed. Live Discord update verification is pending.
 Upstream disposition: retain until native lock checks avoid these eager imports.
+
+Live follow-up: 94d41fae passed the lock check but the backend installer imported
+authentication code later and mapped brotlicffi again. The earlier uv experiment
+used a cache-hardlinked DLL; repeating with a copied DLL reproduced Access is
+denied (os error 5) and a partially removed package. Thus that experiment did not
+establish safety of the live installation. See 025 for the additional correction.
+
+## HERMES-FORK-025: Avoid premature HTTP imports and report failed updates
+
+Construct the existing Codex response-cap stream class inside its response hook.
+Provider-registry reads used by updater subprocess environment preparation must
+not import httpx and map compression DLLs before replacement. The stream body,
+response cap, errors and network requests are unchanged. Elliot specifically
+approved this lazy-import correction on 2026-10-05. Revert this commit to undo it.
+
+Failed optional-backend refreshes retain the native incomplete marker even when
+unrelated core probes pass. Both native completion banners check that marker and
+return incomplete to the existing restart/receipt flow. Print full installer
+errors; do not claim the previous backend survived a failed uninstall.
+Touchpoints: auth_codex.py, update_cmd_deps.py, update_cmd_maint.py.
+
+Evidence: actual installer preparation imported auth_codex's top-level HTTP
+subclass. A copied, loaded brotlicffi DLL reproduced uv's os error 5; the broken
+live package was repaired through the native installer with the gateway stopped.
+Focused checks: installer boundary stays free of HTTP/compression imports; normal
+and oversized auth responses preserve the cap; a failed refresh cannot print
+success even with healthy core probes. Nine affected checks passed. Live native
+update verification follows publication. Retain until stable fixes these paths.

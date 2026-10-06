@@ -88,6 +88,7 @@ def test_repair_runs_force_reinstall_with_pyproject_pins(
 
 def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch):
     import tools.lazy_deps as lazy_deps_mod
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
 
     monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: ["platform.matrix"])
     monkeypatch.setattr(
@@ -107,7 +108,7 @@ def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch):
 
     ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
 
-    assert ok is True
+    assert ok is False  # Repairing core imports does not finish the failed backend refresh.
     assert repair_calls == [["PyYAML"]]
 
 
