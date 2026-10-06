@@ -93,7 +93,7 @@ Verification: 24 tests passed across test_transform_llm_output_persistence.py,
 test_compression_anti_thrash_persistence.py and test_codex_app_server_compaction.py
 using scripts/run_tests.sh -j 1. Real SQLite and cached/uncached request tests cover
 one footer per response, persisted response replay, and durable count restoration.
-No live activation observed. Tests cannot guarantee nondeterministic model behavior.
+Installed in live on 2026-10-05; individual model behaviors are not exhaustively verified.
 Upstream candidate: richer output-hook metadata. Remove when stable supplies it.
 
 ## HERMES-FORK-015: Windows search pattern transport
@@ -126,7 +126,7 @@ Existing temporary-history and real-agent request tests cover cached/uncached
 resume, saved task merging, compression rendering and hostile/unpaired history.
 Verification via scripts/run_tests.sh -j 1: todo restoration 13, three todo tool
 suites 37, TUI events 6, retention parity 11, native test_run_agent.py -k todo 6,
-and registry/distribution 45 tests passed. No live activation observed; model
+and registry/distribution 45 tests passed. Installed in live on 2026-10-05; model
 behavior remains nondeterministic. Retire when the selected stable includes this
 upstream fix; do not file a duplicate implementation.
 
@@ -145,7 +145,7 @@ with ('5-hour', None) != ('5-hour', 18000) before the correction. Afterward,
 scripts/run_tests.sh -j 1 tests/agent/test_account_usage.py
 tests/agent/test_account_usage_fetch.py passed 23 tests, including unknown durations.
 Candidate upstream metadata improvement; retire when stable exposes these fields.
-Source-only verification; no live activation or network/provider calls performed.
+Installed in live on 2026-10-05; provider-specific quota variants retain source-test coverage.
 ## HERMES-FORK-017: One Discord progress message
 
 Opt-in display.platforms.discord.progress_compositor: single_message acknowledges
@@ -165,8 +165,7 @@ fixtures to stable's hard_msg_limit setting. Focused verification uses
 scripts/run_tests.sh -j 1 with test_progress_compositor.py, test_progress_steer.py,
 test_compression_progress.py, test_run_cleanup_progress.py, test_run_progress_topics.py,
 test_queued_final_ledger.py, test_display_config.py and test_discord_message_lifecycle.py.
-Deterministic payload/backfill tests cover history exclusion; live behavior awaits
-the user's update-flow installation test. Revert this intent commit to roll back.
+Deterministic payload/backfill tests cover history exclusion; installed on 2026-10-05, with live Discord progress observed. Revert this intent commit to roll back.
 
 ## HERMES-FORK-018: Fixed Discord composition window
 
@@ -182,7 +181,7 @@ platforms/base.py and the Discord adapter. Elliot explicitly approved restoring
 this protected timing/grouping behavior after review on 2026-10-05.
 Verification: scripts/run_tests.sh -j 1 tests/gateway/test_discord_composition_buffer.py
 passed 16 tests after updating the archived fixture to stable's delivery adapter
-resolver. No model/provider routing changes. Live installation remains pending.
+resolver. No model/provider routing changes. Installed in live on 2026-10-05; fixed-window behavior retains focused-test coverage.
 Revert this intent commit to restore native queue handling.
 
 ## HERMES-FORK-021: Scoped Discord session messages
@@ -203,8 +202,7 @@ tests/gateway/test_session_message_lifecycle.py tests/gateway/test_session_messa
 tests/agent/test_session_message_payload.py. All 19 tests pass, including actual
 worker dispatch, cached/uncached request snapshots, FIFO, persistence and refusals.
 Explicit disabled_toolsets: [session_messaging] disables it; revert this intent
-commit for source rollback. Live installation and nondeterministic behavior remain
-for the user's update-flow test.
+commit for source rollback. Installed in live on 2026-10-05; cross-session behavior has focused-test coverage.
 
 Restoration verification for 017/018/021 used 15 named files, including the
 current updater route and Discord slash checks. Earlier aggregate pass counts
@@ -301,7 +299,7 @@ Verification: a fresh-process post-swap regression failed before the correction
 and passed afterward; lock, handoff and self-lock suites passed (47 tests, one
 Linux-only skip). A disposable Windows venv also verified that the current uv
 can upgrade brotlicffi while the original parent has its DLL mapped, so no extra
-parent-exit mechanism is needed. Live Discord update verification is pending.
+parent-exit mechanism is needed. Installed; the subsequent live update exposed the additional issue recorded below.
 Upstream disposition: retain until native lock checks avoid these eager imports.
 
 Live follow-up: 94d41fae passed the lock check but the backend installer imported
@@ -329,8 +327,7 @@ subclass. A copied, loaded brotlicffi DLL reproduced uv's os error 5; the broken
 live package was repaired through the native installer with the gateway stopped.
 Focused checks: installer boundary stays free of HTTP/compression imports; normal
 and oversized auth responses preserve the cap; a failed refresh cannot print
-success even with healthy core probes. Nine affected checks passed. Live native
-update verification follows publication. Retain until stable fixes these paths.
+success even with healthy core probes. Nine affected checks passed. Live native update succeeded on 2026-10-05 after the follow-up correction below. Retain until stable fixes these paths.
 
 Live follow-up: native update installed 88fb830d, restarted a healthy gateway and
 correctly recorded partial after detecting an empty old brotlicffi dist-info
@@ -340,3 +337,9 @@ partial receipt but returned zero when restart alone succeeded. update_cmd_fleet
 now exits one for incomplete installation after clearing a completed restart's
 marker. This keeps the native detached wrapper from overwriting failure with zero.
 Computer-use driver refresh succeeded (already current, 0.34.0) on this run.
+
+Deployment checkpoint (2026-10-05): native update completed successfully at
+22:18 ET, and gateway PID 11184 loaded 012165b13390c2771b9486dc4e094889b40c1ab1.
+Discord connected, a user greeting received a reply, and real CarbManager and
+WHOOP MCP calls succeeded. All active entries above are installed; this is not
+a claim that every feature or next-release rebase has been exercised live.
