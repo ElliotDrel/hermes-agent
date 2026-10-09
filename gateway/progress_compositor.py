@@ -46,13 +46,15 @@ class ProgressCompositor:
         self.session_key = session_key
         self.generation = generation
         self.message_id: Optional[str] = None
+        self.closed: bool = False
         self._start_attempted = False
         self.status_line: Optional[str] = None
         self.activity_items: Deque[str] = deque()
-        self.omitted_count = 0
+        self.activity_kinds: Deque[str] = deque()
         self.editing_disabled = False
         self.next_edit_after = 0.0
         self._clock = clock
+        self.started_at = clock()
         self._dirty = False
         self._last_rendered = "⏳ Working…"
         self._backoff_seconds = 1.0
@@ -69,8 +71,10 @@ class ProgressCompositor:
         margin = 64 if raw_limit > 128 else 0
         return len_fn, max(1, raw_limit - margin)
 
-    async def start(self) -> SendResult:
+    async def start(self) -> Optional[SendResult]:
         """Post the sole temporary message. Failure disables progress for this turn."""
+        if self.closed:
+            return None
         # Concurrent handoff or an ambiguous timeout must never duplicate the initial send.
         if self._start_attempted:
             return SendResult(success=bool(self.message_id), message_id=self.message_id)
@@ -101,18 +105,16 @@ class ProgressCompositor:
             self.editing_disabled = True
         return result
 
-    def publish_activity(self, text: Any) -> None:
+    def publish_activity(self, text: Any, kind: str = "message") -> None:
         value = str(text or "").strip()
-        if value and not self.editing_disabled:
-            # Actual activity ends the hold explanation, never compositor handoff alone.
-            if (self.status_line or "").startswith("Compression still running;"):
-                self.status_line = None
+        if value:
             self.activity_items.append(value)
+            self.activity_kinds.append("tool" if kind == "tool" else "message")
             self._dirty = True
 
     def publish_status(self, text: Any) -> None:
         value = str(text or "").strip()
-        if value and not self.editing_disabled:
+        if value:
             self.status_line = value
             self._dirty = True
 
@@ -133,14 +135,13 @@ class ProgressCompositor:
                 # A steer is an ordered activity boundary, not a replaceable status line.
                 self.publish_activity(raw[1])
                 return
+            if kind == "__tool__" and len(raw) > 1:
+                self.publish_activity(raw[1], kind="tool")
+                return
             if kind == "__dedup__" and len(raw) == 3:
                 _, base, count = raw
-                replacement = f"{base} (×{count + 1})"
-                if self.activity_items and self.activity_items[-1].startswith(str(base)):
-                    self.activity_items[-1] = replacement
-                    self._dirty = True
-                else:
-                    self.publish_activity(replacement)
+                # Legacy producers can still emit summaries; never rewrite prior events.
+                self.publish_activity(f"{base} (×{count + 1})")
                 return
         self.publish_activity(raw)
 
@@ -148,51 +149,95 @@ class ProgressCompositor:
         formatted = self.adapter.format_message(text)
         return self._len_fn(formatted)
 
-    def _compose(self) -> str:
-        header = self.status_line or "⏳ Working…"
-        lines = [header]
-        if self.activity_items:
-            lines.append("")
-            lines.extend(self.activity_items)
-        if self.omitted_count:
-            lines.append(f"… {self.omitted_count} earlier updates omitted")
-        return "\n".join(lines)
+    @staticmethod
+    def _compose(header: str, activities: list[str]) -> str:
+        return header + ("\n\n" + "\n".join(activities) if activities else "")
+
+    def _fit_prefix(self, text: str, *, suffix: str = "", limit: Optional[int] = None) -> str:
+        """Bound a display-only prefix using the adapter's formatted length."""
+        budget = self._text_limit if limit is None else limit
+        lo, hi, best = 0, len(text), ""
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = text[:mid] + suffix
+            if self._formatted_len(candidate) <= budget:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
+
+    def _header(self, hidden_tools: int, hidden_messages: int, *, reserve: int = 0) -> str:
+        status = self.status_line or "⏳ Working…"
+        summary = (
+            f" · hidden: {hidden_tools} tools / {hidden_messages} messages"
+            if hidden_tools or hidden_messages else ""
+        )
+        # Preserve the omission counts before a pathological status. Tiny budgets
+        # cannot show the whole summary; even that fallback must respect formatting.
+        summary_length = self._formatted_len(summary)
+        budget = max(self._text_limit - reserve, min(summary_length, self._text_limit))
+        if summary_length > budget:
+            return self._fit_prefix(summary.lstrip(" ·"), limit=budget)
+        return self._fit_prefix(status, suffix=summary, limit=budget).lstrip(" ·")
 
     def _fit_render(self) -> str:
-        rendered = self._compose()
-        while len(self.activity_items) > 1 and self._formatted_len(rendered) > self._text_limit:
-            self.activity_items.popleft()
-            self.omitted_count += 1
-            rendered = self._compose()
+        """Render the newest suffix without changing the canonical log or status."""
+        activities = list(self.activity_items)
+        rendered = self._compose(self.status_line or "⏳ Working…", activities)
         if self._formatted_len(rendered) <= self._text_limit:
             return rendered
+        if not activities:
+            return self._header(0, 0)
 
-        # One pathological activity line can still overflow. Keep its newest tail and the omission marker.
-        if self.activity_items:
-            original = self.activity_items[-1]
-            lo, hi, best = 0, len(original), ""
+        hidden_tools = sum(kind == "tool" for kind in self.activity_kinds)
+        hidden_messages = len(activities) - hidden_tools
+        # Leave room for the newest activity when a status itself is oversized.
+        reserve = min(self._text_limit // 2, self._formatted_len("\n\n" + activities[-1]))
+        visible: list[str] = []
+        best = ""
+        for index in range(len(activities) - 1, -1, -1):
+            if self.activity_kinds[index] == "tool":
+                hidden_tools -= 1
+            else:
+                hidden_messages -= 1
+            visible.insert(0, activities[index])
+            header = self._header(hidden_tools, hidden_messages, reserve=reserve)
+            candidate = self._compose(header, visible)
+            if self._formatted_len(candidate) <= self._text_limit:
+                best = candidate
+                continue
+            if best:
+                return best
+
+            # Only the newest entry may be partially displayed. It is not hidden
+            # while any of its text is visible; earlier entries remain whole omissions.
+            original = activities[-1]
+            lo, hi = 1, len(original)
             while lo <= hi:
                 mid = (lo + hi) // 2
-                self.activity_items[-1] = ("…" + original[-mid:]) if mid < len(original) else original
-                candidate = self._compose()
-                if self._formatted_len(candidate) <= self._text_limit:
-                    best = self.activity_items[-1]
+                # Keep the tool/target at the beginning as well as useful trailing flags/details.
+                head_len, tail_len = (mid + 1) // 2, mid // 2
+                clipped = (original[:head_len] + " … " + (original[-tail_len:] if tail_len else "")) if mid < len(original) else original
+                candidate = self._compose(header, [clipped])
+                if header and self._formatted_len(candidate) <= self._text_limit:
+                    best = candidate
                     lo = mid + 1
                 else:
                     hi = mid - 1
-            self.activity_items[-1] = best
-            rendered = self._compose()
-        if self._formatted_len(rendered) <= self._text_limit:
-            return rendered
+            if best:
+                return best
+            # Not even one character fits: all entries are entirely hidden.
+            return self._header(
+                sum(kind == "tool" for kind in self.activity_kinds),
+                len(activities) - sum(kind == "tool" for kind in self.activity_kinds),
+            )
+        return best
 
-        # A pathological status line is bounded last. This keeps the one-message invariant.
-        header = self.status_line or "⏳ Working…"
-        while header and self._formatted_len(header) > self._text_limit:
-            header = header[:-1]
-        return header or "⏳"
-
-    async def flush(self, *, force: bool = False) -> bool:
+    async def flush(self, *, force: bool = False) -> Optional[bool]:
         """Edit the owned message once; retryable failures retain the latest desired state."""
+        if self.closed:
+            return None
         if self.editing_disabled or not self.message_id or not self._dirty:
             return False
         now = self._clock()

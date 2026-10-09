@@ -942,7 +942,45 @@ use their turn policy; independent notifications and deferred deliveries evaluat
 policy at their own delivery boundary. Already delivered messages are not removed.
 Suppression does not fix an underlying failure or add another logging destination.
 
-### Progress bubble cleanup (opt-in)
+### Discord single-message progress
+
+Use one temporary Discord message for progress rather than separate tool/status bubbles:
+
+```yaml
+display:
+  platforms:
+    discord:
+      progress_compositor: single_message
+      tool_progress: all
+      heartbeat_progress: true
+```
+
+Its top header refreshes every minute with elapsed minutes, iteration count, current
+action, and available context usage. Estimated context values have a `~` prefix.
+Tools (including repeated calls), interim messages, and compression milestones
+append chronologically beneath the header. Overflow shows the newest contiguous
+tail and adds hidden tool/message counts to the header; the complete in-memory
+activity log is not rewritten by fitting or failed edits. An oversized newest
+entry is clipped in the middle to retain its tool/target and trailing details.
+
+Previews use the shared Discord message budget unless an explicit
+`tool_preview_length` is set; `0` means no per-preview limit. Terminal commands and
+code retain their arguments instead of the legacy 40-character preview default.
+The overall Discord message limit still applies.
+
+Single-message progress is always temporary: it is deleted after confirmed final
+delivery, including delivered terminal errors. Failed/empty delivery and interrupted
+or cancelled ordinary turns keep their breadcrumbs. Scheduled heartbeat progress
+is enabled by default and is deleted when the heartbeat finishes, even for
+intentional `[SILENT]` completion. Setting
+`display.platforms.discord.heartbeat_progress: false` hides its execution and
+pre-agent compression progress without hiding actionable approvals, failures, or
+material final results. This setting can also be applied globally as
+`display.heartbeat_progress`. Queued turns clean up only their own message IDs.
+Progress metadata remains nonconversational and does not alter model inputs,
+history, prompt caching, or compression/adoption policy.
+
+### Legacy progress bubble cleanup (opt-in)
 
 Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
 
@@ -955,7 +993,7 @@ display:
       cleanup_progress: true
 ```
 
-Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
+Defaults to `false` for ordinary legacy progress. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed legacy runs **skip** cleanup so the bubbles remain as breadcrumbs. Discord single-message progress and scheduled heartbeat progress are always temporary, as described above.
 
 ## Next Steps
 

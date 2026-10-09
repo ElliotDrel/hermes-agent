@@ -2165,6 +2165,7 @@ display:
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  heartbeat_progress: true  # Gateway: normal temporary progress during scheduled heartbeats; false hides it
   suppress_warning_notifications: false  # Opt-in: hide automatic warning/diagnostic notices (see messaging guide)
   show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)

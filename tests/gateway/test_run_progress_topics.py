@@ -653,7 +653,7 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
 @pytest.mark.asyncio
 async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkeypatch, tmp_path):
-    """A silent scheduled heartbeat must not create a visible progress surface."""
+    """Operators may explicitly suppress heartbeat progress (the default is now on)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = SilentHeartbeatAgent
@@ -672,6 +672,7 @@ async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkey
         thread_id="topic-7",
         message_id="stale-user-message",
     )
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"heartbeat_progress": False}})
     result = await runner._run_agent(
         message="scheduled heartbeat",
         context_prompt="",

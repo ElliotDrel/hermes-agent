@@ -169,7 +169,8 @@ class TurnRunner:
         ):
             return
         # "new" mode: only report when tool changes
-        if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
+        if (ctx.progress_compositor_mode != "single_message"
+                and ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]):
             return
         ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
@@ -267,6 +268,25 @@ class TurnRunner:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
+        if ctx.progress_compositor_mode == "single_message":
+            # Use the shared message budget rather than a 40-character command/path budget.
+            from agent.display import build_tool_preview, redact_tool_args_for_display
+            from gateway.run import _redact_gateway_user_facing_secrets, _platform_config_key
+            # The platform's legacy 40-character default is not an explicit operator limit.
+            from gateway.display_config import _configured_display_value
+            platform_key = _platform_config_key(ctx.source.platform)
+            configured = _configured_display_value(ctx.user_config, platform_key, "tool_preview_length")
+            limit = max(ctx.resolve_display_setting(ctx.user_config, platform_key, "tool_preview_length", 0), 0) if configured is not None else 0
+            safe_args = redact_tool_args_for_display(tool_name, args or {}) or {}
+            detail_key = {"terminal": "command", "execute_code": "code"}.get(tool_name)
+            detail = (str(safe_args.get(detail_key) or "") if detail_key else
+                      build_tool_preview(tool_name, safe_args, max_len=0))
+            detail = detail or (json.dumps(safe_args, ensure_ascii=False, default=str) if safe_args else preview or "")
+            if ctx.progress_mode == "verbose" and args:
+                detail = json.dumps(safe_args, ensure_ascii=False, default=str)
+            if limit and len(detail) > limit:
+                detail = detail[:limit] + "…"
+            return _redact_gateway_user_facing_secrets(f"{emoji} {tool_name}: {detail}".rstrip())
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"
         code = code_full if verbose else code_short
@@ -303,6 +323,9 @@ class TurnRunner:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
         stream bubble when the consumer accepts tool progress, else the progress queue."""
         ctx = self._ctx
+        if ctx.progress_compositor_mode == "single_message":
+            ctx.progress_queue.put(("__tool__", msg))
+            return
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
         if msg == ctx.last_progress_msg[0]:
@@ -771,13 +794,12 @@ class TurnRunner:
         # Only the matching generation can inherit a pre-agent hygiene breadcrumb.
         inherited = (self._runner._session_state(ctx.session_key).turn.progress_compositor
                      if ctx.session_key else None)
-        if inherited is not None and inherited.generation == ctx.run_generation:
+        if inherited is not None and inherited.generation == ctx.run_generation and not inherited.closed:
             ctx.progress_compositor = inherited
+            ctx.progress_started_at = inherited.started_at
             if ctx._cleanup_progress and inherited.message_id:
                 ctx._cleanup_msg_ids.append(inherited.message_id)
-            # Keep the hold-expiry explanation visible until real activity arrives.
-            if not (inherited.status_line or "").startswith("Compression still running;"):
-                inherited.publish_status("⏳ Working…")
+            # The minute-refreshed header will replace the handoff status; milestones stay logged.
             return inherited
         adapter = adapter or self._runner._delivery_adapter_for(ctx.source)
         if adapter is None:
@@ -795,6 +817,26 @@ class TurnRunner:
         self._track_progress_result(result)
         return compositor
 
+    def _composed_status(self) -> str:
+        """Read existing telemetry only; never resolve context or call providers for display."""
+        ctx = self._ctx
+        from gateway.run import _redact_gateway_user_facing_secrets
+        elapsed = max(0, int((time.monotonic() - ctx.progress_started_at) // 60))
+        agent = ctx.agent_holder[0]
+        activity = self._runner._agent_activity_summary(agent)
+        iteration = activity.get("api_call_count", 0)
+        action = activity.get("current_tool") or activity.get("last_activity_desc") or "starting"
+        action = " ".join(_redact_gateway_user_facing_secrets(str(action)).split())[:64]
+        parts = [f"⏳ Working {elapsed}m", f"iteration {iteration}", action]
+        compressor = getattr(agent, "context_compressor", None)
+        used = getattr(compressor, "last_prompt_tokens", 0)
+        total = getattr(compressor, "context_length", 0)
+        if isinstance(used, (int, float)) and isinstance(total, (int, float)) and used > 0 and total > 0:
+            from agent.context_breakdown import context_display_source
+            mark = "~" if context_display_source(compressor) != "provider_usage" else ""
+            parts.append(f"context {mark}{used / 1000:.1f}k/{total / 1000:.0f}k ({used / total:.0%})")
+        return " · ".join(parts)
+
     async def _send_composed_progress(self, adapter) -> None:
         """Coalesce every safe source into edits of the already-owned temporary reply."""
         ctx = self._ctx
@@ -805,8 +847,9 @@ class TurnRunner:
         if not compositor.message_id:
             self._drain_progress_queue()
             return
+        next_status_at = 0.0
         try:
-            while ctx._run_still_current():
+            while ctx._run_still_current() and not compositor.closed:
                 changed = False
                 try:
                     while True:
@@ -816,6 +859,12 @@ class TurnRunner:
                             changed = True
                 except queue.Empty:
                     pass
+                now = time.monotonic()
+                if now >= next_status_at:
+                    # Only the header mutates. Context milestones and tool calls stay in the log.
+                    compositor.publish_status(self._composed_status())
+                    next_status_at = now + 60.0
+                    changed = True
                 if changed or compositor.next_edit_after <= time.monotonic():
                     await compositor.flush()
                 await asyncio.sleep(0.1)
@@ -957,10 +1006,26 @@ class TurnRunner:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
-        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run import _COMPRESSION_PROGRESS_STATUS_RE, _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
+            return
+        if (ctx.progress_compositor_mode == "single_message" and ctx.progress_queue is not None
+                and _COMPRESSION_PROGRESS_STATUS_RE.search(str(message or ""))):
+            # Routine context milestones belong in the temporary log, not separate chat bubbles.
+            from agent.conversation_compression import COMPACTION_STATUS
+            compressor = getattr(ctx.agent_holder[0], "context_compressor", None)
+            count = getattr(compressor, "compression_count", 0)
+            text = _redact_gateway_user_facing_secrets(str(message))
+            if message == COMPACTION_STATUS:
+                ctx.progress_compression_count = count
+            elif event_type == "compacted" and ctx.progress_compression_count is not None:
+                savings = getattr(compressor, "_last_compression_savings_pct", None)
+                if count > ctx.progress_compression_count and isinstance(savings, (int, float)):
+                    text += f" (context saved {savings:.0f}%)"
+                ctx.progress_compression_count = None
+            ctx.progress_queue.put(("__interim__", text))
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -972,7 +1037,7 @@ class TurnRunner:
             return
         if ctx.progress_compositor_mode == "single_message" and ctx.progress_queue is not None:
             # Keep upstream notification policy around display-only compositor output.
-            render_notification(lambda: ctx.progress_queue.put(("__status__", prepared)),
+            render_notification(lambda: ctx.progress_queue.put(("__interim__", prepared)),
                                 platform=ctx.source.platform, user_config=ctx.user_config,
                                 diagnostic=is_warning_status(event_type, message))
             return
@@ -1006,8 +1071,8 @@ class TurnRunner:
         want_stream_deltas = not ctx.scheduled_heartbeat and (
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
-        want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
-        if want_stream_deltas or want_interim_messages:
+        want_interim_messages = bool(ctx.interim_assistant_messages_enabled)
+        if want_stream_deltas or (want_interim_messages and ctx.progress_compositor_mode != "single_message"):
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)

@@ -21,6 +21,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
+    "heartbeat_progress": True,  # Scheduled heartbeats use normal progress; false hides progress chrome.
     "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
@@ -190,6 +191,7 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "heartbeat_progress": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,

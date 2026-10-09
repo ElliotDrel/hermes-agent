@@ -892,6 +892,7 @@ DEFAULT_CONFIG = {
         # Gateway: natural mid-turn assistant status messages. Desktop: keep mid-turn narration
         # between tool calls instead of collapsing to the final message.
         "interim_assistant_messages": True,
+        "heartbeat_progress": True,  # Gateway: normal temporary progress for scheduled heartbeats.
         # Engine warning/failure notifications stay visible unless an operator opts in.
         # Does not suppress task results, manual commands, or existing logs.
         "suppress_warning_notifications": False,

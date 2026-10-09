@@ -827,12 +827,12 @@ class GatewayTurnMixin:
             return await self._hmwa_hygiene_wait_for_summary_guarded(attempt, hs, session_entry)
 
         async def update_progress():
-            next_update = 30
+            next_update = 60
             while self._is_session_run_current(compositor.session_key, compositor.generation):
                 waited = time.monotonic() - attempt.wait_started
                 if waited >= next_update and next_update < hs.max_turn_hold_seconds:
-                    compositor.publish_status(f"⏳ Compacting context ({next_update}s elapsed)")
-                    next_update += 30
+                    compositor.publish_status(f"⏳ Working {int(waited // 60)}m · iteration 0 · compacting context")
+                    next_update += 60
                 await compositor.flush()
                 await asyncio.sleep(0.25)
 
@@ -1039,9 +1039,10 @@ class GatewayTurnMixin:
         compositor = getattr(attempt, "progress_compositor", None)
         if compositor is not None:
             if self._is_session_run_current(compositor.session_key, compositor.generation):
+                compositor.publish_activity("Compression still running; continuing with existing context")
                 compositor.publish_status("Compression still running; continuing with existing context")
                 await compositor.flush()
-        else:
+        elif not getattr(attempt, "progress_suppressed", False):
             await self._hmwa_hygiene_notify(
                 source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
             )
@@ -1222,6 +1223,14 @@ class GatewayTurnMixin:
             attempt, _compressed, history, plan, session_entry=session_entry, source=source,
             _quick_key=_quick_key, run_generation=run_generation,
         )
+        compositor = getattr(attempt, "progress_compositor", None)
+        if compositor is not None and self._is_session_run_current(compositor.session_key, compositor.generation):
+            if _hyg_rotated or _hyg_in_place:
+                compositor.publish_activity(
+                    f"✓ Context compression complete: ~{plan.approx_tokens:,} → ~{_new_tokens:,} tokens"
+                )
+            else:
+                compositor.publish_activity("Context compression finished; kept existing context.")
         # Summary failure aborts the compressor (nothing dropped). Warn the user visibly — agent.log
         # is invisible on TG/Discord — so they know the chat is "frozen" and can /compress or /reset.
         _comp = getattr(attempt.agent, "context_compressor", None)
@@ -1425,8 +1434,12 @@ class GatewayTurnMixin:
                 _hyg_msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
                 if len(_hyg_msgs) >= 4:
                     from gateway.display_config import resolve_display_setting
+                    attempt.progress_suppressed = bool(getattr(event, "_heartbeat_session_id", None)) and not resolve_display_setting(
+                        hs.data, source.platform.value, "heartbeat_progress", True,
+                    )
                     if (source.platform == Platform.DISCORD and session_key
                             and self._is_session_run_current(session_key, run_generation)
+                            and not attempt.progress_suppressed
                             and resolve_display_setting(hs.data, "discord", "progress_compositor", "off") == "single_message"):
                         from gateway.progress_compositor import ProgressCompositor
                         # Publish before the worker starts; TurnRunner inherits this exact ID.
@@ -1436,7 +1449,8 @@ class GatewayTurnMixin:
                             metadata={**(attempt.meta or {}), "non_conversational": True},
                             session_key=session_key, generation=run_generation,
                         )
-                        compositor.publish_status("⏳ Compacting context")
+                        compositor.publish_status("⏳ Working 0m · iteration 0 · compacting context")
+                        compositor.publish_activity("🗜️ Compacting context — preparing the conversation.")
                         self._session_state(session_key).turn.progress_compositor = compositor
                         attempt.progress_compositor = compositor
                         await compositor.start()
@@ -3183,7 +3197,7 @@ class GatewayTurnMixin:
 
         # Auto-cleanup of temporary progress bubbles needs a real ``delete_message`` (getattr on the
         # type: a fake adapter without it means "can't delete", not a crash).
-        _cleanup_progress = bool(
+        _cleanup_progress = disp.progress_compositor_mode == "single_message" or bool(turn_params.get("scheduled_heartbeat")) or bool(
             disp.resolve_display_setting(disp.user_config, disp.platform_key, "cleanup_progress")
         )
         _cleanup_adapter = self._delivery_adapter_for(source) if _cleanup_progress else None
@@ -3836,6 +3850,9 @@ class GatewayTurnMixin:
                     session_key or "?",
                 )
                 first_response = ""
+                cleanup = self._run_agent_bubble_cleanup(adapter, turn_ctx)
+                if cleanup is not None:
+                    await cleanup()
             else:
                 logger.warning(
                     "Queued follow-up for session %s: replacing a human-turn silence marker.",
@@ -3880,13 +3897,13 @@ class GatewayTurnMixin:
         # Cleanup is presentation-only; keep upstream's fallback and already_sent contract.
         if _delivered:
             self._run_agent_schedule_bubble_cleanup(_delivery_result, adapter, turn_ctx)
-        # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
-        _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
-        if callable(_bg_cb):
-            with suppress(Exception):
-                _bg_result = _bg_cb()
-                if inspect.isawaitable(_bg_result):
-                    await _bg_result
+            # A refused/empty send must not fire callbacks belonging to a confirmed delivery.
+            _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
+            if callable(_bg_cb):
+                with suppress(Exception):
+                    _bg_result = _bg_cb()
+                    if inspect.isawaitable(_bg_result):
+                        await _bg_result
 
     async def _run_agent_queued_followup(
         self, turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
@@ -4206,29 +4223,20 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
 
-    def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
-        """Schedule deletion of tracked temporary progress bubbles after the final response lands.
-
-        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures logged."""
-        _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
-        if not (
-            turn_ctx._cleanup_progress
-            and _cleanup_adapter is not None
-            and _cleanup_msg_ids
-            and session_key
-            and isinstance(response, dict)
-            and not response.get("failed")
-            and not response.get("interrupted")
-            and not response.get("cancelled")
-            and response.get("completed", True) is not False
-            and hasattr(_cleanup_adapter, "register_post_delivery_callback")
-        ):
-            return
+    def _run_agent_bubble_cleanup(self, _cleanup_adapter: Any, turn_ctx: TurnContext):
+        """One presentation-only cleanup operation for this turn's exact message IDs."""
+        _cleanup_msg_ids = turn_ctx._cleanup_msg_ids
+        if not (turn_ctx._cleanup_progress and _cleanup_adapter is not None and _cleanup_msg_ids):
+            return None
         # One owned compositor id can be observed by more than one source callback. Delete it once.
         _ids_snapshot = list(dict.fromkeys(str(mid) for mid in _cleanup_msg_ids if mid))
         _chat_id_snapshot = turn_ctx.source.chat_id
 
         async def _cleanup_temp_bubbles() -> None:
+            # Freeze only this owned UI lane. A queued successor has its own compositor/IDs.
+            if turn_ctx.progress_compositor is not None:
+                turn_ctx.progress_compositor.closed = True
+            _cleanup_msg_ids[:] = [mid for mid in _cleanup_msg_ids if str(mid) not in _ids_snapshot]
             # The delivery callback awaits us before releasing the turn. A detached task could be
             # killed by a gateway drain immediately after the final answer reaches Discord.
             from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
@@ -4270,9 +4278,21 @@ class GatewayTurnMixin:
                                    _chat_id_snapshot, _ids_snapshot[index + 1:])
                     break
 
+        return _cleanup_temp_bubbles
+
+    def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
+        """Delete temporary progress after confirmed terminal delivery, including error replies."""
+        if not (isinstance(response, dict) and not response.get("interrupted")
+                and not response.get("cancelled") and response.get("completed", True) is not False
+                and (not response.get("failed") or turn_ctx.progress_compositor_mode == "single_message")
+                and turn_ctx.session_key and hasattr(_cleanup_adapter, "register_post_delivery_callback")):
+            return
+        cleanup = self._run_agent_bubble_cleanup(_cleanup_adapter, turn_ctx)
+        if cleanup is None:
+            return
         try:
             _cleanup_adapter.register_post_delivery_callback(
-                session_key, _cleanup_temp_bubbles, generation=turn_ctx.run_generation,
+                turn_ctx.session_key, cleanup, generation=turn_ctx.run_generation,
             )
         except Exception as _rpe:
             logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
@@ -4401,7 +4421,9 @@ class GatewayTurnMixin:
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
-        if scheduled_heartbeat:
+        if scheduled_heartbeat and not disp.resolve_display_setting(
+            disp.user_config, disp.platform_key, "heartbeat_progress", True,
+        ):
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.
             # Keep status callbacks intact for approvals and actionable failures.
@@ -4412,6 +4434,7 @@ class GatewayTurnMixin:
                 _thinking_enabled=False,
                 _native_slack_task_cards=False,
                 needs_progress_queue=False,
+                progress_compositor_mode="off",
             )
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
             disp, AIAgent, message=message, source=source, session_key=session_key,
@@ -4456,7 +4479,9 @@ class GatewayTurnMixin:
         # Periodic "still working" notifications so the user knows the agent hasn't died.
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
         _notify_task = (
-            None if (scheduled_heartbeat or turn_ctx.mute_notification_reply)
+            None if (turn_ctx.progress_compositor_mode == "single_message" or turn_ctx.mute_notification_reply
+                     or (scheduled_heartbeat and not disp.resolve_display_setting(
+                         disp.user_config, disp.platform_key, "heartbeat_progress", True)))
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
 
@@ -4483,7 +4508,19 @@ class GatewayTurnMixin:
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
             )
+            if scheduled_heartbeat:
+                # Silence is heartbeat completion, not a failed Discord delivery. Never fire
+                # unrelated post-delivery callbacks merely to remove this turn's progress.
+                cleanup = self._run_agent_bubble_cleanup(_cleanup_adapter, turn_ctx)
+                if cleanup is not None:
+                    await cleanup()
 
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)
-        self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
+        if (isinstance(response, dict) and is_machinery_display_kind(turn_ctx.persist_user_display_kind)
+                and self._is_intentional_silence(response, response.get("final_response", ""))):
+            cleanup = self._run_agent_bubble_cleanup(_cleanup_adapter, turn_ctx)
+            if cleanup is not None:
+                await cleanup()
+        else:
+            self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
         return response

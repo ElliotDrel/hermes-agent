@@ -79,16 +79,17 @@ async def test_hygiene_progress_wait_and_handoff(monkeypatch, finish):
     # Restore the real timeout implementation before exercising delivery cleanup.
     monkeypatch.setattr(turn_module.asyncio, "wait_for", real_wait)
 
-    assert adapter.sent[0][1] == "⏳ Compacting context"
+    assert adapter.sent[0][1].startswith("⏳ Working 0m · iteration 0 · compacting context\n\n🗜️ Compacting context")
     rendered = [edit[2] for edit in adapter.edits]
-    expected = [f"⏳ Compacting context ({sec}s elapsed)" for sec in (30, 60, 90) if finish is None or sec < finish]
-    assert rendered[:len(expected)] == expected
+    expected = [f"⏳ Working {sec // 60}m · iteration 0 · compacting context" for sec in (60,) if finish is None or sec < finish]
+    assert [text.splitlines()[0] for text in rendered[:len(expected)]] == expected
     assert history == original
     if finish is None:
         assert clock[0] == 120
         assert result is history
         assert not fence.is_cancelled and not future.cancelled()
-        assert rendered[-1] == "Compression still running; continuing with existing context"
+        assert rendered[-1].startswith("Compression still running; continuing with existing context")
+        assert "🗜️ Compacting context" in rendered[-1]
         runner._hmwa_hygiene_notify.assert_not_awaited()
         attempts[0].agent._last_compaction_in_place = True
         future.set_result((summary, None))
@@ -107,6 +108,7 @@ async def test_hygiene_progress_wait_and_handoff(monkeypatch, finish):
     if finish is None:
         assert compositor.status_line == "Compression still running; continuing with existing context"
     compositor.publish_activity("tool update")
+    compositor.publish_status(turn._composed_status())
     assert compositor.status_line != "Compression still running; continuing with existing context"
     await compositor.flush(force=True)
     assert len(adapter.sent) == 1

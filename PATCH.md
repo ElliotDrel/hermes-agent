@@ -149,23 +149,55 @@ Installed in live on 2026-10-05; provider-specific quota variants retain source-
 ## HERMES-FORK-017: One Discord progress message
 
 Opt-in display.platforms.discord.progress_compositor: single_message acknowledges
-each turn before execution and edits one owned temporary message for compression,
-tools, thinking, interim output and accepted steering. Final delivery stays native;
-confirmed success awaits bounded cleanup, while failed or incomplete turns retain
-the breadcrumb. Status notices are nonconversational; permanent edit failure never
-creates a replacement. Other transports retain native presentation.
+each turn before execution and edits one owned temporary message. The top header
+refreshes every minute with elapsed minutes, iterations, action and available
+context usage (estimates marked ~). Canonical activity is append-only: repeated
+tools, interim output, compression start/completion/recovery, and accepted steering
+stay chronological. Fitting is pure: render the newest contiguous tail, report
+hidden tool/message counts, and clip oversized entries without rewriting history.
+Tool previews retain command/code arguments and file/URL targets; only explicit
+tool_preview_length settings impose a per-preview cap. Shared Discord limits,
+secret redaction, bounded transport, backoff and one-message ownership remain.
+
+Single-message progress is temporary regardless of the legacy cleanup flag.
+Ordinary turns delete it only after confirmed terminal delivery, including error
+replies; refused/empty delivery and incomplete/cancelled ordinary turns retain it.
+Scheduled heartbeats show normal progress by default and delete their own progress
+on completion, including intentional silence. display.heartbeat_progress (with
+normal per-platform overrides) can hide execution and pre-agent compression
+progress, including hold-expiry notices, without hiding actionable failures or
+material final results. Close the owned compositor before deletion; do not reuse
+closed pre-agent messages across queued successors, even within one generation.
+Refused queued delivery must not fire delivery callbacks. Final delivery, queue
+admission/grouping, model inputs, history/cache and compression policy stay native;
+progress metadata is nonconversational. Other transports retain native rendering.
 
 Touchpoints: gateway/progress_compositor.py, display_config.py, run_turn.py,
-run_turn_runner.py, run_busy.py, run_inbound.py, session_state.py, turn_context.py,
-platforms/base.py and the Discord adapter.
-Authorization: Elliot approved this exact restored feature after scope/risk review
-on 2026-10-05, including pre-agent compression progress, steering and cleanup.
-Transfer preserves the curated archived implementation, adapting compression test
-fixtures to stable's hard_msg_limit setting. Focused verification uses
-scripts/run_tests.sh -j 1 with test_progress_compositor.py, test_progress_steer.py,
-test_compression_progress.py, test_run_cleanup_progress.py, test_run_progress_topics.py,
-test_queued_final_ledger.py, test_display_config.py and test_discord_message_lifecycle.py.
-Deterministic payload/backfill tests cover history exclusion; installed on 2026-10-05, with live Discord progress observed. Revert this intent commit to roll back.
+run_turn_runner.py, turn_context.py, hermes_cli/config_defaults.py; existing
+run_busy.py, run_inbound.py, session_state.py, platforms/base.py and Discord adapter
+integration remains. Authorization: exact restored feature approved on 2026-10-05;
+Elliot approved these presentation/cleanup refinements on 2026-10-09, requesting
+KISS and a stop before his native installation/restart. No model-boundary changes.
+
+Verification: isolated scripts/run_tests.sh -j 1 acceptance run passed 195 tests
+across 14 named files: progress_compositor, composed_progress_lifecycle,
+compression_progress, run_cleanup_progress, run_progress_topics,
+discord_message_lifecycle, display_config, display_null_turn_wiring, progress_steer,
+post_delivery_callback_chaining, session_hygiene_turnhold_adoption,
+hygiene_warning_lifecycle, queued_final_ledger (tests/gateway/test_*.py), and
+session_message_payload (tests/agent/test_*.py). This includes actual queued turn
+orchestration, the real config loader/consumer, provider-wire cached/uncached and
+compression/backfill invariants. Only the two Windows media-URI failures named
+below were excluded with -k after reproducing unchanged-baseline failures; their
+implementation/expectations are untouched. Python syntax and scoped diff checks
+also passed. Never share one explicit --basetemp across parallel file workers.
+
+Limitations: telemetry appears only when available; extremely tiny artificial
+budgets can clip the overflow label. Closing prevents new transport calls, not an
+already-awaited call. Offline fake transports are not live Discord validation.
+The 2026-10-09 refinement is published source, not installed/running behavior;
+Elliot must run the native live updater and verify Discord. Retain until native
+Discord progress offers these guarantees. Revert the refinement commit for rollback.
 
 ## HERMES-FORK-018: Fixed Discord composition window
 

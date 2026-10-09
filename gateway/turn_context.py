@@ -8,6 +8,7 @@ single-element lists so mutation stays visible to the outer body.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any, Callable, List, Optional
 
 
@@ -15,8 +16,7 @@ from typing import Any, Callable, List, Optional
 class TurnContext:
     # read-only turn identity / wiring
     source: Any = None
-    # Scheduled heartbeats are proactive work, not replies to the source message that
-    # registered the watch.  Their routine delivery surfaces stay quiet.
+    # Heartbeats may show normal temporary progress, but do not stream final-text deltas/TTS.
     scheduled_heartbeat: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
@@ -69,6 +69,8 @@ class TurnContext:
     needs_progress_queue: bool = False
     progress_compositor_mode: str = "off"
     progress_compositor: Any = None
+    progress_started_at: float = field(default_factory=time.monotonic)
+    progress_compression_count: Optional[int] = None
     AIAgent: Any = None
     resolve_display_setting: Any = None
     result_holder: list = field(default_factory=lambda: [None])
