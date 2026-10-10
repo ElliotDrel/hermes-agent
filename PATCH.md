@@ -514,3 +514,70 @@ The user has NOT consented to this write." No alternate write path was used.
 Its stale completion/new-turn and follow-up-only wording remains unmodified;
 026 above records the corrected active-boundary/idle-wake contract. Roll back this
 follow-up commit to restore the initial bridge, or both commits to retire 026.
+
+## HERMES-FORK-027: Compaction recovery and canonical usage continuity
+
+Authorization: Elliot (user1558582150301884559) explicitly said "Approved. Make the fixes"
+after the protected pruning-budget and API-facing anchor/cache/history assessment. Scope is these two root causes, not a stable update or budget change.
+
+An accepted pruning-only transcript rewrite now arms the existing next-provider
+recovery verdict after commit. Below-threshold provider prompt usage can rearm the
+per-pressure-episode attempt budget; equal/above-threshold and missing usage cannot.
+No summary success is fabricated: structural backoff and fallback-quality streaks
+remain distinct. Preserve the pruning backoff across the native boundary callback's
+session-state rebind. Unchanged/equal-copy, aborted, empty, growing/rejected, cancelled,
+lock-skipped and failed-commit attempts never arm a new recovery verdict.
+Attempt caps, rough-estimate deferral and failure guards remain native. No workspace
+configuration changes; the 231200 trigger and 1050000 capacity remain unchanged.
+
+Usage anchors fingerprint the canonical content selected by the existing
+substitute_api_content wire helper (valid nonempty string sidecar on user/assistant,
+otherwise content), not both display and wire copies. Clean finalization/SQLite
+reload no longer invalidates an unchanged request. A full priced-prefix digest
+also rejects earlier rewrites/reordering even when the last priced row survives.
+Persist/restore retain that digest; legacy last-row-only anchors fail closed until
+the next real provider reading. No provider payload, cache key, schema, role/order,
+clean display storage, transcript migration or old-history rewrite is introduced.
+
+Touchpoints: agent/conversation_compression.py, agent/usage_anchor.py;
+tests/agent/test_compaction_recovery_anchors.py (27 offline regression cases).
+Real pruning + archive_and_compact + duplicate-flush checks and record_response_usage
+exercise latch consumption/rearm. Actual AIAgent finalization, clean overrides,
+SQLite resume, preflight consumer and cached/uncached provider-request construction
+verify wire prefix/options/system invariance. Additional tests cover sidecar guards,
+multimodal changes, metadata-only changes and full-prefix invalidation.
+
+Final canonical acceptance: 14 named files, 133 passed, 0 failed, 0 skipped, exit 0.
+Command (join the following wrapped lines):
+HERMES_TEST_FILE_RETRIES=0 bash scripts/run_tests.sh -j 1
+ tests/agent/test_compaction_recovery_anchors.py tests/agent/test_usage_anchor.py
+ tests/agent/test_compression_budget_rearm.py tests/agent/test_post_tool_compression_attempt_cap.py
+ tests/agent/test_context_compressor_structural_backoff.py tests/agent/test_compaction_anti_thrash.py
+ tests/agent/test_compression_anti_thrash_persistence.py tests/agent/test_steer_compaction_persistence.py
+ tests/agent/test_turn_context_compaction.py tests/agent/test_api_content_sidecar.py
+ tests/agent/test_compression_abort_state_reset.py tests/agent/test_compression_anti_thrash_recovery.py
+ tests/agent/test_compression_commit_fence_race.py tests/hermes_state/test_compression_watermark_commit.py
+ "--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/compaction-recovery-anchors/.test-scratch/acceptance-final"
+ --tb=short. HERMES_HOME/TMPDIR/TEMP/TMP isolated to worktree test scratch.
+Python syntax and scoped diff checks passed. Two additional existing suites were
+run without deselection: test_compression_persistence.py (4 passed, 6 failed) and
+test_in_place_compaction.py (8 failed). All 14 failures reproduced on unchanged
+eaca181c20 in a separate worktree/venv: 12 unclosed SQLite Windows cleanup errors
+(WinError 32), two Linux-cwd expectations on Windows. Neither suite was edited;
+these failures are not passing acceptance. New SQLite regressions close their DBs.
+
+Upstream disposition: inspected 9f27e75a77bce8d3625cf155f801689c97d917ef and adapted
+its whole-prefix validation intent, adding canonical sidecar identity it lacks.
+Inspected a7baa5f5eb3a18474984d898f4be4f9fa598d611 (canonical structural fallback)
+and f6ce8bb23beff0b163354abd583f8195edd2b370 (restore effective head/tail demotion).
+Neither was cherry-picked: they change pruning/history policy beyond this approval
+and do not fix recovery accounting for the current committed-pruning path. Retain
+until stable supplies equivalent canonical anchors and committed-rewrite recovery.
+
+Residual risk: additional recovery episodes can permit more real compactions, still
+bounded per episode and by native guards. Full-prefix hashing costs a linear walk;
+legacy anchors temporarily use rough estimation. Deterministic tests cannot prove
+all model behavior safe. Rollback: revert this intent commit; no history repair or
+configuration rollback needed. Published feature source only: parent reviews/promotes
+live, Elliot installs. No paid model calls, Discord traffic, runtime source writes,
+installation, gateway restart or PR was performed.
