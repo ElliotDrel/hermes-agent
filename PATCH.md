@@ -511,9 +511,15 @@ Documentation blocker persists: normal targeted patches to gateway/AGENTS.md
 were denied by the protected agent-instruction safety gate with:
 "BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was denied by the user.
 The user has NOT consented to this write." No alternate write path was used.
-Its stale completion/new-turn and follow-up-only wording remains unmodified;
-026 above records the corrected active-boundary/idle-wake contract. Roll back this
-follow-up commit to restore the initial bridge, or both commits to retire 026.
+Superseded after Elliot explicitly approved the needed instruction-file changes:
+gateway/AGENTS.md now describes active-boundary/idle-wake delivery, shared notification
+admission and parent-only provenance. Those targeted patches succeeded, but the
+separate receipt/follow-up wording correction timed out at its approval prompt and
+remains blocked; it was not retried or bypassed. That paragraph's follow-up-only
+claim is superseded by 026's active-boundary contract and the updated section opener. This is
+source documentation only, not installation or runtime activation. Roll back the
+implementation follow-up commit to restore the initial bridge, or both implementation
+commits to retire 026.
 
 ## HERMES-FORK-027: Compaction recovery and canonical usage continuity
 
