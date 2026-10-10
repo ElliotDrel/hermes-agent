@@ -16,8 +16,18 @@ def git(root, *args):
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
 
 
-def launcher_template(root):
+def launcher_template(root, format="distlib"):
     """An offline native installer-style launcher, never a production file."""
+    if format == "uv":
+        wheel = root / "venv/launcher_fixture-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w") as bundle:
+            bundle.writestr("launcher_fixture.py", "def main():\n    print('template')\n")
+            bundle.writestr("launcher_fixture-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: launcher-fixture\nVersion: 1.0\n")
+            bundle.writestr("launcher_fixture-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: offline-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            bundle.writestr("launcher_fixture-1.0.dist-info/entry_points.txt", "[console_scripts]\nhermes = launcher_fixture:main\n")
+            bundle.writestr("launcher_fixture-1.0.dist-info/RECORD", "")
+        subprocess.run(["uv", "pip", "install", "--python", str(staging.venv_python_path(root / "venv")), "--no-deps", str(wheel)], check=True)
+        return
     import ensurepip
     wheel = next((Path(ensurepip.__file__).parent / "_bundled").glob("pip-*.whl"))
     with zipfile.ZipFile(wheel) as bundle:
@@ -135,7 +145,8 @@ def test_published_pin_stage_and_activation_keep_active_untouched(install, monke
 
 
 @pytest.mark.windows_only
-def test_activation_from_executing_candidate_interpreter(tmp_path, monkeypatch):
+@pytest.mark.parametrize("launcher_format", ["uv", "distlib"])
+def test_activation_from_executing_candidate_interpreter(tmp_path, monkeypatch, launcher_format):
     """Whole Hermes checkout, candidate-owned imports, real Windows promotion.
 
     Only transport start/discovery/status are intercepted, in fresh promoted
@@ -158,7 +169,7 @@ def test_activation_from_executing_candidate_interpreter(tmp_path, monkeypatch):
     git(candidate, "config", "core.longpaths", "true")
     shutil.copytree(Path(sys.prefix), candidate / "venv")
     subprocess.run(["uv", "venv", str(active / "venv"), "--python", sys.executable, "--relocatable"], check=True)
-    launcher_template(active)
+    launcher_template(active, launcher_format)
     staging._preserve_console_launchers(candidate, active)
     site = candidate / "venv/Lib/site-packages"
     # Remove any development editable/source bindings in the copied dependencies.

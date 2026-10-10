@@ -79,7 +79,7 @@ def _prepare_environment(candidate: Path, root: Path | None = None) -> None:
 
 
 def _preserve_console_launchers(candidate: Path, root: Path) -> None:
-    """Reuse the installed Windows launcher stub, targeting the final install path.
+    """Generate declared Windows entrypoints using CPython's bundled installer stub.
 
     Dependency-only sync cannot generate project entrypoints. Build their tiny
     script zip from the candidate's declarations, without building a Hermes wheel.
@@ -92,24 +92,23 @@ def _preserve_console_launchers(candidate: Path, root: Path) -> None:
     entries = {name: scripts[name] for name in ("hermes", "hermes-acp", "hermes-agent") if name in scripts}
     if not entries:
         return
-    template = (root / "venv" / "Scripts" / "hermes.exe").read_bytes()
-    if not template.startswith(b"MZ") or not zipfile.is_zipfile(io.BytesIO(template)):
-        raise ValueError("Installed Hermes console launcher is not a native script launcher.")
-    with zipfile.ZipFile(io.BytesIO(template)) as bundle:
-        archive_offset = min(info.header_offset for info in bundle.infolist())
-    # The PE stub itself contains the literal '#!' in its parser; only the LAST
-    # occurrence before the appended zip is the actual interpreter binding.
-    shebang_offset = template.rfind(b"#!", 0, archive_offset)
-    if shebang_offset < 0:
-        raise ValueError("Installed Hermes console launcher has no interpreter binding.")
-    stub = template[:shebang_offset]
+    # Dependency-only sync cannot generate project scripts. Reuse CPython's
+    # bundled installer stub; uv launchers embed their zip in a PE section and
+    # cannot safely be treated as an append-only distlib overlay.
+    import ensurepip
+    import platform
+    wheel = next((Path(ensurepip.__file__).parent / "_bundled").glob("pip-*.whl"))
+    architecture = "t64-arm.exe" if platform.machine().lower() == "arm64" else "t64.exe" if sys.maxsize > 2**32 else "t32.exe"
+    with zipfile.ZipFile(wheel) as bundle:
+        stub = bundle.read(f"pip/_vendor/distlib/{architecture}")
     interpreter = str(venv_python_path(root / "venv"))
     shebang = f'#!"{interpreter}"\n'.encode("utf-8")
     for name, entry in entries.items():
         module, function = entry.split(":", 1)
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as bundle:
-            bundle.writestr("__main__.py", f"import sys\nfrom {module} import {function}\nif __name__ == '__main__':\n    sys.exit({function}())\n")
+            body = f"import sys\nfrom {module} import {function}\nif __name__ == '__main__':\n    sys.exit({function}())\n".encode("utf-8")
+            bundle.writestr("__main__.py", body)
         (candidate / "venv" / "Scripts" / f"{name}.exe").write_bytes(stub + shebang + archive.getvalue())
 
 

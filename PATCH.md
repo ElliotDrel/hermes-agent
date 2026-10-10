@@ -231,7 +231,7 @@ profile update lock, receipts, holder classification and rename retry. Install
 locked dependencies with `--no-install-project --no-editable`; Hermes forbids
 non-Nix wheels. The existing relative checkout binding and native module launcher
 survive whole-tree promotion. Rebuild the three declared Hermes console entrypoints
-from the existing installed Windows launcher stub, bound to the final install path;
+from CPython's bundled installer stub, bound to the final install path;
 ACP/editor paths and installer checks remain present without building a project wheel.
 Restore declared enabled plugin/lazy/tool dependencies
 in the candidate only; conflicts refuse preparation.
@@ -260,8 +260,8 @@ regressions remain; deterministic tests cannot prove every model behavior.
 Touchpoints: update_stage.py, native update parser/main/windows holder scan,
 fork_update_entry.py/commands.py, slash_commands.py/run_shutdown.py and staged
 update/route tests. Documentation: website/docs/user-guide/staged-fork-updates.md.
-171 tests passed across the same 12 named files after adversarial relocation review:
-exit 0, no failures, 152.5s. The executing-candidate regression now uses a whole
+172 tests passed across the same 12 named files after adversarial relocation review:
+exit 0, no failures, 216.3s. The executing-candidate regression now uses a whole
 clean Hermes checkout with candidate-owned imports (no development prepend), real
 Windows promotion, fresh post-swap verification, delayed SHA publication, receipt
 persistence, all three native console launcher help commands and ACP --check.

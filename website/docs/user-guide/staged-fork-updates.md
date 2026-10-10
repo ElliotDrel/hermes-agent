@@ -4,7 +4,7 @@
 standalone sibling Git clone at that exact commit and a separate, relocatable
 `venv`. Native managed `uv` does the locked `all` dependency installation without
 building/installing a Hermes wheel. The relative source binding survives relocation.
-The installed Windows launcher stub supplies `hermes.exe`, `hermes-acp.exe` and
+CPython's bundled Windows installer stub supplies `hermes.exe`, `hermes-acp.exe` and
 `hermes-agent.exe` with the candidate's declared entrypoints and FINAL installation
 interpreter binding; they are used after promotion, not from the staged sibling.
 Enabled plugin declarations and native active lazy/tool dependencies are restored
