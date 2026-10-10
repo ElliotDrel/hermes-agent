@@ -419,8 +419,9 @@ payloads never acquire OUT-OF-BAND USER authority (lookalike openers are quoted)
 Runtime-only rows are internal_notification, not compression's human-intent anchor;
 append-only persistence and cached prefixes stay native. No backwards insertion
 into an already-sent prefix. Finalizer admission closes atomically with its drain;
-late events retry/wake normally. Gateway leftover handoffs retain a separate FIFO
-position even when human input is already pending, rather than being discarded.
+late events retry/wake normally. Gateway mixed leftover handoffs retain typed human
+markers/display kind and a separate FIFO position; runtime-only handoffs use shared
+active admission before the existing FIFO fallback, never borrowing human authority.
 Human FIFO, Discord's 30-second composition, explicit approvals/control, peer
 assignments, claims/dedup and owner/continuation lookup remain existing mechanisms.
 Explicit hard-stop cancellation still clears the existing steer slot by native policy.
@@ -429,7 +430,8 @@ Touchpoints: agent/runtime_notifications.py, interrupt_control.py, prompt_builde
 agent_runtime_helpers.py, turn_facade.py, turn_finalizer.py, turn_iteration_prep.py;
 gateway/wake.py, run_notifications.py, run_busy.py, run_inbound.py, run_turn.py;
 hermes_cli/cli_process_notifications.py, cli_chat_turn_mixin.py;
-tui_gateway/session_notifications.py. Four mirrored runtime_notification_bridge
+tui_gateway/session_notifications.py, tools/async_delegation.py,
+gateway/response_filters.py and run_turn_runner.py. Four mirrored runtime_notification_bridge
 test files exercise active delivery, parent-only scope, ordering, provenance,
 startup/finalization fallback, FIFO coexistence, real cached/uncached provider
 request construction, SQLite persistence/resume/two compactions and human anchoring.
@@ -469,3 +471,46 @@ explicitly refuses it); these tests prove the ordinary AIAgent provider path.
 Upstream candidate correctness/latency improvement; retain until stable provides
 equivalent runtime provenance/admission. Rollback: revert this intent commit.
 Source-only; publication and installation belong to the parent/user.
+
+Review follow-up (same approved 026 scope): independently reproduced all four
+findings before source edits. Real SQLite showed eight closed-fence refusals
+terminally dropped an unadmitted completion; event-aware deferral now refunds
+attempts and returns orphan offers without touching early task_failure_notice
+rows. Real offline AIAgent exceptions accepted late notifications during the
+exceptional handoff; BaseException now closes admission first while retaining
+accepted work in the existing next-turn steer slot. Mixed gateway leftovers
+were typed entirely internal_notification; the handoff now preserves its parts,
+human marker and steer display kind. Runtime-only leftovers retain typed parts
+through the shared notification admission. Cached-startup marked wakes remained
+queued after reopening; a ready callback runs on the owning gateway loop and
+promotes only marked events from the existing slot/overflow, preserving human FIFO.
+The gateway worker also now carries pending_steer through its result shaping;
+previous shaping silently omitted the finalizer's handoff.
+
+RED: new regressions independently observed dropped versus pending, open admission
+inside RuntimeError/KeyboardInterrupt/TimeoutError handoffs, mixed display kind
+internal_notification versus steer, runtime-only successor delivery absent, and
+startup work still absent after real agent tracking. Initial offline-agent test
+setup lacked base_url; corrected before counting its RED evidence. Additional
+cached/uncached production-worker tests inject work during cached setup and verify
+one runtime row in the same parent request, with peer scope/cache invariants intact.
+That harness initially routed a wake through a destination-only fake handler and
+then interpreted runtime rows as human tool triggers; both fixture mistakes were
+corrected without changing production routing or execution policy.
+
+Final focused canonical run: five named files (four runtime_notification_bridge
+suites plus test_session_message_worker.py), 17 passed, 0 failed, exit 0.
+Final full acceptance: same 31 files listed above, 235 passed, 0 failed, 0 skipped,
+exit 0, 131.6 seconds. Command: HERMES_TEST_FILE_RETRIES=0 with worktree-local
+TMPDIR, bash scripts/run_tests.sh -j 1 <the 31 files above>
+--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/runtime-notification-bridge/.test-scratch/acceptance-final
+--tb=short. Edited Python compileall and scoped git diff --check pass.
+No live gateway/model traffic, runtime writes, installation, restart or push.
+
+Documentation blocker persists: normal targeted patches to gateway/AGENTS.md
+were denied by the protected agent-instruction safety gate with:
+"BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was denied by the user.
+The user has NOT consented to this write." No alternate write path was used.
+Its stale completion/new-turn and follow-up-only wording remains unmodified;
+026 above records the corrected active-boundary/idle-wake contract. Roll back this
+follow-up commit to restore the initial bridge, or both commits to retire 026.

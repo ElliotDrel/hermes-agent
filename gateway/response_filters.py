@@ -108,6 +108,10 @@ def display_kind_for_event(event: Any) -> str | None:
     by the gateway poller, never inferred from inbound text), but it deliberately stays
     non-internal so authorization and the emergency stop still apply to it.
     """
+    from agent.runtime_notifications import PendingSteer, notification_row
+    handoff = getattr(event, "_pending_steer_handoff", None)
+    if isinstance(handoff, PendingSteer):
+        return notification_row(handoff)["display_kind"]
     if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None

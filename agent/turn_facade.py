@@ -81,6 +81,9 @@ class TurnFacadeMixin:
         try:
             # First statement of the try so the finally's note_turn_finished balances every exit.
             _review_queue.note_turn_started()
+            ready = getattr(self, "_runtime_notification_ready_callback", None)
+            if callable(ready):
+                ready()
             admission = admit_durable_turn_lease(
                 self, session_id=session_id, relay_turn_id=relay_turn_id, task_context=task_context,
                 conversation_history=conversation_history,
@@ -176,6 +179,10 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
+            # No result exists on this path: retain accepted notes in the existing next-turn
+            # slot, but close admission before any exceptional surface/relay handoff.
+            with _ic_lock(self, "_pending_steer_lock"):
+                self._runtime_notification_closed = True
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):

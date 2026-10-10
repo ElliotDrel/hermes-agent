@@ -683,7 +683,7 @@ class GatewayInboundMixin:
         if is_notification_event(event):
             state = self._peek_session_state(_quick_key)
             agent = state.turn.agent if state else None
-            if not deliver_runtime_notification(agent, event._runtime_notification.text):
+            if not deliver_runtime_notification(agent, getattr(event, "_pending_steer_handoff", event._runtime_notification.text)):
                 self._queue_or_replace_pending_event(_quick_key, event)
             else:
                 event._gateway_accepted = True

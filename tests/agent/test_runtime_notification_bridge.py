@@ -22,6 +22,29 @@ class Parent(InterruptControlMixin):
         self._active_children = [MagicMock()]
 
 
+@pytest.mark.parametrize('error', [RuntimeError, KeyboardInterrupt, TimeoutError])
+def test_facade_exception_closes_before_handoff_and_retains_accepted(error):
+    with (patch('model_tools.get_tool_definitions', return_value=[]),
+          patch('model_tools.check_toolset_requirements', return_value={}),
+          patch('agent.process_bootstrap.OpenAI')):
+        agent = AIAgent(api_key='offline', base_url='https://openrouter.ai/api/v1',
+                        quiet_mode=True, skip_context_files=True,
+                        skip_memory=True, session_id='exception-parent')
+    def fail(*args, **kwargs):
+        assert deliver_runtime_notification(agent, 'accepted before exception')
+        raise error('offline failure')
+    def handoff(*args, **kwargs):
+        assert not deliver_runtime_notification(agent, 'late exceptional handoff')
+    with (patch('agent.conversation_loop.run_conversation', side_effect=fail),
+          patch('hermes_cli.observability.relay_shared_metrics.finish_task_run', side_effect=handoff)):
+        with pytest.raises(error):
+            agent.run_conversation('human')
+    assert not deliver_runtime_notification(agent, 'after failed turn')
+    pending = agent._drain_pending_steer()
+    assert 'accepted before exception' in pending
+    assert 'late exceptional handoff' not in pending
+
+
 def test_typed_order_requeue_finalization_and_parent_only():
     parent = Parent()
     assert deliver_runtime_notification(parent, 'A finished')

@@ -63,6 +63,25 @@ async def test_production_worker_cached_agent_tool_dispatch_and_destination(monk
     monkeypatch.setattr(socket.socket, 'connect', refuse_network)
     monkeypatch.setattr(socket.socket, 'connect_ex', refuse_network)
     requests, built, received, results, destination_runtime = [], [], [], [], []
+    from gateway.run_turn_runner import TurnRunner
+    from agent.runtime_notifications import mark_notification_event
+    from gateway.platforms.event import MessageEvent
+    original_prepare = TurnRunner._prepare_turn_message
+    startup_events = []
+    def prepare_with_startup_wake(worker, agent_history):
+        ctx = worker._ctx
+        if ctx.session_id == sender.session_id and ctx.message == 'human 1':
+            # The cached parent is still closed while the worker prepares the next turn.
+            assert built[0]._runtime_notification_closed
+            event = MessageEvent(text='cached startup work', source=a, internal=True)
+            mark_notification_event(event)
+            asyncio.run_coroutine_threadsafe(
+                runner._handle_active_session_busy_message(event, sender.session_key),
+                ctx._loop_for_step).result(timeout=5)
+            startup_events.append(True)
+        return original_prepare(worker, agent_history)
+    monkeypatch.setattr(TurnRunner, '_prepare_turn_message', prepare_with_startup_wake)
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
     loop_thread = threading.get_ident()
     destination_done = asyncio.Event()
 
@@ -89,7 +108,8 @@ async def test_production_worker_cached_agent_tool_dispatch_and_destination(monk
             if kwargs['session_id'] == target.session_id and 'Internal agent-origin message' in str(current['content']):
                 destination_runtime.append((runtime_turn.chain, runtime_turn.hops))
             tool_calls = None
-            if kwargs['session_id'] == sender.session_id and current['role'] == 'user':
+            if (kwargs['session_id'] == sender.session_id and current['role'] == 'user'
+                    and 'Runtime note' not in str(current['content'])):
                 stage[0] += 1
                 tool_calls = [SimpleNamespace(id=f'call-{stage[0]}', type='function',
                     function=SimpleNamespace(name='send_session_message', arguments=json.dumps({
@@ -144,6 +164,15 @@ async def test_production_worker_cached_agent_tool_dispatch_and_destination(monk
             assert chain is event._session_message_delivery.chain and hops == 1, 'Destination production worker lost trusted chain budget'
         assert len(destination_runtime) == len(received) == 2
         assert len(built) == 2, 'Both conversations must reuse their actual cached AIAgent'
+        assert startup_events == [True]
+        sender_payloads = [payload for sid, payload in requests if sid == sender.session_id]
+        canonical_sender = strip_anthropic_cache_control(copy.deepcopy(sender_payloads[-1]['messages']))
+        runtime_rows = [row for row in canonical_sender if
+                        'cached startup work' in str(row.get('content', ''))]
+        assert len(runtime_rows) == 1
+        assert 'OUT-OF-BAND USER MESSAGE' not in runtime_rows[0]['content']
+        assert 'Runtime note' in runtime_rows[0]['content']
+        assert not runner._overflow_queue(sender.session_key)
         assert len(received) == 2 and all(not e.allow_gateway_control for e in received)
         assert all(r['completed'] for r in results)
         assert not getattr(runner._session_messenger, 'pending', {})

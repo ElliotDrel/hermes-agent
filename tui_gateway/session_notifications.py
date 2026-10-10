@@ -460,18 +460,21 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
 
 def _notif_deliver_active(session, text, events, consumer):
     from agent.runtime_notifications import deliver_runtime_notification
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery, defer_event_delivery
     with session["history_lock"]:
         if not session.get("running") or session.get("_closing") or session.get("_finalized"):
             return False
         claimed = []
+        refused = False
         try:
             for event in events:
                 claim = claim_event_delivery(event, consumer)
                 if claim is None:
+                    refused = True
                     return False
                 claimed.append((event, claim))
             if not deliver_runtime_notification(session.get("agent"), text):
+                refused = True
                 return False
             for event, claim in claimed:
                 complete_event_delivery(event, claim)
@@ -479,7 +482,7 @@ def _notif_deliver_active(session, text, events, consumer):
             return True
         finally:
             for event, claim in claimed:
-                release_event_delivery(event, claim)
+                (defer_event_delivery if refused else release_event_delivery)(event, claim)
 
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:

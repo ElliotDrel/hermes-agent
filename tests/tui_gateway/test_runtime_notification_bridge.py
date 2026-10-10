@@ -41,3 +41,36 @@ def test_owned_events_active_batch_kanban_and_late_retry(monkeypatch):
     deferred = []
     assert server._notif_handle_event('sid',session,event,set(),registry,lambda e:'foreign',deferred)
     assert deferred == [event] and len(completed) == 3
+
+
+def test_closed_active_fence_refunds_durable_claims_and_preserves_interim():
+    import time
+    import tools.async_delegation as ad
+    ad._reset_for_tests()
+    event = {'type': 'async_delegation', 'delegation_id': 'closed-fence', 'session_key': 'parent'}
+    ad._persist_dispatch({**event, 'dispatched_at': time.time()})
+    ad._persist_completion(event, {'summary': 'done'})
+    parent = Parent()
+    parent._drain_pending_steer(close_runtime=True)
+    session = {'history_lock': threading.RLock(), 'running': True, 'agent': parent}
+    try:
+        for _ in range(ad._MAX_DELIVERY_ATTEMPTS + 2):
+            assert not server._notif_deliver_active(session, 'done', [event], 'test')
+        row = ad.get_durable_delegation(event['delegation_id'])
+        assert row is not None
+        assert row['delivery_state'] == 'pending'
+        assert row['delivery_attempts'] == 0
+        offered = ('test-home', event['delegation_id'])
+        ad._offered.add(offered)
+        assert not server._notif_deliver_active(session, 'done', [event], 'test')
+        assert offered not in ad._offered
+        interim = {**event, 'task_failure_notice': True}
+        ad._offered.add(offered)
+        assert not server._notif_deliver_active(session, 'early failure', [interim], 'test')
+        assert ad.get_durable_delegation(event['delegation_id']) == row
+        assert offered in ad._offered
+        parent._runtime_notification_closed = False
+        assert server._notif_deliver_active(session, 'done', [event], 'test')
+        assert ad.get_durable_delegation(event['delegation_id'])['delivery_state'] == 'delivered'
+    finally:
+        ad._reset_for_tests()

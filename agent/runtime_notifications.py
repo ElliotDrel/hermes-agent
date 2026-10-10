@@ -57,7 +57,8 @@ def deliver_runtime_notification(agent, text: str) -> bool:
     if agent is None or not text or not text.strip() or getattr(agent, "api_mode", None) == "codex_app_server":
         return False
     method = getattr(type(agent), "notify_runtime", None)
-    return bool(method(agent, RuntimeNotification(text.strip()))) if callable(method) else False
+    notification = text if isinstance(text, PendingSteer) else RuntimeNotification(text.strip())
+    return bool(method(agent, notification)) if callable(method) else False
 
 
 # Process-local provenance, never inferred from event.internal or wire metadata.

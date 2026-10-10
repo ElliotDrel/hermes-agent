@@ -843,7 +843,7 @@ class GatewayBusySessionMixin:
         if is_notification_event(event):
             state = self._peek_session_state(session_key)
             agent = state.turn.agent if state else None
-            if deliver_runtime_notification(agent, event._runtime_notification.text):
+            if deliver_runtime_notification(agent, getattr(event, "_pending_steer_handoff", event._runtime_notification.text)):
                 event._gateway_accepted = True
             else:
                 self._queue_or_replace_pending_event(session_key, event)

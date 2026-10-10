@@ -255,8 +255,10 @@ class InterruptControlMixin:
 
     def notify_runtime(self, notification) -> bool:
         """Accept parent work context into the existing steer buffer; never interrupt/fan out."""
-        from agent.runtime_notifications import RuntimeNotification, join_pending
-        if not isinstance(notification, RuntimeNotification):
+        from agent.runtime_notifications import RuntimeNotification, PendingSteer, join_pending
+        runtime_only = isinstance(notification, PendingSteer) and all(
+            isinstance(part, RuntimeNotification) for part in notification.parts)
+        if not isinstance(notification, RuntimeNotification) and not runtime_only:
             return False
         with _ic_lock(self, "_pending_steer_lock"):
             if getattr(self, "_runtime_notification_closed", False):

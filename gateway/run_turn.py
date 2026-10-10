@@ -3415,8 +3415,33 @@ class GatewayTurnMixin:
             return
         turn_state = self._session_state(session_key).turn
         turn_state.agent, turn_state.ctx = agent_holder[0], turn_ctx
+        await self._promote_runtime_notifications(session_key, agent_holder[0])
         if self._draining:
             self._update_runtime_status("draining")
+
+    async def _promote_runtime_notifications(self, session_key, agent):
+        """Move only proven runtime wakes from the existing FIFO to a ready parent."""
+        from agent.runtime_notifications import is_notification_event, deliver_runtime_notification
+        state = self._peek_session_state(session_key)
+        if not state or state.turn.agent is not agent:
+            return
+        adapter = self._delivery_adapter_for(state.turn.ctx.source) if state.turn.ctx else None
+        if adapter is None:
+            return
+        slot = getattr(adapter, "_pending_messages", {})
+        head = slot.get(session_key)
+        overflow = state.conversation.queued_events
+        for event in ([head] if head is not None else []) + list(overflow):
+            if not is_notification_event(event):
+                continue
+            if not deliver_runtime_notification(agent, getattr(event, "_pending_steer_handoff", event._runtime_notification.text)):
+                break
+            if slot.get(session_key) is event:
+                slot.pop(session_key)
+            else:
+                overflow.remove(event)
+        if session_key not in slot and overflow:
+            slot[session_key] = overflow.pop(0)
 
     async def _run_agent_fire_pending_interrupt(
         self, adapter: Any, agent: Any, source: SessionSource, session_key: str,
@@ -3776,10 +3801,20 @@ class GatewayTurnMixin:
         if leftover and adapter and session_key:
             # Retain the handoff independently of the human FIFO head; no lossy either/or.
             from gateway.platforms.event import MessageEvent
-            from agent.runtime_notifications import PendingSteer
-            self._enqueue_fifo(session_key, MessageEvent(
-                text=str(leftover), source=source, internal=isinstance(leftover, PendingSteer),
-                allow_gateway_control=False), adapter)
+            from agent.runtime_notifications import PendingSteer, notification_row, mark_notification_event
+            row = notification_row(leftover) if isinstance(leftover, PendingSteer) else None
+            event = MessageEvent(
+                text=row["content"] if row else str(leftover), source=source,
+                internal=bool(row and row["display_kind"] == "internal_notification"),
+                allow_gateway_control=False)
+            if row:
+                event._pending_steer_handoff = leftover
+            if event.internal:
+                # Use the shared busy admission if a successor already owns this session.
+                mark_notification_event(event)
+                await self._handle_active_session_busy_message(event, session_key)
+            else:
+                self._enqueue_fifo(session_key, event, adapter)
             leftover = None
         if result and adapter and session_key:
             pending_event = _dequeue_pending_event(adapter, session_key)

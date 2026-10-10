@@ -23,6 +23,86 @@ class Parent(InterruptControlMixin):
         self._active_children = [MagicMock()]
 
 
+def _gateway_fixture():
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    runner._draining = False
+    adapter = WireAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='42', user_id='42', chat_type='dm')
+    key = build_session_key(source)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._delivery_adapter_for = lambda source: adapter
+    runner._session_state(key).turn.agent = Parent()
+    return runner, adapter, source, key
+
+
+@pytest.mark.asyncio
+async def test_mixed_handoff_preserves_human_marker_and_display_kind():
+    from agent.runtime_notifications import deliver_runtime_notification
+    from agent.prompt_builder import STEER_MARKER_OPEN
+    from gateway.response_filters import display_kind_for_event
+    runner, adapter, source, key = _gateway_fixture()
+    parent = runner._session_state(key).turn.agent
+    parent.steer('real human correction')
+    deliver_runtime_notification(parent, 'work finished')
+    leftover = parent._drain_pending_steer(close_runtime=True)
+    event, text = await runner._run_agent_drain_pending({'pending_steer': leftover}, adapter, source, key)
+    assert display_kind_for_event(event) == 'steer'
+    assert STEER_MARKER_OPEN in text
+    assert 'Runtime note' in text
+    assert event._pending_steer_handoff.parts == leftover.parts
+
+
+@pytest.mark.asyncio
+async def test_runtime_only_handoff_reaches_running_successor_without_human_fifo():
+    from agent.runtime_notifications import deliver_runtime_notification
+    runner, adapter, source, key = _gateway_fixture()
+    old = Parent()
+    deliver_runtime_notification(old, 'late old work')
+    deliver_runtime_notification(old, 'another late result')
+    leftover = old._drain_pending_steer(close_runtime=True)
+    human = MessageEvent(text='human FIFO', source=source)
+    adapter._pending_messages[key] = human
+    event, text = await runner._run_agent_drain_pending({'pending_steer': leftover}, adapter, source, key)
+    successor = runner._session_state(key).turn.agent
+    assert successor._pending_steer.parts == leftover.parts
+    assert event is human and text == human.text
+    assert not runner._overflow_queue(key)
+
+
+@pytest.mark.asyncio
+async def test_cached_startup_promotes_only_marked_notifications_once():
+    from agent.runtime_notifications import mark_notification_event, deliver_runtime_notification
+    runner, adapter, source, key = _gateway_fixture()
+    parent = runner._session_state(key).turn.agent
+    parent._drain_pending_steer(close_runtime=True)
+    human = MessageEvent(text='human FIFO', source=source)
+    adapter._pending_messages[key] = human
+    for text in ('setup A', 'setup B'):
+        event = MessageEvent(text=text, source=source, internal=True)
+        mark_notification_event(event)
+        await runner._handle_active_session_busy_message(event, key)
+    from gateway.turn_context import TurnContext
+    ctx = TurnContext(source=source, session_key=key)
+    ctx.agent_holder[0] = parent
+    parent._runtime_notification_closed = False  # facade safe-start reopening
+    await runner._run_agent_track_agent(ctx)
+    assert 'setup A' in parent._pending_steer and 'setup B' in parent._pending_steer
+    assert str(parent._pending_steer).index('setup A') < str(parent._pending_steer).index('setup B')
+    assert adapter._pending_messages[key] is human
+    assert not runner._overflow_queue(key)
+    await runner._run_agent_track_agent(ctx)
+    pending = parent._drain_pending_steer(close_runtime=True)
+    assert str(pending).count('setup A') == 1
+    assert not deliver_runtime_notification(parent, 'after finalization')
+    late = MessageEvent(text='closed retry', source=source, internal=True)
+    mark_notification_event(late)
+    await runner._handle_active_session_busy_message(late, key)
+    await runner._run_agent_track_agent(ctx)
+    assert runner._overflow_queue(key) == [late]
+    assert parent._pending_steer is None
+
+
 @pytest.mark.asyncio
 async def test_active_wake_fifo_startup_and_late_handoff(monkeypatch):
     runner = object.__new__(GatewayRunner)
@@ -60,7 +140,9 @@ async def test_active_wake_fifo_startup_and_late_handoff(monkeypatch):
         assert runner._overflow_queue(key)[0].text == 'late'
         event, text = await runner._run_agent_drain_pending({'pending_steer':pending}, adapter, source, key)
         assert event is human and text == 'human FIFO'
-        assert runner._overflow_queue(key)[-1].text == str(pending)
+        handoff = runner._overflow_queue(key)[-1]
+        assert handoff._pending_steer_handoff.parts == pending.parts
+        assert is_notification_event(handoff)
         # Sentinel startup can't take a notification: fallback remains accepted once.
         from gateway.run import _AGENT_PENDING_SENTINEL
         runner._session_state(key).turn.agent = _AGENT_PENDING_SENTINEL

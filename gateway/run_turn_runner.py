@@ -2113,7 +2113,19 @@ class TurnRunner:
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        def runtime_ready():
+            async def promote():
+                if ctx.run_generation is not None and not runner._is_session_run_current(ctx.session_key, ctx.run_generation):
+                    return
+                state = runner._session_state(ctx.session_key)
+                state.turn.agent, state.turn.ctx = agent, ctx
+                await runner._promote_runtime_notifications(ctx.session_key, agent)
+            asyncio.run_coroutine_threadsafe(promote(), ctx._loop_for_step).result()
+        agent._runtime_notification_ready_callback = runtime_ready
+        try:
+            result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        finally:
+            agent._runtime_notification_ready_callback = None
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.
@@ -2145,6 +2157,7 @@ class TurnRunner:
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),
+            "pending_steer": result.get("pending_steer"),
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],
