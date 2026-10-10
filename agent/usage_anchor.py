@@ -4,8 +4,8 @@ authoritative context size; the local ``bytes/4`` estimate covers ONLY messages 
 An anchor = provider usage at capture + a snapshot of the transcript position it priced:
 ``base_count`` (len(messages) at capture; the reply is not yet appended and is covered by
 ``completion_tokens``, so the delta walk skips an assistant row at that index), ``base_last_role``
-and ``base_last_fp`` (content fingerprint of the last priced message; compaction, splices and
-rewinds replace it → anchor fails closed → full estimation until the next real reading).
+and ``base_last_fp`` / ``base_prefix_fp`` (canonical provider-facing fingerprints of the last
+message and entire priced prefix; rewrites fail closed until the next real reading).
 
 The fingerprint (not ``id()``) is the identity: the gateway re-reads the transcript from the DB
 every turn and a resumed session runs in a fresh process, so object identity is never stable
@@ -28,19 +28,38 @@ USAGE_ANCHOR_MODEL_CONFIG_KEY = "_usage_anchor"
 # Identity of a priced message = the provider-visible fields that round-trip the session DB
 # byte-for-byte. Display/persistence metadata (timestamps, row ids, display kinds) is rewritten
 # on reload and would only ever fail the match closed.
-_FINGERPRINT_KEYS = ("role", "content", "api_content", "tool_call_id", "tool_calls")
+_FINGERPRINT_KEYS = ("role", "content", "tool_call_id", "tool_calls")
 
 
 def message_fingerprint(msg: Any) -> Optional[str]:
     """Stable digest of one transcript message over its provider-visible, persisted fields."""
     if not isinstance(msg, dict):
         return None
-    payload = {k: msg.get(k) for k in _FINGERPRINT_KEYS if msg.get(k) is not None}
+    # Share the wire substitution rule, including role/type/empty-sidecar guards.
+    # Clean display content may change during finalization without changing wire bytes.
+    from agent.turn_context import substitute_api_content
+
+    projected = msg.copy()
+    substitute_api_content(projected)
+    payload = {k: projected.get(k) for k in _FINGERPRINT_KEYS if projected.get(k) is not None}
     try:
         raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True, separators=(",", ":"))
     except (TypeError, ValueError):
         raw = repr(sorted(payload.items()))
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+
+
+def _priced_prefix_fingerprint(messages: List[Dict[str, Any]], base_count: int) -> Optional[str]:
+    """Bind the anchor to every priced row, not just the unchanged trailing row."""
+    if base_count <= 0 or len(messages) < base_count:
+        return None
+    digest = hashlib.sha256()
+    for msg in messages[:base_count]:
+        fp = message_fingerprint(msg)
+        if fp is None:
+            return None
+        digest.update(fp.encode("ascii"))  # fixed-width digests preserve row boundaries/order
+    return digest.hexdigest()
 
 
 def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -59,6 +78,7 @@ def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: L
         "base_count": len(messages),
         "base_last_role": last.get("role") if isinstance(last, dict) else None,
         "base_last_fp": message_fingerprint(last),
+        "base_prefix_fp": _priced_prefix_fingerprint(messages, len(messages)),
     }
 
 
@@ -73,7 +93,11 @@ def _anchor_matches(messages: List[Dict[str, Any]], anchor: Dict[str, Any]) -> b
     if not isinstance(base_msg, dict) or base_msg.get("role") != anchor.get("base_last_role"):
         return False
     fp = anchor.get("base_last_fp")
-    return isinstance(fp, str) and bool(fp) and message_fingerprint(base_msg) == fp
+    if not isinstance(fp, str) or not fp or message_fingerprint(base_msg) != fp:
+        return False
+    prefix_fp = anchor.get("base_prefix_fp")
+    return (isinstance(prefix_fp, str) and bool(prefix_fp)
+            and _priced_prefix_fingerprint(messages, base_count) == prefix_fp)
 
 
 def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
@@ -101,10 +125,13 @@ def _serialize(anchor: Any) -> Optional[Dict[str, Any]]:
     except (TypeError, ValueError):
         return None
     fp, role = anchor.get("base_last_fp"), anchor.get("base_last_role")
-    if pt <= 0 or base_count <= 0 or not isinstance(fp, str) or not fp:
+    prefix_fp = anchor.get("base_prefix_fp")
+    if (pt <= 0 or base_count <= 0 or not isinstance(fp, str) or not fp
+            or not isinstance(prefix_fp, str) or not prefix_fp):
         return None
     return {"prompt_tokens": pt, "completion_tokens": max(0, ct), "base_count": base_count,
-            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp}
+            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp,
+            "base_prefix_fp": prefix_fp}
 
 
 def persist_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]]) -> None:

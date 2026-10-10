@@ -59,7 +59,10 @@ MagicMock adapters in older tests auto-create truthy attributes.
 ## Background process notifications
 
 `terminal(background=true, notify_on_complete=true)` starts a gateway watcher that detects
-completion and triggers a new agent turn. Verbosity: `display.background_process_notifications`
+completion and delivers work context to the owning parent: an active turn receives it at its
+next safe model boundary through the existing steer buffer; an idle session uses the native
+wake path. Notifications never acquire user authority or fan out to children. Human queueing
+and Discord composition remain unchanged. Verbosity: `display.background_process_notifications`
 (or `HERMES_BACKGROUND_NOTIFICATIONS`): `concise` (default; one line, failures append an output
 tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
 (final raw output only on non-zero exit), `off`.
@@ -77,7 +80,8 @@ durable completion owners/transports do not spend delivery attempts. Profile-nam
 events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
 at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
 async completions remain durable delivery rows, never autonomous new model turns. Require the
-`admit_internal_event` receipt for completion/watch injection: a handler returning None is not
+`admit_notification_event` entry and its `admit_internal_event` receipt for completion/watch
+injection; peer/plugin requests use their separate admission. A handler returning None is not
 acceptance. Refused admission refunds every claimed batch sibling without spending an attempt;
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.

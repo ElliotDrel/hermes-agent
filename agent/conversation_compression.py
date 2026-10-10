@@ -3423,7 +3423,7 @@ def _finish_compaction_boundary(
     agent: Any, compressed: list, *, new_system_prompt: str, old_session_id: Optional[str], in_place: bool,
     compacted_in_place: bool, session_commit_succeeded: bool, defer_context_engine_notification: bool,
     compression_made_progress: bool, compression_used_fallback: bool, compression_feasibility_skip: bool,
-    task_id: str,
+    task_id: str, pruning_backoff: float = 0.0,
 ) -> int:
     """Post-commit bookkeeping: notify engines/providers/hooks, re-arm usage tracking.
     Returns the rough post-compression token estimate (diagnostics only)."""
@@ -3501,7 +3501,7 @@ def _finish_compaction_boundary(
     set_usage_anchor(agent, None)
     # Arm the effectiveness verdict only after a completed rewrite crosses the
     # boundary so later usage isn't charged to an attempt that changed nothing.
-    if compression_made_progress:
+    if compression_made_progress and (session_commit_succeeded or not agent._session_db):
         record_boundary = getattr(type(compressor), "record_completed_compaction", None)
         if callable(record_boundary):
             record_boundary(
@@ -3509,6 +3509,13 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
+    elif session_commit_succeeded or not agent._session_db:
+        # An accepted pruning-only rewrite also needs a provider recovery verdict.
+        # No summary ran: retain structural backoff and fallback-quality streaks.
+        # Failed commits cannot arm this latch; unchanged/aborted candidates never
+        # reach the boundary at all.
+        compressor._verify_compaction_cleared_threshold = True
+        compressor._structural_no_op_backoff_until = pruning_backoff
     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
     return _compressed_est
 
@@ -4123,6 +4130,7 @@ def compress_context(
             bool(getattr(agent.context_compressor, name, False))
             for name in ("_last_compression_made_progress", "_last_summary_fallback_used", "_last_feasibility_skip")
         )
+        _pruning_backoff = getattr(agent.context_compressor, "_structural_no_op_backoff_until", 0.0)
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
             attempt_started_at=attempt.started_at,
@@ -4192,6 +4200,7 @@ def compress_context(
             defer_context_engine_notification=defer_context_engine_notification,
             compression_made_progress=commit.made_progress, compression_used_fallback=_compression_used_fallback,
             compression_feasibility_skip=_compression_feasibility_skip, task_id=task_id,
+            pruning_backoff=_pruning_backoff,
         )
         logger.info(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
