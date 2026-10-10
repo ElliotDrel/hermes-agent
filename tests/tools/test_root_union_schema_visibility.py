@@ -1,481 +1,18 @@
-"""Root-union field visibility through the real model definitions and describe bridge."""
+"""Root-union visibility and wire ownership through real model-tool consumers."""
 
 import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
+from jsonschema import Draft202012Validator
 
 from tools.mcp_tool_schema import _convert_mcp_schema
-from tools.schema_sanitizer import sanitize_tool_schemas
+from tools.registry import ToolRegistry
 
 
-def _sanitize(schema):
-    return sanitize_tool_schemas([{"function": {"name": "probe", "parameters": schema}}])[0]["function"]["parameters"]
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-def test_shared_conflicting_fields_and_required_intersection(key):
-    shared = {"type": "string", "description": "Shared value."}
-    schema = {key: [
-        {"type": "object", "properties": {"shared": shared, "value": {"type": "string"},
-                                           "left": {"type": "boolean"}},
-         "required": ["shared", "value", "left"], "additionalProperties": False},
-        {"type": "object", "properties": {"shared": shared, "value": {"type": "integer"},
-                                           "right": {"type": "boolean"}},
-         "required": ["shared", "value", "right"], "additionalProperties": False},
-    ]}
-    snapshot = copy.deepcopy(schema)
-    out = _sanitize(schema)
-    assert key not in out
-    assert list(out["properties"]) == ["shared", "value", "left", "right"]
-    assert out["properties"]["shared"] == shared
-    assert out["properties"]["value"] == {"anyOf": [{"type": "string"}, {"type": "integer"}]}
-    assert out["required"] == ["shared", "value"]
-    assert "additionalProperties" not in out
-    assert schema == snapshot
-    assert _sanitize(schema) == out
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-def test_branch_boolean_required_does_not_become_global(key):
-    schema = {key: [
-        {"properties": {"shared": {"type": "string", "required": True},
-                        "a": {"type": "string", "required": True}}},
-        {"properties": {"shared": {"type": "string", "required": True},
-                        "b": {"type": "integer", "required": True}}},
-    ]}
-    snapshot = copy.deepcopy(schema)
-    out = _sanitize(schema)
-    assert out["required"] == ["shared"]
-    assert all("required" not in prop for prop in out["properties"].values())
-    assert schema == snapshot
-
-
-def test_hoisted_keys_round_trip_through_actual_argument_coercion(monkeypatch):
-    from tools import arg_coercion
-    from tools.registry import ToolRegistry
-    schema = {"properties": {"a_b": {"type": "string"}}, "anyOf": [
-        {"properties": {"a b": {"type": "string"}, "file path": {"type": "string"}}},
-        {"properties": {"id": {"type": "string"}}},
-    ]}
-    registry = ToolRegistry()
-    registry.register(name="probe", toolset="probe", schema={"name": "probe", "parameters": schema},
-                      handler=lambda args: "{}")
-    monkeypatch.setattr(arg_coercion, "registry", registry)
-    assert "a_b_2" in _sanitize(schema)["properties"]
-    assert arg_coercion.coerce_tool_args("probe", {"a_b": "root", "a_b_2": "branch", "file_path": "x"}) == {
-        "a_b": "root", "a b": "branch", "file path": "x"}
-    schema.pop("properties")
-    assert arg_coercion.coerce_tool_args("probe", {"file_path": "x"}) == {"file path": "x"}
-
-
-def _dispatch_probe(monkeypatch, schema, args):
-    """Exercise real model dispatch and registry with an offline server-boundary handler."""
+def test_whoop_union_survives_definitions_cache_and_tool_describe(monkeypatch):
     import model_tools
-    from tools import arg_coercion
-    from tools.registry import ToolRegistry
-
-    received = []
-    converted = _convert_mcp_schema("schema-test", SimpleNamespace(
-        name="probe", description="Inspect arguments.", inputSchema=schema))
-    registry = ToolRegistry()
-    registry.register(name=converted["name"], toolset="mcp_schema_test", schema=converted,
-                      handler=lambda args: received.append(copy.deepcopy(args)) or "{}")
-    monkeypatch.setattr(model_tools, "registry", registry)
-    monkeypatch.setattr(arg_coercion, "registry", registry)
-    result = model_tools.handle_function_call(
-        converted["name"], copy.deepcopy(args), skip_pre_tool_call_hook=True,
-        skip_tool_request_middleware=True, skip_tool_execution_middleware=True)
-    assert json.loads(result) == {}
-    assert len(received) == 1
-    return received[0]
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-def test_projected_boolean_coercion_reaches_dispatch(monkeypatch, key):
-    from jsonschema import Draft202012Validator
-
-    schema = {key: [
-        {"type": "object", "properties": {"confirm flag": {"type": "boolean", "const": True}},
-         "required": ["confirm flag"], "additionalProperties": False},
-        {"type": "object", "properties": {"draft_id": {"type": "string"}},
-         "required": ["draft_id"], "additionalProperties": False},
-    ]}
-    assert _sanitize(schema)["properties"]["confirm_flag"]["type"] == "boolean"
-    received = _dispatch_probe(monkeypatch, schema, {"confirm_flag": "true"})
-    assert received == {"confirm flag": True}
-    Draft202012Validator(schema).validate(received)
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("projected", [False, True])
-@pytest.mark.parametrize("value,wire_key", [("text", "a b"), (7, "a@b")])
-def test_nested_branch_renames_follow_exposed_keys(monkeypatch, key, projected, value, wire_key):
-    from jsonschema import Draft202012Validator
-
-    schema = {"anyOf": [
-        {"properties": {"payload": {key: [
-            {"type": "object", "properties": {"a b": {"type": "string"}},
-             "required": ["a b"], "additionalProperties": False},
-            {"type": "object", "properties": {"a@b": {"type": "integer"}},
-             "required": ["a@b"], "additionalProperties": False},
-        ]}}},
-        {"properties": {"other": {"type": "string"}}},
-    ]}
-    if not projected:
-        schema = schema["anyOf"][0]
-    branches = _sanitize(schema)["properties"]["payload"][key]
-    assert all(list(branch["properties"]) == ["a_b"] for branch in branches)
-    received = _dispatch_probe(monkeypatch, schema, {"payload": {"a_b": value}})
-    assert received == {"payload": {wire_key: value}}
-    Draft202012Validator(schema).validate(received)
-
-
-@pytest.mark.parametrize("reverse_order", [False, True])
-@pytest.mark.parametrize("value,wire_key", [("text", "a b"), (7, "a@b")])
-def test_conflicting_projected_payload_branches_reach_server(monkeypatch, reverse_order, value, wire_key):
-    from jsonschema import Draft202012Validator
-
-    variants = [{"type": "object", "properties": {"payload": {
-        "type": "object", "properties": {name: {"type": kind}},
-        "required": [name], "additionalProperties": False}}, "required": ["payload"]}
-        for name, kind in [("a b", "string"), ("a@b", "integer")]]
-    if reverse_order:
-        variants.reverse()
-    schema = {"anyOf": variants}
-    exposed = _sanitize(schema)["properties"]["payload"]["anyOf"]
-    assert all(list(branch["properties"]) == ["a_b"] for branch in exposed)
-    received = _dispatch_probe(monkeypatch, schema, {"payload": {"a_b": value}})
-    assert received == {"payload": {wire_key: value}}
-    Draft202012Validator(schema).validate(received)
-
-
-@pytest.mark.parametrize("types,value", [(["boolean", "string"], "true"),
-                                        (["integer", "number"], "7"),
-                                        (["object", "string"], '{"x": 1}'),
-                                        (["array", "string"], "[1]")])
-def test_conflicting_projected_types_are_not_coerced(monkeypatch, types, value):
-    schema = {"anyOf": [{"properties": {"value": {"type": t}}} for t in types]}
-    assert _dispatch_probe(monkeypatch, schema, {"value": value}) == {"value": value}
-
-
-@pytest.mark.parametrize("reverse_order", [False, True])
-@pytest.mark.parametrize("value", ["text", 7, True, None])
-def test_ambiguous_or_unmatched_nested_rename_is_unchanged(monkeypatch, reverse_order, value):
-    variants = [{"type": "object", "properties": {name: {"type": "string"}}}
-                for name in ["a b", "a@b"]]
-    if reverse_order:
-        variants.reverse()
-    schema = {"properties": {"payload": {"anyOf": variants}}}
-    args = {"payload": {"a_b": value}}
-    assert _dispatch_probe(monkeypatch, schema, args) == args
-
-
-@pytest.mark.parametrize("evidence", ["const", "enum", "required", "additionalProperties"])
-def test_nested_branch_schema_evidence_and_array_items(monkeypatch, evidence):
-    variants = []
-    for name, tag in [("a b", "left"), ("a@b", "right")]:
-        branch = {"type": "object", "properties": {name: {"type": "integer"}}}
-        if evidence in ("const", "enum"):
-            branch["properties"]["kind"] = {evidence: tag if evidence == "const" else [tag]}
-        else:
-            branch["properties"][tag] = {"type": "string"}
-            if evidence == "required":
-                branch["required"] = [tag]
-            else:
-                branch["additionalProperties"] = False
-        variants.append(branch)
-    payload = {"a_b": 7, **({"kind": "right"} if evidence in ("const", "enum") else {"right": "x"})}
-    schema = {"properties": {"payloads": {"type": "array", "items": {"oneOf": variants}}}}
-    expected = {"payloads": [{"a@b": 7, **{k: v for k, v in payload.items() if k != "a_b"}}]}
-    assert _dispatch_probe(monkeypatch, schema, {"payloads": [payload]}) == expected
-
-
-@pytest.mark.parametrize("variants,value,expected", [
-    ([{"properties": {"a b": {"type": "boolean"}}},
-      {"properties": {"a@b": {"type": "integer"}}}], True, {"a b": True}),
-    ([{"properties": {"a b": {"type": "string"}}},
-      {"properties": {"a@b": {"type": "integer"}}}], "7", {"a b": "7"}),
-    ([{"properties": {"a b": {"type": ["string", "null"]}}},
-      {"properties": {"a@b": {"type": "null"}}}], None, {"a_b": None}),
-    ([{"properties": {"a b": {"type": "integer"}, "a_b": {"type": "string"}}},
-      {"properties": {"a@b": {"type": "string"}}, "additionalProperties": False}], 7, {"a b": 7}),
-])
-def test_nested_native_evidence_and_branch_local_suffixes(monkeypatch, variants, value, expected):
-    key = "a_b_2" if "a_b" in variants[0]["properties"] else "a_b"
-    schema = {"properties": {"payload": {"anyOf": variants}}}
-    assert _dispatch_probe(monkeypatch, schema, {"payload": {key: value}}) == {"payload": expected}
-
-
-def test_unrename_collision_preserves_both_supplied_keys(monkeypatch):
-    schema = {"properties": {"payload": {"type": "object", "properties": {
-        "a b": {"type": "string"}, "fixed key": {"type": "string"}}}}}
-    args = {"payload": {"a_b": "model", "a b": "wire", "fixed_key": "fixed"}}
-    assert _dispatch_probe(monkeypatch, schema, args) == {
-        "payload": {"a_b": "model", "a b": "wire", "fixed key": "fixed"}}
-
-
-def test_nested_identical_maps_and_opaque_branch(monkeypatch):
-    branch = {"properties": {"a b": {"type": "string"}}}
-    schema = {"properties": {"payload": {"anyOf": [branch, copy.deepcopy(branch)]}}}
-    args = {"payload": {"a_b": "text", "unknown": "keep"}}
-    assert _dispatch_probe(monkeypatch, schema, args) == {"payload": {"a b": "text", "unknown": "keep"}}
-    schema["properties"]["payload"]["anyOf"].append({"$ref": "#/$defs/Other"})
-    assert _dispatch_probe(monkeypatch, schema, args) == args
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("projected", [False, True])
-@pytest.mark.parametrize("fragment,value,expected", [
-    (True, "keep", "keep"), (False, "keep", "keep"),
-    ("boolean", "true", True), ("integer", "7", 7),
-    ("object", '{"x": 1}', {"x": 1}), ("array", "[1]", [1]),
-    ("unknown", '{"x": 1}', {"x": 1}),
-])
-def test_projected_raw_schema_fragments_reach_dispatch(monkeypatch, key, projected, fragment, value, expected):
-    schema = {key: [{"properties": {"raw field": fragment}}, {"properties": {"other": {"type": "string"}}}]}
-    if not projected:
-        schema = schema[key][0]
-    snapshot = copy.deepcopy(schema)
-    assert "raw_field" in _sanitize(schema)["properties"]
-    assert _dispatch_probe(monkeypatch, schema, {"raw_field": value}) == {"raw field": expected}
-    assert schema == snapshot
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("reverse_order", [False, True])
-@pytest.mark.parametrize("shape", ["siblings", "common", "collision", "nested", "array", "renamed_container"])
-def test_ambiguous_union_preserves_agreed_sibling_reversals(monkeypatch, key, reverse_order, shape):
-    variants = [{"type": "object", "properties": {
-        name: {"type": "string"}, "fixed key": {"type": "string"}}}
-        for name in ["a b", "a@b"]]
-    if reverse_order:
-        variants.reverse()
-    payload_schema: dict = {key: variants}
-    payload: dict = {"a_b": "ambiguous", "fixed_key": "fixed", "unknown": "keep"}
-    expected: dict = {"a_b": "ambiguous", "fixed key": "fixed", "unknown": "keep"}
-    if shape == "common":
-        for branch in variants:
-            branch["properties"].pop("fixed key")
-        payload_schema["properties"] = {"fixed key": {"type": "string"}}
-    elif shape == "collision":
-        for branch in variants:
-            branch["properties"]["other key"] = {"type": "string"}
-        payload.update({"fixed key": "supplied", "other_key": "other"})
-        expected = {**payload, "other key": payload["other_key"]}
-        expected.pop("other_key")
-    elif shape == "nested":
-        for branch in variants:
-            branch["properties"]["child"] = {"properties": {"child key": {"type": "string"}}}
-        payload["child"] = {"child_key": "child"}
-        expected["child"] = {"child key": "child"}
-    elif shape == "renamed_container":
-        for branch, child_name in zip(variants, ["child key", "child@key"]):
-            branch["properties"]["fixed key"] = {"properties": {child_name: {"type": "string"}}}
-        payload["fixed_key"] = {"child_key": "ambiguous child"}
-        expected["fixed key"] = payload["fixed_key"]
-    schema: dict = {"properties": {"payload": payload_schema}}
-    args, want = {"payload": payload}, {"payload": expected}
-    if shape == "array":
-        schema["properties"]["payload"] = {"type": "array", "items": payload_schema}
-        args, want = {"payload": [payload]}, {"payload": [expected]}
-    snapshot = copy.deepcopy(schema)
-    assert _dispatch_probe(monkeypatch, schema, args) == want
-    assert schema == snapshot
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("reverse_order", [False, True])
-def test_nested_enclosing_property_ownership_reaches_dispatch(monkeypatch, key, reverse_order):
-    from jsonschema import Draft202012Validator
-
-    branches = [{"properties": {name: {"type": kind}}}
-                for name, kind in [("a b", "string"), ("a@b", "integer")]]
-    if reverse_order:
-        branches.reverse()
-    schema = {"properties": {"payload": {"type": "object",
-              "properties": {"a_b": {"type": "integer"}}, "required": ["a_b"], key: branches}}}
-    args = {"payload": {"a_b": 7}}
-    received = _dispatch_probe(monkeypatch, schema, args)
-    assert received == args
-    # Both optional branches accept the original anyOf example; oneOf remains
-    # intentionally invalid, but dispatch must still preserve enclosing ownership.
-    assert Draft202012Validator(schema).is_valid(received) == (key == "anyOf")
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("reverse_order", [False, True])
-def test_projected_unanimous_boolean_type_reaches_dispatch(monkeypatch, key, reverse_order):
-    from jsonschema import Draft202012Validator
-
-    choices = [{"type": "boolean", "description": "Confirm now", "const": True},
-               {"type": "boolean", "description": "Confirm draft", "enum": [True, False]}]
-    if reverse_order:
-        choices.reverse()
-    # Discriminator keeps the original oneOf valid even when both field choices accept true.
-    schema = {key: [{"properties": {"confirm flag": choice, "mode": {"const": mode}},
-                    "required": ["confirm flag", "mode"]}
-                   for choice, mode in zip(choices, ["now", "draft"])]}
-    received = _dispatch_probe(monkeypatch, schema, {"confirm_flag": "true", "mode": "now"})
-    assert received == {"confirm flag": True, "mode": "now"}
-    Draft202012Validator(schema).validate(received)
-    projected = _sanitize(schema)["properties"]["confirm_flag"]
-    assert projected == {"type": "boolean", "anyOf": choices}
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("reverse_order", [False, True])
-@pytest.mark.parametrize("owner", ["a_b", "a b", "a@b"])
-@pytest.mark.parametrize("shape", ["object", "array", "projected"])
-def test_enclosing_ownership_keeps_branch_only_maps_and_children(monkeypatch, key, reverse_order, owner, shape):
-    branches = [{"properties": {name: {"type": kind}, "fixed key": {"type": "string"}},
-                 "required": [name], "additionalProperties": False}
-                for name, kind in [("a b", "string"), ("a@b", "integer")]]
-    if reverse_order:
-        branches.reverse()
-    payload_schema = {"properties": {owner: {"properties": {"child key": {"type": "string"}}}},
-                      "required": [owner], key: branches}
-    schema = {"properties": {"payload": payload_schema}}
-    # The enclosing spelling owns a_b; its own nested schema, not a branch,
-    # owns the child's map. Closed/required branches must not veto fixed_key.
-    payload = {"a_b": {"child_key": "child"}, "fixed_key": "fixed"}
-    expected = {owner: {"child key": "child"}, "fixed key": "fixed"}
-    args, want = {"payload": payload}, {"payload": expected}
-    if shape == "array":
-        schema["properties"]["payload"] = {"type": "array", "items": payload_schema}
-        args, want = {"payload": [payload]}, {"payload": [expected]}
-    elif shape == "projected":
-        schema = {"anyOf": [schema, {"properties": {"other": {"type": "string"}}}]}
-    snapshot = copy.deepcopy(schema)
-    assert _dispatch_probe(monkeypatch, schema, args) == want
-    assert schema == snapshot
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("reverse_order", [False, True])
-def test_branch_target_collision_cannot_overwrite_enclosing_or_supplied_keys(monkeypatch, key, reverse_order):
-    branches = [{"properties": {"a b": {"type": "string"}, "a_b": {"type": "integer"},
-                                "fixed key": {"type": "string", "description": description}}}
-                for description in ["Left", "Right"]]
-    if reverse_order:
-        branches.reverse()
-    schema = {"properties": {"payload": {"properties": {"a b": {"type": "integer"}}, key: branches}}}
-    # Branch a_b_2 wants to become a b, already owned by the enclosing map.
-    args = {"payload": {"a_b": 7, "a_b_2": "branch", "fixed_key": "fixed"}}
-    assert _dispatch_probe(monkeypatch, schema, args) == {
-        "payload": {"a b": 7, "a_b_2": "branch", "fixed key": "fixed"}}
-    # An explicitly supplied wire key remains protected too.
-    schema["properties"]["payload"].pop("properties")
-    args["payload"]["a b"] = "wire"
-    assert _dispatch_probe(monkeypatch, schema, args) == {
-        "payload": {"a_b": 7, "a_b_2": "branch", "a b": "wire", "fixed key": "fixed"}}
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("owner", ["kind", "kind tag"])
-@pytest.mark.parametrize("reverse_order", [False, True])
-def test_shared_enclosing_discriminator_still_selects_branch_maps(monkeypatch, key, owner, reverse_order):
-    branches = [{"properties": {owner: {"const": tag}, name: {"type": "integer"}},
-                 "required": [owner], "additionalProperties": False}
-                for tag, name in [("left", "a b"), ("right", "a@b")]]
-    if reverse_order:
-        branches.reverse()
-    schema = {"properties": {"payload": {"properties": {owner: {"type": "string"}}, key: branches}}}
-    model_owner = owner.replace(" ", "_")
-    assert _dispatch_probe(monkeypatch, schema, {"payload": {model_owner: "right", "a_b": 7}}) == {
-        "payload": {owner: "right", "a@b": 7}}
-
-
-@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
-@pytest.mark.parametrize("kind,value,expected", [
-    ("integer", "7", 7), ("number", "7.5", 7.5), ("array", "[1]", [1]),
-    ("object", '{"x": 1}', {"x": 1}), ("string", "true", "true"), ("null", "null", None),
-])
-def test_projected_unanimous_explicit_types_keep_constraints(monkeypatch, key, kind, value, expected):
-    choices = [{"type": kind, "description": "Left"}, {"type": kind, "description": "Right"}]
-    schema = {key: [{"properties": {"value": choice}} for choice in choices]}
-    snapshot = copy.deepcopy(schema)
-    out = _sanitize(schema)["properties"]["value"]
-    assert out["type"] == kind
-    assert len(out["anyOf"]) == 2
-    assert [c["description"] for c in out["anyOf"]] == ["Left", "Right"]
-    assert _dispatch_probe(monkeypatch, schema, {"value": value}) == {"value": expected}
-    assert schema == snapshot
-
-
-@pytest.mark.parametrize("other", [True, False, {}, {"$ref": "#/$defs/Flag"},
-                                    {"enum": [True]}, {"type": ["boolean", "null"]},
-                                    {"type": "string"}, "boolean"])
-def test_projected_missing_or_mixed_types_do_not_guess(monkeypatch, other):
-    choices = [{"type": "boolean", "description": "Explicit"}, other]
-    schema = {"anyOf": [{"properties": {"value": choice}} for choice in choices]}
-    assert "type" not in _sanitize(schema)["properties"]["value"]
-    assert _dispatch_probe(monkeypatch, schema, {"value": "true"}) == {"value": "true"}
-
-
-def test_unanimous_projected_type_cannot_weaken_root_constraint(monkeypatch):
-    schema = {"properties": {"value": {"type": "string", "minLength": 3}}, "anyOf": [
-        {"properties": {"value": {"type": "boolean", "description": description}}}
-        for description in ["Left", "Right"]]}
-    assert _sanitize(schema)["properties"]["value"] == schema["properties"]["value"]
-    assert _dispatch_probe(monkeypatch, schema, {"value": "true"}) == {"value": "true"}
-
-
-def test_root_constraints_win_and_nested_unions_are_unchanged():
-    nested = {"oneOf": [{"type": "string"}, {"type": "integer"}]}
-    schema = {"type": "object", "properties": {"value": {"type": "string", "minLength": 3}},
-              "required": ["value"], "additionalProperties": False,
-              "oneOf": [{"properties": {"value": {"type": "integer"}, "nested": nested}},
-                        {"properties": {"nested": nested}}]}
-    out = _sanitize(schema)
-    assert out["properties"]["value"] == schema["properties"]["value"]
-    assert out["properties"]["nested"] == nested
-    assert out["required"] == ["value"]
-    assert out["additionalProperties"] is False
-
-
-@pytest.mark.parametrize("other", [{}, {"type": "null"}, True, {"$ref": "#/$defs/Other"}])
-def test_empty_nullable_or_opaque_branch_does_not_require_other_branch_fields(other):
-    schema = {"anyOf": [{"type": "object", "properties": {"a": {"type": "string"}},
-                         "required": ["a"]},
-                        {"type": "object", "properties": {"b": {"type": "integer"}},
-                         "required": ["b"]}, other]}
-    out = _sanitize(schema)
-    assert set(out["properties"]) == {"a", "b"}
-    assert out["required"] == []
-
-
-def test_property_refs_and_definitions_survive_hoisting():
-    schema = {"$defs": {"Value": {"type": "string"}},
-              "anyOf": [{"properties": {"value": {"$ref": "#/$defs/Value", "default": "x"}},
-                         "required": ["value"]}, {"properties": {}}]}
-    out = _sanitize(schema)
-    assert out["$defs"] == schema["$defs"]
-    assert out["properties"]["value"] == {"$ref": "#/$defs/Value"}
-    assert out["required"] == []
-
-
-@pytest.mark.parametrize("schema", [None, {}, {"type": "object"},
-                                     {"type": "object", "properties": None, "required": True},
-                                     {"anyOf": None}, {"oneOf": []}])
-def test_adjacent_empty_and_malformed_schemas(schema):
-    assert _sanitize(schema) == {"type": "object", "properties": {}, "required": []}
-
-
-def test_nullable_root_keeps_existing_single_survivor_behavior():
-    schema = {"anyOf": [{"type": "object", "properties": {"a": {"type": "string"}},
-                         "required": ["a"]}, {"type": "null"}]}
-    assert _sanitize(schema) == {"type": "object", "properties": {"a": {"type": "string"}},
-                                 "required": ["a"], "nullable": True}
-
-
-@pytest.mark.parametrize("quiet_mode", [False, True])
-def test_whoop_fields_reach_actual_model_definitions_and_tool_describe(monkeypatch, quiet_mode):
-    import model_tools
-    from jsonschema import Draft202012Validator
-    from tools.registry import ToolRegistry
 
     raw = json.loads((Path(__file__).parent / "fixtures" / "whoop_feedback_input_schema.json").read_text())
     snapshot = copy.deepcopy(raw)
@@ -490,27 +27,104 @@ def test_whoop_fields_reach_actual_model_definitions_and_tool_describe(monkeypat
     monkeypatch.setattr(model_tools, "_select_tool_names", lambda *args: [name])
     model_tools._clear_tool_defs_cache()
     try:
-        definitions = model_tools.get_tool_definitions(quiet_mode=quiet_mode, skip_tool_search_assembly=True)
-        again = model_tools.get_tool_definitions(quiet_mode=quiet_mode, skip_tool_search_assembly=True)
-        assert again == definitions
-        parameters = definitions[0]["function"]["parameters"]
-        assert list(parameters["properties"]) == ["title", "description", "call_id", "confirm", "draft_id"]
+        uncached = model_tools.get_tool_definitions(quiet_mode=False, skip_tool_search_assembly=True)
+        cached = model_tools.get_tool_definitions(quiet_mode=True, skip_tool_search_assembly=True)
+        cache_hit = model_tools.get_tool_definitions(quiet_mode=True, skip_tool_search_assembly=True)
+        assert uncached == cached == cache_hit
+        parameters = uncached[0]["function"]["parameters"]
+        # Field constraints come from the server, not a snapshot of today's catalog.
+        server_fields = {**raw["anyOf"][0]["properties"], **raw["anyOf"][1]["properties"]}
+        assert set(server_fields) == {"title", "description", "call_id", "confirm", "draft_id"}
+        assert parameters["properties"] == server_fields
         assert parameters["required"] == []
         assert "anyOf" not in parameters
         Draft202012Validator.check_schema(parameters)
-        result, dispatch = model_tools._dispatch_bridge_tool("tool_describe", {"names": [name]}, None, None)
-        assert dispatch is None
-        described = json.loads(result)["tools"][name]["parameters"]
-        assert described == parameters
-        assert described["properties"]["confirm"] == {"type": "boolean", "const": True}
-        assert described["properties"]["title"]["maxLength"] == 8000
-        assert described["properties"]["description"]["maxLength"] == 16000
-        assert described["properties"]["draft_id"]["pattern"] == raw["anyOf"][1]["properties"]["draft_id"]["pattern"]
+        result = model_tools.handle_function_call("tool_describe", {"names": [name]},
+            skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True)
+        assert json.loads(result)["tools"][name]["parameters"] == parameters
         assert raw == snapshot
-        assert converted == registered_snapshot
-        validate_server = Draft202012Validator(converted["parameters"]).is_valid
-        assert validate_server({"title": "Bug", "description": "Details"})
-        assert not validate_server({"confirm": True})
-        assert not validate_server({"title": "Bug", "description": "Details", "confirm": True})
+        assert registry.get_schema(name) == registered_snapshot
+        server = Draft202012Validator(registry.get_schema(name)["parameters"])
+        draft = {"title": "Bug", "description": "Details"}
+        confirmation = {"confirm": True, "draft_id": "12345678-1234-1234-1234-123456789abc"}
+        server.validate(draft)
+        server.validate(confirmation)
+        assert not server.is_valid({"confirm": True})
+        assert not server.is_valid({**draft, **confirmation})
     finally:
         model_tools._clear_tool_defs_cache()
+
+
+def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monkeypatch):
+    import model_tools
+    from tools import arg_coercion
+
+    owned = {"type": "object", "properties": {"a_b": {"type": "integer"}},
+             "required": ["a_b"], "anyOf": [
+                 {"properties": {"a b": {"type": "string"}, "fixed key": {"type": "string"}}},
+                 {"properties": {"a@b": {"type": "integer"}, "fixed key": {"type": "string"}}},
+             ]}
+    selected = {"type": "object", "oneOf": [
+        {"properties": {"a b": {"type": "string"}}, "required": ["a b"], "additionalProperties": False},
+        {"properties": {"a@b": {"type": "integer"}}, "required": ["a@b"], "additionalProperties": False},
+    ]}
+    ambiguous = {"type": "object", "anyOf": [
+        {"properties": {"a b": {"type": "string"}, "fixed key": {"type": "string"}},
+         "required": ["a b"], "additionalProperties": False},
+        {"properties": {"a@b": {"type": "string"}, "fixed key": {"type": "string"}},
+         "required": ["a@b"], "additionalProperties": False},
+    ]}
+    common = {"owned": owned, "selected": selected, "ambiguous": ambiguous}
+    raw = {"oneOf": [
+        {"type": "object", "properties": {**common, "mode": {"const": "now"},
+            "confirm flag": {"type": "boolean", "const": True}}, "required": ["mode", "confirm flag"]},
+        {"type": "object", "properties": {**common, "mode": {"const": "draft"},
+            "confirm flag": {"type": "boolean", "enum": [True, False]}}, "required": ["mode", "confirm flag"]},
+    ]}
+    snapshot = copy.deepcopy(raw)
+    converted = _convert_mcp_schema("schema-test", SimpleNamespace(
+        name="probe", description="Inspect arguments.", inputSchema=raw))
+    received = []
+    registered_snapshot = copy.deepcopy(converted)
+    registry = ToolRegistry()
+    name = converted["name"]
+    registry.register(name=name, toolset="mcp_schema_test", schema=converted,
+        handler=lambda args: received.append(copy.deepcopy(args)) or "{}")
+    monkeypatch.setattr(model_tools, "registry", registry)
+    monkeypatch.setattr(arg_coercion, "registry", registry)
+    monkeypatch.setattr(model_tools, "_select_tool_names", lambda *args: [name])
+    parameters = model_tools.get_tool_definitions(quiet_mode=False, skip_tool_search_assembly=True)[0]["function"]["parameters"]
+    exposed = parameters["properties"]
+    assert exposed["confirm_flag"]["type"] == raw["oneOf"][0]["properties"]["confirm flag"]["type"]
+    assert exposed["confirm_flag"]["anyOf"] == [
+        raw["oneOf"][0]["properties"]["confirm flag"], raw["oneOf"][1]["properties"]["confirm flag"]]
+    assert exposed["owned"]["properties"]["a_b"] == owned["properties"]["a_b"]
+    assert exposed["selected"]["oneOf"][1]["properties"]["a_b"] == selected["oneOf"][1]["properties"]["a@b"]
+    assert parameters["required"] == ["mode", "confirm_flag"]
+    Draft202012Validator.check_schema(parameters)
+
+    args = {"mode": "now", "confirm_flag": "true",
+            "owned": {"a_b": 7, "fixed_key": "owned sibling"}, "selected": {"a_b": 9}}
+    result = model_tools.handle_function_call(name, copy.deepcopy(args),
+        skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True)
+    assert json.loads(result) == {}
+    wire = {"mode": "now", "confirm flag": True,
+            "owned": {"a_b": 7, "fixed key": "owned sibling"}, "selected": {"a@b": 9}}
+    assert received == [wire]
+    server = Draft202012Validator(registry.get_schema(name)["parameters"])
+    server.validate(wire)
+
+    # Same model spelling and type fit both wire names: do not guess, but still
+    # reverse the agreed sibling. The original server, not the projection, rejects it.
+    args["ambiguous"] = {"a_b": "uncertain", "fixed_key": "agreed sibling"}
+    result = model_tools.handle_function_call(name, copy.deepcopy(args),
+        skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True)
+    assert json.loads(result) == {}
+    ambiguous_wire = {**wire, "ambiguous": {"a_b": "uncertain", "fixed key": "agreed sibling"}}
+    assert received == [wire, ambiguous_wire]
+    assert not server.is_valid(ambiguous_wire)
+    assert raw == snapshot
+    assert registry.get_schema(name) == registered_snapshot
