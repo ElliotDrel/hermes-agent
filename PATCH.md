@@ -250,11 +250,12 @@ regressions remain; deterministic tests cannot prove every model behavior.
 Touchpoints: update_stage.py, native update parser/main/windows holder scan,
 fork_update_entry.py/commands.py, slash_commands.py/run_shutdown.py and staged
 update/route tests. Documentation: website/docs/user-guide/staged-fork-updates.md.
-Focused dependency correction: seven named stage/routing/lock/holder files,
-102 tests passed. Wheel-refusing fixture verifies module launch after relocation
-and executing-candidate activation. Full-source preparation must also exercise
-real imports and CLI help in the candidate's interpreter and isolated profile;
-fixture success alone was insufficient and previously masked the wheel guard.
+169 tests passed across 12 named files on the integrated live target (including
+compaction_recovery_anchors): exit 0, no failures, 108.4s. Clean committed full
+source at 7ab45c7083f9db9d611e37c4f738800733b8b3ae successfully prepared with
+real locked uv, fresh candidate imports and CLI help in an isolated profile.
+Wheel-refusing fixture verifies module launch after relocation and executing-
+candidate activation. Prior aggregate/fixture-only readiness claims are superseded.
 
 Windows standalone single-profile detached owner only; unsupported ownership fails.
 No UI builds, fleets, undeclared dependency preservation, runtime Python replacement
