@@ -114,7 +114,21 @@ def _unrename_args(schema: Any, args: Any) -> Any:
     if not isinstance(schema, dict):
         return args
     if isinstance(args, list):
-        return [_unrename_args(schema.get("items"), item) for item in args]
+        items = schema.get("items", {})
+        if not isinstance(items, dict):
+            return args
+        items = dict(items)
+        # Select array-compatible arms before descent; their item maps still
+        # require per-key agreement, and enclosing items retain ownership.
+        for key in _UNION_KEYS:
+            variants = schema.get(key)
+            if isinstance(variants, list) and key not in items:
+                candidates = [branch.get("items", {}) if isinstance(branch, dict) else branch
+                              for branch in variants if not _branch_contradicts(
+                                  _normalize_schema_node(branch, "<unrename>"), args)]
+                if candidates:
+                    items[key] = candidates
+        return [_unrename_args(items, item) for item in args]
     if not isinstance(args, dict):
         return args
     return dict(_unrename_object_entries(schema, args).values())

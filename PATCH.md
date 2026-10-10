@@ -287,6 +287,13 @@ Projection, model exposure and branch-reversal evidence share bare-string,
 type-array, nullable-union and ref-sibling normalization. Agreed types retain
 nullable hints; a null discriminator keeps all nullable rename candidates possible.
 Root requirements and legacy flags are collected before normalization can prune them.
+For native lists, select compatible inline union arms before item descent. Their
+item schemas use the existing per-key agreement logic; enclosing items keep
+ownership, opaque viable arms block guesses, and supplied wire keys never get
+overwritten. No general resolver or new validation layer is introduced.
+Schema-guided JSON-container decoding now precedes the single key-reversal pass,
+using projected model-spelled properties. Existing scalar coercion remains after
+reversal; restored wire names are not fed through a second reverse map.
 
 Authorization: Elliot *** 1558586766108135495, "Your plan sounds good. Execute
 on it.", approved the specific raw MCP schema -> sanitizer -> model definitions ->
@@ -305,6 +312,10 @@ A small representative raw-registry schema exercises model definitions -> actual
 dispatch, unanimous boolean coercion across bare-string/dict and nullable
 type-array/dict alternatives, enclosing wire ownership, nullable-const nested
 rename evidence, and ambiguous names left unguessed while agreed siblings reverse.
+One array-or-string payload contract now verifies sanitized required item fields
+reverse through actual dispatch and validate against the original server schema.
+The same invariant dispatches JSON-encoded object and array payloads back to the
+same validated wire arguments, without adding tests, parametrization or matrices.
 It bypasses MCP pre-normalization deliberately so nullable-discriminator mismatches
 remain observable. Server validation spells out the nonstandard bare-string
 boolean solely in its validation copy; the registered schema stays untouched.
@@ -333,11 +344,42 @@ Retries off; worktree-local `.venv`, test home and TMPDIR/TEMP/TMP;
 `--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/normalization-acceptance-final`
 and `--tb=short`. Python syntax and scoped whitespace checks passed.
 
+Review finding [4239505862](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239505862)
+was fetched and reproduced on `1722d9383d04552a3a96619184a602a93d7bc5c2`:
+the extended existing dispatch invariant failed because `payload[0].bad_key`
+remained exposed instead of restoring required `bad key` (1 passed, 1 failed,
+exit 1). The list path previously read outer `items` before inspecting union arms.
+After the scoped repair, the same eight canonical isolated suites passed:
+**259 passed, 0 failed, exit 0**, 66.4s; exactly two invariant tests remain.
+Same two exclusions, retries off, worktree-local `.venv`/home/TMPDIR/TEMP/TMP,
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/array-union-acceptance`
+and `--tb=short`. An isolated actual-dispatch probe also verified supplied-key
+collisions/unknown keys, string payloads, conflicting array item maps and an
+opaque viable arm remain unchanged. Python syntax/scoped whitespace checks passed.
+Parent independently reran the combined acceptance: 259 passed, no failures;
+syntax and scoped whitespace checks pass. No install/live/lifecycle operations.
+
+Latest finding [4239517814](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239517814)
+was also fetched and reproduced before its repair: with the array-arm fix present,
+encoded objects retained nested exposed keys and encoded array-or-string payloads
+remained strings (1 passed, 1 failed, exit 1). Decoding before reversal repairs
+the operation ordering without double-renaming. Final combined acceptance on the
+same eight files: **259 passed, 0 failed, exit 0**, 70.2s; same two exclusions and
+isolation, retries off, `--tb=short`, and
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/container-order-acceptance`.
+Exactly the original two invariant functions remain.
+
 Limits: no ref resolution/relocation, branch-local definition hoisting, allOf field
 extraction or general schema validator. Rename evidence does not evaluate patterns,
 ranges or branch correlations and uses native values, not speculative coercion.
-Existing JSON-container parsing still follows reversal. Ambiguous renames may fail
+Schema-guided JSON-container parsing precedes reversal. Ambiguous renames may fail
 server validation rather than guess; mixed/opaque projected types stay uncoerced.
+Array-arm selection uses native container type evidence only; it does not evaluate
+whole-array constraints/correlations, resolve refs or add tuple/prefixItems support.
+An existing item combinator is retained rather than overwritten by an arm combinator.
+Container decoding reuses the existing schema walker; no combinator resolver for
+deeper JSON-encoded elements/subfields is added. JSON-looking scalar strings are
+only decoded where the model schema permits the corresponding container kind.
 Nullable-single-survivor handling and definition-cache policy remain native.
 
 Integration preserves live intent 027; this schema intent is 029; live staging retains 028.

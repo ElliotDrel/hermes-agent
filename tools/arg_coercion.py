@@ -26,9 +26,15 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     parameters = (schema or {}).get("parameters") or {}
     # Coercion and root reversal must use the same projected wire properties.
     try:
-        from tools.schema_sanitizer import _preserve_root_union_properties, unrename_tool_args
-        args = unrename_tool_args(parameters, args)
+        from tools.schema_sanitizer import (
+            _normalize_schema_node, _preserve_root_union_properties, unrename_tool_args,
+        )
         parameters = _preserve_root_union_properties(parameters)
+        # Decode against the model's exposed keys before reversing exactly once.
+        # A second reversal could mistake restored wire keys for exposed aliases.
+        exposed = _normalize_schema_node(parameters, "<coercion>")
+        args = _normalize_json_strings_for_schema(args, exposed)
+        args = unrename_tool_args(parameters, args)
     except Exception:  # pragma: no cover — never break dispatch
         pass
     properties = parameters.get("properties")

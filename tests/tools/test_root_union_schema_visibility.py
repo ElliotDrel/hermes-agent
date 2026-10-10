@@ -77,7 +77,13 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
         {"properties": {"a@b": {"type": "string"}, "fixed key": {"type": "string"}},
          "required": ["a@b"], "additionalProperties": False},
     ]}
-    common = {"owned": owned, "selected": selected, "ambiguous": ambiguous}
+    payload = {"anyOf": [
+        {"type": "array", "items": {"type": "object",
+            "properties": {"bad key": {"type": "string"}},
+            "required": ["bad key"], "additionalProperties": False}},
+        {"type": "string"},
+    ]}
+    common = {"owned": owned, "selected": selected, "ambiguous": ambiguous, "payload": payload}
     raw = {"oneOf": [
         {"type": "object", "properties": {**common, "mode": {"const": "now"},
             "confirm flag": "boolean",
@@ -109,17 +115,22 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
     assert exposed["owned"]["properties"]["a_b"] == owned["properties"]["a_b"]
     assert exposed["selected"]["oneOf"][1]["properties"]["a_b"] == selected["oneOf"][1]["properties"]["a@b"]
     assert exposed["selected"]["oneOf"][1]["properties"]["mode"] == {"const": "right", "nullable": True}
+    assert exposed["payload"]["anyOf"][0]["items"] == {"type": "object",
+        "properties": {"bad_key": payload["anyOf"][0]["items"]["properties"]["bad key"]},
+        "required": ["bad_key"], "additionalProperties": False}
     assert parameters["required"] == ["mode", "confirm_flag"]
     Draft202012Validator.check_schema(parameters)
 
     args = {"mode": "now", "confirm_flag": "true", "nullable_flag": "true",
-            "owned": {"a_b": 7, "fixed_key": "owned sibling"}, "selected": {"mode": "right", "a_b": "chosen"}}
+            "owned": {"a_b": 7, "fixed_key": "owned sibling"}, "selected": {"mode": "right", "a_b": "chosen"},
+            "payload": [{"bad_key": "array item"}]}
     result = model_tools.handle_function_call(name, copy.deepcopy(args),
         skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
         skip_tool_execution_middleware=True)
     assert json.loads(result) == {}
     wire = {"mode": "now", "confirm flag": True, "nullable flag": True,
-            "owned": {"a_b": 7, "fixed key": "owned sibling"}, "selected": {"mode": "right", "a@b": "chosen"}}
+            "owned": {"a_b": 7, "fixed key": "owned sibling"}, "selected": {"mode": "right", "a@b": "chosen"},
+            "payload": [{"bad key": "array item"}]}
     assert received == [wire]
     # Bare-string shorthand is not JSON Schema; spell that fragment out solely
     # for validation, retaining the server's unions and every real constraint.
@@ -141,5 +152,18 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
                       "ambiguous": {"a_b": "uncertain", "fixed key": "agreed sibling"}}
     assert received == [wire, ambiguous_wire]
     assert not server.is_valid(ambiguous_wire)
+    # Decode model-spelled containers before their nested keys are reversed.
+    encoded_args = copy.deepcopy(args)
+    encoded_args.pop("ambiguous")
+    encoded_args["nullable_flag"] = "true"
+    encoded_args["selected"] = json.dumps({"mode": "right", "a_b": "chosen"})
+    encoded_args["owned"] = json.dumps(args["owned"])
+    encoded_args["payload"] = json.dumps(args["payload"])
+    result = model_tools.handle_function_call(name, encoded_args,
+        skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True)
+    assert json.loads(result) == {}
+    assert received == [wire, ambiguous_wire, wire]
+    server.validate(received[-1])
     assert raw == snapshot
     assert registry.get_schema(name) == registered_snapshot
