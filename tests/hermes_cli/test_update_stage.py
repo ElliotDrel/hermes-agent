@@ -27,6 +27,13 @@ def install(tmp_path, monkeypatch):
         '[build-system]\nrequires=["setuptools"]\nbuild-backend="setuptools.build_meta"\n'
         '[tool.setuptools]\npy-modules=["run_agent", "model_tools", "toolsets"]\n'
         '[tool.setuptools.packages.find]\ninclude=["hermes_cli*"]\n')
+    (origin / "setup.py").write_text(
+        'from setuptools import setup\n'
+        'from setuptools.command.bdist_wheel import bdist_wheel\n'
+        'class Guard(bdist_wheel):\n'
+        '    def run(self):\n'
+        '        raise RuntimeError("Source-only fixture forbids wheels")\n'
+        'setup(cmdclass={"bdist_wheel": Guard})\n')
     package = origin / "hermes_cli"
     package.mkdir()
     (package / "__init__.py").write_text("")
@@ -43,7 +50,7 @@ def install(tmp_path, monkeypatch):
     subprocess.run(["uv", "venv", str(active / "venv"), "--python", sys.executable,
                     "--relocatable"], check=True)
     (active / "venv" / "active-sentinel").write_text("untouched")
-    (package / "main.py").write_text("VALUE = 'candidate'\ndef check():\n    print(VALUE)\n")
+    (package / "main.py").write_text("VALUE = 'candidate'\ndef check():\n    print(VALUE)\nif __name__ == '__main__':\n    check()\n")
     git(origin, "add", ".")
     git(origin, "commit", "-m", "published")
     sha = git(origin, "rev-parse", "HEAD")
@@ -101,8 +108,11 @@ def test_published_pin_stage_and_activation_keep_active_untouched(install, monke
     output = subprocess.check_output([str(staging.venv_python_path(active / "venv")), "-I", "-c",
         "from hermes_cli.main import VALUE; import hermes_cli.main, six, sys; from pathlib import Path; assert Path(hermes_cli.main.__file__).parent.parent == Path(sys.prefix).parent; print(VALUE)"], cwd=active.parent, text=True)
     assert output.strip() == "candidate", "Relocated non-editable environment must import candidate, not old checkout"
-    script = active / "venv" / "Scripts" / "stage-check.exe"
-    assert subprocess.check_output([str(script)], cwd=active.parent, text=True).strip() == "candidate"
+    assert not (active / "venv" / "Scripts" / "stage-check.exe").exists()
+    output = subprocess.check_output(
+        [str(staging.venv_python_path(active / "venv")), "-I", "-m", "hermes_cli.main", "--help"],
+        cwd=active.parent, text=True)
+    assert output.strip() == "candidate"
 
 
 @pytest.mark.windows_only

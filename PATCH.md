@@ -310,11 +310,9 @@ and SHA attestation mocked. Windows relocation succeeded; no activation source
 change was necessary. The small fixture borrows development site-packages solely
 to import the production activation helper.
 
-Canonical follow-up: the same 11 files named above, 142 passed, 0 failed,
-0 skipped, exit 0, 86.6s. TMPDIR/TEMP/TMP and HERMES_HOME were isolated;
---basetemp ended in .test-scratch/scope-final. The real-handler whitespace test
-initially lacked plugin discovery (four fixture failures); discovery now matches
-existing routing fixtures. Syntax and scoped diff checks passed.
+Earlier follow-up aggregate count (142) is superseded: it was not a reliable
+final-SHA full-source acceptance claim. The full-source failure below is the
+applicable evidence for that revision.
 
 Full-source viability is NOT established: a clean disposable clone of committed
 05b1e75b73d99203832d26d497cbf05e4032173c with an isolated profile and managed uv
@@ -331,3 +329,15 @@ The documented old-handler bootstrap still requires Elliot's terminal stop/token
 activation; it does not satisfy a Discord-only first deployment. That unresolved
 bootstrap limitation is separate from the dependency-build blocker.
 No push, runtime writes or gateway lifecycle actions were performed.
+
+Dependency-only staging correction: reuse locked `uv sync --no-editable` with
+`--no-install-project`, retaining the existing relative checkout binding. No
+Hermes wheel/editable install, Nix bypass or new launcher is needed: native
+launchers use `python -m hermes_cli.main`. Fresh isolated candidate probes now
+exercise real imports AND CLI help outside the checkout with `-I`. The fixture
+forbids wheels and verifies module launch after relocation, including activation
+from the executing candidate interpreter. Seven named focused suites (stage,
+staged_restart, fork_update_entry, update_command, update_lock,
+update_list_venv_holders, venv_holder_classifier) pass: 102 tests, no failures,
+exit 0, 63.4s via scripts/run_tests.sh -j 1; own worktree venv and isolated
+HERMES_HOME/TMPDIR/TEMP/TMP. Full committed-source preparation follows separately.

@@ -48,7 +48,8 @@ def _candidate_env(root: Path) -> dict:
 
 def _prepare_environment(candidate: Path) -> None:
     # Reuse the native managed uv resolver and streamed locked installation.
-    # Non-editable + relocatable is essential: this entire tree is renamed at activation.
+    # Dependencies only: Hermes forbids wheels outside Nix. The existing source
+    # binding below supplies Hermes without a non-relocatable editable install.
     from hermes_cli.managed_uv import resolve_uv, _stream_sync
     uv = resolve_uv()
     if not uv:
@@ -58,12 +59,12 @@ def _prepare_environment(candidate: Path) -> None:
                     "--no-python-downloads", "--relocatable", "--no-config"],
                    cwd=candidate, env=env, check=True)
     status, reason = _stream_sync(
-        [uv, "sync", "--extra", "all", "--locked", "--no-editable",
+        [uv, "sync", "--extra", "all", "--locked", "--no-editable", "--no-install-project",
          "--python", str(venv_python_path(candidate / "venv"))], cwd=candidate, env=env)
     if status:
         raise ValueError(f"Candidate dependency installation failed: {reason}")
-    # Console scripts must resolve the SOURCE checkout, not the wheel's
-    # site-packages copy (main.PROJECT_ROOT owns updates/gateway launchers).
+    # Native module launchers must resolve the SOURCE checkout
+    # (main.PROJECT_ROOT owns updates/gateway launchers).
     # A relative-to-sys.prefix pth survives whole-tree relocation; editable
     # setuptools finders and console-script absolute paths do not.
     site = candidate / "venv" / "Lib" / "site-packages"
@@ -104,10 +105,12 @@ def _probe(candidate: Path) -> None:
     # Import actual candidate code in a fresh interpreter; never bless active imports.
     env = _candidate_env(candidate)
     env["HERMES_HOME"] = str(candidate / "venv" / ".stage-probe-home")
-    env["PYTHONPATH"] = str(candidate)
-    subprocess.run([str(venv_python_path(candidate / "venv")), "-c",
+    python = str(venv_python_path(candidate / "venv"))
+    subprocess.run([python, "-I", "-c",
                     "import hermes_cli.main, run_agent, model_tools, toolsets"],
-                   cwd=candidate, env=env, check=True, timeout=90)
+                   cwd=candidate.parent, env=env, check=True, timeout=90)
+    subprocess.run([python, "-I", "-m", "hermes_cli.main", "--help"],
+                   cwd=candidate.parent, env=env, check=True, timeout=90)
 
 
 def _require_owner(root: Path) -> None:
