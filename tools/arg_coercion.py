@@ -24,10 +24,11 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
     schema = registry.get_schema(tool_name)
     parameters = (schema or {}).get("parameters") or {}
-    # Map projected root-union keys even when the original has no root properties.
+    # Coercion and root reversal must use the same projected wire properties.
     try:
-        from tools.schema_sanitizer import unrename_tool_args
+        from tools.schema_sanitizer import _preserve_root_union_properties, unrename_tool_args
         args = unrename_tool_args(parameters, args)
+        parameters = _preserve_root_union_properties(parameters)
     except Exception:  # pragma: no cover — never break dispatch
         pass
     properties = parameters.get("properties")

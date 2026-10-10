@@ -63,20 +63,78 @@ def unrename_tool_args(params_schema: Any, args: Any) -> Any:
     ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through."""
     if isinstance(params_schema, dict):
         params_schema = _preserve_root_union_properties(params_schema)
-    props = params_schema.get("properties") if isinstance(params_schema, dict) else None
-    if not isinstance(props, dict) or not isinstance(args, dict):
+        # Only the exposed root is projected; its original branches are no longer visible.
+        params_schema = {k: v for k, v in params_schema.items() if k not in _UNION_KEYS}
+    return _unrename_args(params_schema, args)
+
+
+def _branch_contradicts(schema: Any, value: Any) -> bool:
+    """Reject a rename candidate using simple native-value evidence, not coercion.
+    Unchecked constraints/refs remain possible candidates; this is not validation."""
+    if schema is False:
+        return True
+    if not isinstance(schema, dict):
+        return False
+    kind = {dict: "object", list: "array", type(None): "null"}.get(
+        type(value), _CONST_PRIMITIVE_TYPES.get(type(value)))
+    value_types = {kind}
+    if kind == "integer":
+        value_types.add("number")
+    elif kind == "number" and value.is_integer():
+        value_types.add("integer")
+    declared = schema.get("type")
+    types = declared if isinstance(declared, list) else [declared]
+    if declared is not None and not (value is None and schema.get("nullable") is True) \
+            and all(isinstance(t, str) and t in _BARE_TYPE_NAMES for t in types) \
+            and not value_types.intersection(types):
+        return True
+    if "const" in schema and (value != schema["const"] or
+                             isinstance(value, bool) != isinstance(schema["const"], bool)):
+        return True
+    if isinstance(schema.get("enum"), list) and not any(
+            value == item and isinstance(value, bool) == isinstance(item, bool)
+            for item in schema["enum"]):
+        return True
+    if isinstance(value, dict):
+        required = schema.get("required")
+        if isinstance(required, list) and any(k not in value for k in required):
+            return True
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            if schema.get("additionalProperties") is False and value.keys() - props.keys():
+                return True
+            return any(_branch_contradicts(props[k], v) for k, v in value.items() if k in props)
+    return False
+
+
+def _unrename_args(schema: Any, args: Any) -> Any:
+    """Follow nested branch-local maps only when all possible candidates agree."""
+    if not isinstance(schema, dict):
+        return args
+    if isinstance(args, list):
+        return [_unrename_args(schema.get("items"), item) for item in args]
+    if not isinstance(args, dict):
+        return args
+    for key in _UNION_KEYS:
+        variants = schema.get(key)
+        if not isinstance(variants, list):
+            continue
+        candidates = [_unrename_args(branch, args) for branch in variants
+                      if not _branch_contradicts(_sanitize_node(branch, "<unrename>"), args)]
+        if not candidates or any(candidate != candidates[0] for candidate in candidates[1:]):
+            return args
+        args = candidates[0]
+    props = schema.get("properties")
+    if not isinstance(props, dict):
         return args
     reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
     out = {}
     for key, value in args.items():
         orig = reverse.get(key, key)
-        sub = props.get(orig) if isinstance(props.get(orig), dict) else {}
-        if isinstance(value, dict) and sub:
-            value = unrename_tool_args(sub, value)
-        elif isinstance(value, list) and isinstance(sub.get("items"), dict):
-            value = [unrename_tool_args(sub["items"], item) if isinstance(item, dict) else item
-                     for item in value]
-        out[orig] = value
+        # Do not silently overwrite another supplied key during reversal.
+        if orig != key and orig in args:
+            return args
+        out[orig] = _unrename_args(props.get(orig), value)
     return out
 
 

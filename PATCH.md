@@ -523,11 +523,21 @@ conflicting field schemas with a nested `anyOf`. Existing root properties remain
 constraints, and only requirements shared by every branch become global.
 
 Touchpoints: tools/schema_sanitizer.py and tools/arg_coercion.py; reverse renamed
-projected keys before the no-root-properties return. MCP registry/server validation
-schemas are unchanged. Independent review exposed branch-local boolean-required
-flags becoming global and projected key names not returning to wire names; parent
-reproduced both with failing regressions and fixed them within this intent. Nested schema behavior, nullable-single-survivor handling,
-root-combinator rejection compatibility, and definition-cache policy remain native.
+projected keys and coerce against projected wire properties even without root props.
+Nested reversal uses each branch's exposed rename map, not another projection.
+Native types, const/enum, required keys and additionalProperties: false can rule
+out candidates; otherwise reverse only when all possible mappings agree. Unknown,
+ambiguous or unmatched values pass through for original server validation. No ref
+resolution or general schema validator is introduced. MCP registry/server validation
+schemas remain unchanged. Parent fixed branch-local boolean-required flags and root
+key reversal; this follow-up repairs projected coercion and nested branch reversal.
+Nullable-single-survivor handling, root-combinator rejection compatibility and
+model definition-cache policy remain native.
+
+Integration note: origin/live 4c8539d09f77eebb0720893b59899a67e0cc7d5a allocated
+027 to compaction recovery and canonical usage continuity. This branch's existing
+027 now collides in PATCH.md; parent integration must preserve that live entry and
+renumber this root-union intent to next available 028. No merge/rebase was performed.
 
 Authorization: Elliot message 1558586766108135495, "Your plan sounds good. Execute
 on it.", approved the specific raw MCP schema -> sanitizer -> model definitions ->
@@ -551,10 +561,35 @@ Two unrelated Windows failures reproduced in an unchanged git-archive baseline
 and were excluded: test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime
 and test_windows_location_vars_passed_without_secrets; neither was modified.
 
+Review follow-up: findings 4239284359/4239284362 reproduced before source edits
+through handle_function_call -> coerce_tool_args -> real registry dispatch: four
+RED cases (anyOf/oneOf string boolean unchanged; integer payload mapped to a b).
+Root-only projection now supplies wire properties for coercion. Nested reversal
+retains each branch's independent collision suffixes and changes keys only when
+simple native value/schema evidence leaves agreeing candidates. Tests include the
+actual root-projected conflicting payloads, existing nested unions, both branch
+orders, arrays, const/enum/required/closed-object evidence, bool versus integer,
+nullable ambiguity, opaque refs, identical mappings, unmatched/ambiguous values,
+conflicting projected scalar/container types and supplied-key overwrite refusal.
+Original schema validation checks the repaired successful dispatch payloads.
+
+Final isolated canonical review acceptance: same eight named suites above,
+313 passed, 0 failed, exit 0 (84.5 seconds), including 56 root-union and 19 argument
+coercion cases. HERMES_TEST_FILE_RETRIES=0; worktree-local HERMES_HOME/TMPDIR/TEMP/TMP;
+--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/review-acceptance-final
+--tb=short. The same two established Windows baseline exclusions remain; no new
+exclusions or modified baseline tests. Python compile and scoped diff checks pass.
+This follow-up is deliberately uncommitted/unpublished for parent review.
+
 Worktree-local .venv, test home and scratch only; no runtime dependency/profile
 writes, model/server calls, installation or gateway restart. Root union references
 are not resolved or relocated, branch-local definitions are not hoisted, and allOf
-field extraction remains out of scope.
+field extraction remains out of scope. Rename evidence is deliberately not full
+schema validation (no refs, patterns, ranges, or branch correlations). Ambiguous
+renames remain unchanged and can fail server validation rather than guess. Branch
+selection uses native values, not speculative scalar coercion; pre-existing JSON
+container parsing occurs after reversal and is not a generalized union decoder.
+Conflicting projected field schemas without one explicit type remain uncoerced.
 
 Upstream candidate correctness fix; retain until stable preserves root-union fields.
 Rollback: revert this intent-shaped commit. Published source is not installed or

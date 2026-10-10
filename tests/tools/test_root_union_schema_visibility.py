@@ -71,6 +71,159 @@ def test_hoisted_keys_round_trip_through_actual_argument_coercion(monkeypatch):
     assert arg_coercion.coerce_tool_args("probe", {"file_path": "x"}) == {"file path": "x"}
 
 
+def _dispatch_probe(monkeypatch, schema, args):
+    """Exercise real model dispatch and registry with an offline server-boundary handler."""
+    import model_tools
+    from tools import arg_coercion
+    from tools.registry import ToolRegistry
+
+    received = []
+    converted = _convert_mcp_schema("schema-test", SimpleNamespace(
+        name="probe", description="Inspect arguments.", inputSchema=schema))
+    registry = ToolRegistry()
+    registry.register(name=converted["name"], toolset="mcp_schema_test", schema=converted,
+                      handler=lambda args: received.append(copy.deepcopy(args)) or "{}")
+    monkeypatch.setattr(model_tools, "registry", registry)
+    monkeypatch.setattr(arg_coercion, "registry", registry)
+    result = model_tools.handle_function_call(
+        converted["name"], copy.deepcopy(args), skip_pre_tool_call_hook=True,
+        skip_tool_request_middleware=True, skip_tool_execution_middleware=True)
+    assert json.loads(result) == {}
+    assert len(received) == 1
+    return received[0]
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+def test_projected_boolean_coercion_reaches_dispatch(monkeypatch, key):
+    from jsonschema import Draft202012Validator
+
+    schema = {key: [
+        {"type": "object", "properties": {"confirm flag": {"type": "boolean", "const": True}},
+         "required": ["confirm flag"], "additionalProperties": False},
+        {"type": "object", "properties": {"draft_id": {"type": "string"}},
+         "required": ["draft_id"], "additionalProperties": False},
+    ]}
+    assert _sanitize(schema)["properties"]["confirm_flag"]["type"] == "boolean"
+    received = _dispatch_probe(monkeypatch, schema, {"confirm_flag": "true"})
+    assert received == {"confirm flag": True}
+    Draft202012Validator(schema).validate(received)
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("projected", [False, True])
+@pytest.mark.parametrize("value,wire_key", [("text", "a b"), (7, "a@b")])
+def test_nested_branch_renames_follow_exposed_keys(monkeypatch, key, projected, value, wire_key):
+    from jsonschema import Draft202012Validator
+
+    schema = {"anyOf": [
+        {"properties": {"payload": {key: [
+            {"type": "object", "properties": {"a b": {"type": "string"}},
+             "required": ["a b"], "additionalProperties": False},
+            {"type": "object", "properties": {"a@b": {"type": "integer"}},
+             "required": ["a@b"], "additionalProperties": False},
+        ]}}},
+        {"properties": {"other": {"type": "string"}}},
+    ]}
+    if not projected:
+        schema = schema["anyOf"][0]
+    branches = _sanitize(schema)["properties"]["payload"][key]
+    assert all(list(branch["properties"]) == ["a_b"] for branch in branches)
+    received = _dispatch_probe(monkeypatch, schema, {"payload": {"a_b": value}})
+    assert received == {"payload": {wire_key: value}}
+    Draft202012Validator(schema).validate(received)
+
+
+@pytest.mark.parametrize("reverse_order", [False, True])
+@pytest.mark.parametrize("value,wire_key", [("text", "a b"), (7, "a@b")])
+def test_conflicting_projected_payload_branches_reach_server(monkeypatch, reverse_order, value, wire_key):
+    from jsonschema import Draft202012Validator
+
+    variants = [{"type": "object", "properties": {"payload": {
+        "type": "object", "properties": {name: {"type": kind}},
+        "required": [name], "additionalProperties": False}}, "required": ["payload"]}
+        for name, kind in [("a b", "string"), ("a@b", "integer")]]
+    if reverse_order:
+        variants.reverse()
+    schema = {"anyOf": variants}
+    exposed = _sanitize(schema)["properties"]["payload"]["anyOf"]
+    assert all(list(branch["properties"]) == ["a_b"] for branch in exposed)
+    received = _dispatch_probe(monkeypatch, schema, {"payload": {"a_b": value}})
+    assert received == {"payload": {wire_key: value}}
+    Draft202012Validator(schema).validate(received)
+
+
+@pytest.mark.parametrize("types,value", [(["boolean", "string"], "true"),
+                                        (["integer", "number"], "7"),
+                                        (["object", "string"], '{"x": 1}'),
+                                        (["array", "string"], "[1]")])
+def test_conflicting_projected_types_are_not_coerced(monkeypatch, types, value):
+    schema = {"anyOf": [{"properties": {"value": {"type": t}}} for t in types]}
+    assert _dispatch_probe(monkeypatch, schema, {"value": value}) == {"value": value}
+
+
+@pytest.mark.parametrize("reverse_order", [False, True])
+@pytest.mark.parametrize("value", ["text", 7, True, None])
+def test_ambiguous_or_unmatched_nested_rename_is_unchanged(monkeypatch, reverse_order, value):
+    variants = [{"type": "object", "properties": {name: {"type": "string"}}}
+                for name in ["a b", "a@b"]]
+    if reverse_order:
+        variants.reverse()
+    schema = {"properties": {"payload": {"anyOf": variants}}}
+    args = {"payload": {"a_b": value}}
+    assert _dispatch_probe(monkeypatch, schema, args) == args
+
+
+@pytest.mark.parametrize("evidence", ["const", "enum", "required", "additionalProperties"])
+def test_nested_branch_schema_evidence_and_array_items(monkeypatch, evidence):
+    variants = []
+    for name, tag in [("a b", "left"), ("a@b", "right")]:
+        branch = {"type": "object", "properties": {name: {"type": "integer"}}}
+        if evidence in ("const", "enum"):
+            branch["properties"]["kind"] = {evidence: tag if evidence == "const" else [tag]}
+        else:
+            branch["properties"][tag] = {"type": "string"}
+            if evidence == "required":
+                branch["required"] = [tag]
+            else:
+                branch["additionalProperties"] = False
+        variants.append(branch)
+    payload = {"a_b": 7, **({"kind": "right"} if evidence in ("const", "enum") else {"right": "x"})}
+    schema = {"properties": {"payloads": {"type": "array", "items": {"oneOf": variants}}}}
+    expected = {"payloads": [{"a@b": 7, **{k: v for k, v in payload.items() if k != "a_b"}}]}
+    assert _dispatch_probe(monkeypatch, schema, {"payloads": [payload]}) == expected
+
+
+@pytest.mark.parametrize("variants,value,expected", [
+    ([{"properties": {"a b": {"type": "boolean"}}},
+      {"properties": {"a@b": {"type": "integer"}}}], True, {"a b": True}),
+    ([{"properties": {"a b": {"type": "string"}}},
+      {"properties": {"a@b": {"type": "integer"}}}], "7", {"a b": "7"}),
+    ([{"properties": {"a b": {"type": ["string", "null"]}}},
+      {"properties": {"a@b": {"type": "null"}}}], None, {"a_b": None}),
+    ([{"properties": {"a b": {"type": "integer"}, "a_b": {"type": "string"}}},
+      {"properties": {"a@b": {"type": "string"}}, "additionalProperties": False}], 7, {"a b": 7}),
+])
+def test_nested_native_evidence_and_branch_local_suffixes(monkeypatch, variants, value, expected):
+    key = "a_b_2" if "a_b" in variants[0]["properties"] else "a_b"
+    schema = {"properties": {"payload": {"anyOf": variants}}}
+    assert _dispatch_probe(monkeypatch, schema, {"payload": {key: value}}) == {"payload": expected}
+
+
+def test_unrename_collision_preserves_both_supplied_keys(monkeypatch):
+    schema = {"properties": {"payload": {"type": "object", "properties": {"a b": {"type": "string"}}}}}
+    args = {"payload": {"a_b": "model", "a b": "wire"}}
+    assert _dispatch_probe(monkeypatch, schema, args) == args
+
+
+def test_nested_identical_maps_and_opaque_branch(monkeypatch):
+    branch = {"properties": {"a b": {"type": "string"}}}
+    schema = {"properties": {"payload": {"anyOf": [branch, copy.deepcopy(branch)]}}}
+    args = {"payload": {"a_b": "text", "unknown": "keep"}}
+    assert _dispatch_probe(monkeypatch, schema, args) == {"payload": {"a b": "text", "unknown": "keep"}}
+    schema["properties"]["payload"]["anyOf"].append({"$ref": "#/$defs/Other"})
+    assert _dispatch_probe(monkeypatch, schema, args) == args
+
+
 def test_root_constraints_win_and_nested_unions_are_unchanged():
     nested = {"oneOf": [{"type": "string"}, {"type": "integer"}]}
     schema = {"type": "object", "properties": {"value": {"type": "string", "minLength": 3}},
