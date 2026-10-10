@@ -956,7 +956,10 @@ display:
 ```
 
 Its top header refreshes every minute with elapsed minutes, iteration count, current
-action, and available context usage. Estimated context values have a `~` prefix.
+action, and available context usage. Like the final footer, context percentage is
+the latest request's total tokens divided by the effective compaction trigger,
+not the nominal model window. Missing usage omits the context segment; missing
+trigger omits its denominator and percentage. Values above 100% are not clamped.
 Tools (including repeated calls), interim messages, and compression milestones
 append chronologically beneath the header. Overflow shows the newest contiguous
 tail and adds hidden tool/message counts to the header; the complete in-memory

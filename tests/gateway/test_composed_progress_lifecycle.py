@@ -51,7 +51,7 @@ class LifecycleAgent:
         self.tool_progress_callback = None
         self.status_callback = None
         self.interim_assistant_callback = None
-        self.context_compressor = SimpleNamespace(last_prompt_tokens=32000, last_real_prompt_tokens=32000, context_length=128000)
+        self.context_compressor = SimpleNamespace(last_prompt_tokens=32000, last_real_prompt_tokens=32000, last_total_tokens=33000, threshold_tokens=64000, context_length=128000)
 
     def get_activity_summary(self):
         return {"api_call_count": 5, "current_tool": "read_file"}
@@ -238,16 +238,28 @@ def test_tool_events_keep_useful_preview_and_repeated_calls():
     assert ctx.progress_queue.empty()
 
 
-def test_status_reads_provider_context_and_marks_estimates(monkeypatch):
+def test_status_uses_same_usage_and_trigger_as_footer(monkeypatch):
     adapter = LifecycleAdapter()
     runner = _make_runner(adapter)
     ctx, turn = make_context(runner, adapter)
     ctx.agent_holder[0] = LifecycleAgent()
     ctx.progress_started_at = 0
     monkeypatch.setattr("gateway.run_turn_runner.time.monotonic", lambda: 600)
-    assert turn._composed_status() == "⏳ Working 10m · iteration 5 · read_file · context 32.0k/128k (25%)"
+    assert turn._composed_status() == "⏳ Working 10m · iteration 5 · read_file · context 33.0k/64.0k (52%)"
     ctx.agent_holder[0].context_compressor.last_prompt_tokens = 16000
-    assert "context ~16.0k/128k" in turn._composed_status()
+    assert "context 33.0k/64.0k (52%)" in turn._composed_status()
+    comp = ctx.agent_holder[0].context_compressor
+    comp.context_length = 1050000
+    comp.last_total_tokens = 116000
+    comp.threshold_tokens = 231200
+    assert "context 116.0k/231.2k (50%)" in turn._composed_status()
+    comp.last_total_tokens = 300000
+    assert "130%" in turn._composed_status()
+    comp.threshold_tokens = None
+    assert turn._composed_status().endswith("context 300.0k")
+    for invalid in (None, 0, -1, float('nan'), float('inf'), True):
+        comp.last_total_tokens = invalid
+        assert "context" not in turn._composed_status()
 
 
 @pytest.mark.asyncio

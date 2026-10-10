@@ -170,7 +170,15 @@ Installed in live on 2026-10-05; provider-specific quota variants retain source-
 Opt-in display.platforms.discord.progress_compositor: single_message acknowledges
 each turn before execution and edits one owned temporary message. The top header
 refreshes every minute with elapsed minutes, iterations, action and available
-context usage (estimates marked ~). Canonical activity is append-only: repeated
+context usage. Superseding the original window-based percentage, the header now
+matches footer telemetry: last_total_tokens / threshold_tokens. The compact header
+uses an unqualified percentage at Elliot's request. Missing usage is omitted; missing trigger omits percentage;
+valid values above 100% remain visible. No budget or compression-policy change.
+Percentage correction verification: 92 tests passed across composed progress,
+response metadata, compositor and compression suites. Covers request-total versus
+prompt-only usage, effective trigger versus million-token window, missing/invalid
+telemetry and unclamped percentages. Correction is source-only until installation.
+Canonical activity is append-only: repeated
 tools, interim output, compression start/completion/recovery, and accepted steering
 stay chronological. Fitting is pure: render the newest contiguous tail, report
 hidden tool/message counts, and clip oversized entries without rewriting history.

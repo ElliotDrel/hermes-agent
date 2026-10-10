@@ -829,12 +829,19 @@ class TurnRunner:
         action = " ".join(_redact_gateway_user_facing_secrets(str(action)).split())[:64]
         parts = [f"⏳ Working {elapsed}m", f"iteration {iteration}", action]
         compressor = getattr(agent, "context_compressor", None)
-        used = getattr(compressor, "last_prompt_tokens", 0)
-        total = getattr(compressor, "context_length", 0)
-        if isinstance(used, (int, float)) and isinstance(total, (int, float)) and used > 0 and total > 0:
-            from agent.context_breakdown import context_display_source
-            mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-            parts.append(f"context {mark}{used / 1000:.1f}k/{total / 1000:.0f}k ({used / total:.0%})")
+        # Match the delivery footer: latest request total / effective compaction trigger.
+        # Read telemetry only; never substitute the nominal model window or alter policy.
+        import math
+        used = getattr(compressor, "last_total_tokens", None)
+        trigger = getattr(compressor, "threshold_tokens", None)
+        def valid_tokens(value):
+            return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and value > 0 and value == int(value))
+        if valid_tokens(used):
+            detail = f"context {used / 1000:.1f}k"
+            if valid_tokens(trigger):
+                detail += f"/{trigger / 1000:.1f}k ({used / trigger:.0%})"
+            parts.append(detail)
         return " · ".join(parts)
 
     async def _send_composed_progress(self, adapter) -> None:
