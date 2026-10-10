@@ -310,9 +310,11 @@ and SHA attestation mocked. Windows relocation succeeded; no activation source
 change was necessary. The small fixture borrows development site-packages solely
 to import the production activation helper.
 
-Canonical follow-up: three files (test_update_stage.py, test_fork_update_entry.py,
-test_staged_restart.py), 38 passed, 0 failed, exit 0, 55.9s. TMPDIR/TEMP/TMP and
-HERMES_HOME were isolated; --basetemp ended in .test-scratch/followup-final.
+Canonical follow-up: the same 11 files named above, 142 passed, 0 failed,
+0 skipped, exit 0, 86.6s. TMPDIR/TEMP/TMP and HERMES_HOME were isolated;
+--basetemp ended in .test-scratch/scope-final. The real-handler whitespace test
+initially lacked plugin discovery (four fixture failures); discovery now matches
+existing routing fixtures. Syntax and scoped diff checks passed.
 
 Full-source viability is NOT established: a clean disposable clone of committed
 05b1e75b73d99203832d26d497cbf05e4032173c with an isolated profile and managed uv
@@ -325,4 +327,7 @@ The first probe lacked isolated managed uv; a copied uv binary in the scratch
 profile resolved that harness prerequisite before reproducing the build blocker.
 The dependency-install strategy needs a separate focused correction before
 claiming production staging or restart readiness; fixture success is not proof.
+The documented old-handler bootstrap still requires Elliot's terminal stop/token
+activation; it does not satisfy a Discord-only first deployment. That unresolved
+bootstrap limitation is separate from the dependency-build blocker.
 No push, runtime writes or gateway lifecycle actions were performed.
