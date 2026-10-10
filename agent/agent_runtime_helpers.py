@@ -566,7 +566,7 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             and split_user_originated_turn(prev)[0] is None
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
-            and prev.get("display_kind") != STEER_DISPLAY_KIND
+            and prev.get("display_kind") not in (STEER_DISPLAY_KIND, "internal_notification")
             # Only merge plain-text content; leave multimodal (list) content alone.
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
@@ -3456,12 +3456,17 @@ def _requeue_pending_steer(agent, steer_text: str) -> None:
     if _lock is not None:
         with _lock:
             if agent._pending_steer:
-                agent._pending_steer = agent._pending_steer + "\n" + steer_text
+                from agent.runtime_notifications import PendingSteer, join_pending
+                agent._pending_steer = (join_pending(steer_text, agent._pending_steer)
+                                        if isinstance(steer_text, PendingSteer)
+                                        else join_pending(agent._pending_steer, steer_text))
             else:
                 agent._pending_steer = steer_text
     else:
         existing = getattr(agent, "_pending_steer", None)
-        agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+        from agent.runtime_notifications import PendingSteer, join_pending
+        agent._pending_steer = (join_pending(steer_text, existing) if isinstance(steer_text, PendingSteer)
+                                else join_pending(existing, steer_text))
 
 
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:

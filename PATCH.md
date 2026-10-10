@@ -402,3 +402,70 @@ Deployment checkpoint (2026-10-05): native update completed successfully at
 Discord connected, a user greeting received a reply, and real CarbManager and
 WHOOP MCP calls succeeded. All active entries above are installed; this is not
 a claim that every feature or next-release rebase has been exercised live.
+
+## HERMES-FORK-026: Runtime work notifications at the active parent boundary
+
+Elliot approved "sounds good. build this." after the exact protected data-flow/risk
+assessment. Work completions/progress enter the running parent's existing steer
+buffer and its post-tool/pre-request drains; idle keeps the native wake path.
+No event bus, second inbox, child fanout, tool schema or system-prompt changes.
+The shared gateway notification admission stamps process-local provenance; plain
+internal flags/metadata cannot promote peers, plugin requests or handoffs. CLI's
+active monitor and TUI/Desktop's owner-checked poller use the same parent helper.
+API-server delegation remains a durable delivery with client-owned next turn.
+
+Typed mixed-buffer parts preserve order and distinct user/runtime markers. Runtime
+payloads never acquire OUT-OF-BAND USER authority (lookalike openers are quoted).
+Runtime-only rows are internal_notification, not compression's human-intent anchor;
+append-only persistence and cached prefixes stay native. No backwards insertion
+into an already-sent prefix. Finalizer admission closes atomically with its drain;
+late events retry/wake normally. Gateway leftover handoffs retain a separate FIFO
+position even when human input is already pending, rather than being discarded.
+Human FIFO, Discord's 30-second composition, explicit approvals/control, peer
+assignments, claims/dedup and owner/continuation lookup remain existing mechanisms.
+Explicit hard-stop cancellation still clears the existing steer slot by native policy.
+
+Touchpoints: agent/runtime_notifications.py, interrupt_control.py, prompt_builder.py,
+agent_runtime_helpers.py, turn_facade.py, turn_finalizer.py, turn_iteration_prep.py;
+gateway/wake.py, run_notifications.py, run_busy.py, run_inbound.py, run_turn.py;
+hermes_cli/cli_process_notifications.py, cli_chat_turn_mixin.py;
+tui_gateway/session_notifications.py. Four mirrored runtime_notification_bridge
+test files exercise active delivery, parent-only scope, ordering, provenance,
+startup/finalization fallback, FIFO coexistence, real cached/uncached provider
+request construction, SQLite persistence/resume/two compactions and human anchoring.
+
+Verification: isolated canonical scripts/run_tests.sh -j 1 acceptance: 31 named
+files, 228 passed, 0 failed, 0 skipped, exit 0 (125.5 seconds). Forwarded flags:
+--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/runtime-notification-bridge/.test-scratch/pytest
+and --tb=short; HERMES_HOME/TMPDIR were worktree-local, never the live profile.
+Files: tests/agent/{test_runtime_notification_bridge,test_steer,
+test_steer_compaction_persistence,test_lock_fallback_base_semantics,
+test_notification_persistence,test_session_message_payload}.py;
+tests/gateway/{test_runtime_notification_bridge,test_background_process_notifications,
+test_wake_delivery,test_busy_wake_admission,test_async_delegation_session_binding,
+test_discord_composition_buffer,test_session_messaging,test_session_message_lifecycle,
+test_steer_fifo_overwrite,test_kanban_wake_acceptance,test_kanban_wake_scope,
+test_background_process_served_apiserver_wake,test_kanban_notifier_apiserver_wake,
+test_kanban_notifier_served_apiserver_wake,test_session_message_worker,
+test_busy_steer_subagent_fanout}.py;
+tests/hermes_cli/{test_runtime_notification_bridge,test_cli_async_delegation_delivery,
+test_process_notification_display,test_cli_steer_busy_path}.py;
+tests/tui_gateway/{test_runtime_notification_bridge,test_foreground_notification_snapshot,
+test_notification_turn_release,test_kanban_notify_poller,test_tui_gateway_queue_on_busy}.py.
+Python compile and scoped git diff --check passed.
+Initial harness errors (missing test-temp parent and unsupported compressor test
+arguments) were corrected; aiohttp was installed only in the worktree venv for
+Raft's real offline adapter test. No paid models, Discord traffic, runtime changes
+or gateway restarts. gateway/AGENTS.md background-notification wording could not
+be updated because the agent-instruction write safety gate denied that edit.
+
+Limitations: at-least-once admission is not execution/outbound confirmation; crashes
+between admission and durable completion can replay, as before. Deterministic fake
+wire/transport tests do not prove every model's behavior. No forced model-call
+cancellation or tool yield: delivery waits for an existing safe boundary (a long
+foreground tool can delay it). Native Codex app-server owns its own model/tool loop;
+native app-server retains its existing idle wake/retry policy (active admission
+explicitly refuses it); these tests prove the ordinary AIAgent provider path.
+Upstream candidate correctness/latency improvement; retain until stable provides
+equivalent runtime provenance/admission. Rollback: revert this intent commit.
+Source-only; publication and installation belong to the parent/user.

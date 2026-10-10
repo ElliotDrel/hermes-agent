@@ -412,6 +412,10 @@ class CLIChatTurnMixin:
         interrupt_msg = None
         while agent_thread.is_alive():
             try:
+                self._drain_process_notifications("cli-active")
+            except Exception:
+                logger.warning("Active process notification drain failed", exc_info=True)
+            try:
                 interrupt_msg = self._interrupt_queue.get(timeout=0.1)
             except queue.Empty:
                 # Flush the StdoutProxy buffer: it otherwise only flushes on input-triggered

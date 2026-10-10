@@ -3772,6 +3772,15 @@ class GatewayTurnMixin:
         )
         pending_event = None
         pending = None
+        leftover = result.get("pending_steer") if result else None
+        if leftover and adapter and session_key:
+            # Retain the handoff independently of the human FIFO head; no lossy either/or.
+            from gateway.platforms.event import MessageEvent
+            from agent.runtime_notifications import PendingSteer
+            self._enqueue_fifo(session_key, MessageEvent(
+                text=str(leftover), source=source, internal=isinstance(leftover, PendingSteer),
+                allow_gateway_control=False), adapter)
+            leftover = None
         if result and adapter and session_key:
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
@@ -3802,8 +3811,8 @@ class GatewayTurnMixin:
                     logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
-        if result and not pending and not pending_event and result.get("pending_steer"):
-            pending = result.get("pending_steer")
+        if leftover and not pending and not pending_event:
+            pending = str(leftover)
             logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
         # Safety net: a pending slash command is never passed to the agent as user input.

@@ -560,6 +560,9 @@ def steer_user_row(steer_text: str) -> Dict[str, Any]:
     result). Its own row — never smeared onto the already-persisted tool row, which append-only
     persistence would leave divergent from the live request — and typed so the alternation repair
     never merges the next real prompt into it and history renderers can label it."""
+    from agent.runtime_notifications import PendingSteer, notification_row
+    if isinstance(steer_text, PendingSteer):
+        return notification_row(steer_text)
     return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
             "display_kind": STEER_DISPLAY_KIND}
 

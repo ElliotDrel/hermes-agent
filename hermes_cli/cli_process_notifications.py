@@ -43,6 +43,11 @@ class CLIProcessNotificationsMixin:
                 from agent.notification_presentation import diagnostic_process_event
                 if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
                     pending = TimelineNotification(text, text, "internal_notification", "diagnostic")
+            from agent.runtime_notifications import deliver_runtime_notification
+            text = pending.render(process_registry) if isinstance(pending, ProcessNotificationBatch) else str(pending)
+            if getattr(self, "_agent_running", False) and deliver_runtime_notification(self.agent, text):
+                continue
+            # Idle/late handoff keeps the established queue and timeline presentation.
             self._pending_input.put(pending)
 
     def _tui_unwrap_input(self, user_input):

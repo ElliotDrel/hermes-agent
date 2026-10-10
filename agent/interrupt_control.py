@@ -249,7 +249,20 @@ class InterruptControlMixin:
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
-            self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+            from agent.runtime_notifications import join_pending
+            self._pending_steer = join_pending(existing, cleaned)
+        return True
+
+    def notify_runtime(self, notification) -> bool:
+        """Accept parent work context into the existing steer buffer; never interrupt/fan out."""
+        from agent.runtime_notifications import RuntimeNotification, join_pending
+        if not isinstance(notification, RuntimeNotification):
+            return False
+        with _ic_lock(self, "_pending_steer_lock"):
+            if getattr(self, "_runtime_notification_closed", False):
+                return False
+            self._pending_steer = join_pending(
+                _ic_slot(self, "_pending_steer_lock", "_pending_steer"), notification)
         return True
 
     def redirect(self, text: str) -> bool:
@@ -323,9 +336,11 @@ class InterruptControlMixin:
             self._pending_redirect = None
         return text
 
-    def _drain_pending_steer(self) -> Optional[str]:
+    def _drain_pending_steer(self, *, close_runtime: bool = False) -> Optional[str]:
         """Return the pending steer text (if any) and clear the slot; None when nothing is pending."""
         with _ic_lock(self, "_pending_steer_lock"):
+            if close_runtime:
+                self._runtime_notification_closed = True
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = None
         return text

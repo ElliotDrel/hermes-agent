@@ -439,6 +439,8 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         from gateway.warning_notifications import DiagnosticText, render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
                             platform="tui", diagnostic=isinstance(text, DiagnosticText))
+    if texts and _notif_deliver_active(session, "\n".join(texts), [], "tui-kanban-active"):
+        return
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
@@ -454,6 +456,30 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
                       "kanban notification dispatch failed",
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
+
+
+def _notif_deliver_active(session, text, events, consumer):
+    from agent.runtime_notifications import deliver_runtime_notification
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    with session["history_lock"]:
+        if not session.get("running") or session.get("_closing") or session.get("_finalized"):
+            return False
+        claimed = []
+        try:
+            for event in events:
+                claim = claim_event_delivery(event, consumer)
+                if claim is None:
+                    return False
+                claimed.append((event, claim))
+            if not deliver_runtime_notification(session.get("agent"), text):
+                return False
+            for event, claim in claimed:
+                complete_event_delivery(event, claim)
+            claimed.clear()
+            return True
+        finally:
+            for event, claim in claimed:
+                release_event_delivery(event, claim)
 
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
@@ -535,6 +561,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True
+    if _notif_deliver_active(session, text, [evt], "tui-active"):
+        return True
     if not _notif_claim_turn(session):
         queue.put(evt)
         if deferred is not None:
@@ -551,6 +579,10 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
 
     if not notifications:
         return
+    if session.get("running") and session.get("agent") is not None:
+        active_text = ProcessNotificationBatch(tuple(notifications)).render(registry)
+        if active_text and _notif_deliver_active(session, active_text, [e for e, _ in notifications], "tui-active-batch"):
+            return
     if not _notif_claim_turn(session):
         for event, _text in notifications:
             (deferred.append if deferred is not None else registry.completion_queue.put)(event)

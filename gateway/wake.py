@@ -88,6 +88,13 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
         raise WakeNotAccepted("internal wake not accepted by adapter")
 
 
+async def admit_notification_event(adapter: Any, event: Any) -> None:
+    """Shared work-notification entry, distinct from internal peer/plugin admission."""
+    from agent.runtime_notifications import mark_notification_event
+    mark_notification_event(event)
+    await admit_internal_event(adapter, event)
+
+
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
                        notification_category: str = "result", profile: Optional[str] = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
@@ -102,7 +109,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
         from gateway.platforms.event import MessageEvent, MessageType
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
                                    metadata={"notification_category": notification_category})
-        await admit_internal_event(adapter, synth_event)
+        await admit_notification_event(adapter, synth_event)
         return
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "

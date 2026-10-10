@@ -37,6 +37,9 @@ class TurnFacadeMixin:
         from agent.background_review import cancel_background_review_for_live_turn
 
         cancel_background_review_for_live_turn(self)
+        from agent.interrupt_control import _ic_lock
+        with _ic_lock(self, "_pending_steer_lock"):
+            self._runtime_notification_closed = False
 
         from agent import relay_runtime
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
@@ -91,6 +94,8 @@ class TurnFacadeMixin:
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
+                from agent.runtime_notifications import close_runtime_handoff
+                close_runtime_handoff(self, admission.early_result)
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
@@ -157,6 +162,8 @@ class TurnFacadeMixin:
                     # the interrupt clear itself waits for the thread join in the outer finally.
                     if lease is not None:
                         lease.stop_refresher()
+            from agent.runtime_notifications import close_runtime_handoff
+            close_runtime_handoff(self, result)
             terminal = result if isinstance(result, dict) else {}
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True

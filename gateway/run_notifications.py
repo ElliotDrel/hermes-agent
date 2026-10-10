@@ -1314,7 +1314,7 @@ class GatewayNotificationsMixin:
         ``True`` on adapter acceptance, ``False`` on retryable adapter failure, ``None`` with no
         gateway route. Not transactional: a crash after acceptance can replay (at-least-once).
         """
-        from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
+        from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_notification_event
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.
@@ -1370,7 +1370,7 @@ class GatewayNotificationsMixin:
             _prime = getattr(adapter, "prime_routing_cache", None)
             if callable(_prime):
                 _prime(synth_event)
-            await admit_internal_event(adapter, synth_event)
+            await admit_notification_event(adapter, synth_event)
             return True
         except WakeNotAccepted:
             # Durable callers refund the claim; ordinary watch callers just requeue.

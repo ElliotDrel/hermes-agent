@@ -839,6 +839,15 @@ class GatewayBusySessionMixin:
             logger.debug("Failed to send busy-ack: %s", e)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        from agent.runtime_notifications import is_notification_event, deliver_runtime_notification
+        if is_notification_event(event):
+            state = self._peek_session_state(session_key)
+            agent = state.turn.agent if state else None
+            if deliver_runtime_notification(agent, event._runtime_notification.text):
+                event._gateway_accepted = True
+            else:
+                self._queue_or_replace_pending_event(session_key, event)
+            return True
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
         if event.internal and event.allow_gateway_control:
@@ -874,8 +883,8 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
-        # Internal synthetic events (delegation / background completions) must never interrupt or
-        # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
+        # Other internal events must never interrupt or acquire user steering authority.
+        # Work notifications used the process-local entry above. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).
         if getattr(event, "internal", False):
             self._queue_or_replace_pending_event(session_key, event)
