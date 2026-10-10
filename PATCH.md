@@ -235,8 +235,9 @@ Touchpoints: tools/schema_sanitizer.py and tools/arg_coercion.py; reverse rename
 projected keys and coerce against projected wire properties even without root props.
 Nested reversal uses each branch's exposed rename map, not another projection.
 Native types, const/enum, required keys and additionalProperties: false can rule
-out candidates; otherwise reverse only when all possible mappings agree. Unknown,
-ambiguous or unmatched values pass through for original server validation. No ref
+out candidates; otherwise reverse each key when all possible mappings agree. Unknown,
+ambiguous or unmatched keys pass through for original server validation; an
+ambiguous key or supplied-key collision does not veto unrelated agreed reversals. No ref
 resolution or general schema validator is introduced. MCP registry/server validation
 schemas remain unchanged. Parent fixed branch-local boolean-required flags and root
 key reversal; this follow-up repairs projected coercion and nested branch reversal.
@@ -287,6 +288,27 @@ coercion cases. HERMES_TEST_FILE_RETRIES=0; worktree-local HERMES_HOME/TMPDIR/TE
 --tb=short. The same two established Windows baseline exclusions remain; no new
 exclusions or modified baseline tests. Python compile and scoped diff checks pass.
 Parent independently reran all 313 cases successfully before integration.
+
+Latest review: findings 4239338301/4239338303 reproduced on clean published
+9f16916e20c9f36a78dce3efc0bf1bf3d7e09a4c before source edits through actual dispatch:
+32 failed, two false-schema controls passed. Raw true/string property fragments
+raised AttributeError at prop_schema.get; ambiguous union reversal dropped agreed
+fixed_key -> fixed key siblings. Coercion now normalizes bare strings through the
+existing sanitizer and skips non-dict fragments, preserving boolean-schema values
+for server validation. Reversal tracks supplied keys independently; agreed key
+names survive disputed nested values, while ambiguous names and supplied-key
+collisions retain their original entries. No general validator or branch guessing.
+Actual-dispatch regressions cover anyOf/oneOf, both branch orders, projected and
+ordinary raw true/false/string fragments, arrays/objects/unknown string fallback,
+common sibling properties, nested children, array items, renamed containers with
+ambiguous child keys, unknown keys and collisions alongside unaffected siblings.
+Latest isolated canonical acceptance: the same eight suites, 365 passed, 0 failed,
+exit 0 (108.5 seconds), including 108 root-union and 19 coercion cases. Retries off;
+worktree-local test home and TMPDIR/TEMP/TMP; --tb=short and
+--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/latest-review-acceptance.
+Only the same two established Windows baseline tests excluded; no new exclusions.
+Python compile and scoped diff checks pass. Parent independently reran all 365
+cases successfully before publication; no runtime changes or installation.
 
 Worktree-local .venv, test home and scratch only; no runtime dependency/profile
 writes, model/server calls, installation or gateway restart. Root union references

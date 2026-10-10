@@ -37,7 +37,11 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
     for key, value in list(args.items()):
         prop_schema = properties.get(key)
-        if not prop_schema:
+        if isinstance(prop_schema, str):
+            # Match the model-visible bare-string normalization, without renaming wire keys.
+            from tools.schema_sanitizer import _sanitize_node
+            prop_schema = _sanitize_node(prop_schema, f"{tool_name}.{key}")
+        if not isinstance(prop_schema, dict):
             continue
         expected = prop_schema.get("type")
         is_container = isinstance(value, (list, tuple))

@@ -108,34 +108,47 @@ def _branch_contradicts(schema: Any, value: Any) -> bool:
 
 
 def _unrename_args(schema: Any, args: Any) -> Any:
-    """Follow nested branch-local maps only when all possible candidates agree."""
+    """Follow nested branch-local maps only when possible candidates agree per key."""
     if not isinstance(schema, dict):
         return args
     if isinstance(args, list):
         return [_unrename_args(schema.get("items"), item) for item in args]
     if not isinstance(args, dict):
         return args
+    return dict(_unrename_object_entries(schema, args).values())
+
+
+def _unrename_object_entries(schema: Any, args: dict) -> dict:
+    """Track each supplied key separately so one ambiguous rename cannot veto siblings."""
+    entries = {key: (key, value) for key, value in args.items()}
+    if not isinstance(schema, dict):
+        return entries
     for key in _UNION_KEYS:
         variants = schema.get(key)
         if not isinstance(variants, list):
             continue
-        candidates = [_unrename_args(branch, args) for branch in variants
-                      if not _branch_contradicts(_sanitize_node(branch, "<unrename>"), args)]
-        if not candidates or any(candidate != candidates[0] for candidate in candidates[1:]):
-            return args
-        args = candidates[0]
+        current = dict(entries.values())
+        candidates = [_unrename_object_entries(branch, current) for branch in variants
+                      if not _branch_contradicts(_sanitize_node(branch, "<unrename>"), current)]
+        if candidates:
+            for supplied, (name, value) in list(entries.items()):
+                agreed = candidates[0][name]
+                name_agrees = all(candidate[name][0] == agreed[0] for candidate in candidates[1:])
+                if name_agrees:
+                    value_agrees = all(candidate[name][1] == agreed[1] for candidate in candidates[1:])
+                    entries[supplied] = (agreed[0], agreed[1] if value_agrees else value)
     props = schema.get("properties")
     if not isinstance(props, dict):
-        return args
+        return entries
     reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
-    out = {}
-    for key, value in args.items():
+    taken = {name for name, value in entries.values()}
+    for supplied, (key, value) in list(entries.items()):
         orig = reverse.get(key, key)
-        # Do not silently overwrite another supplied key during reversal.
-        if orig != key and orig in args:
-            return args
-        out[orig] = _unrename_args(props.get(orig), value)
-    return out
+        # Preserve both supplied keys on collision, but still repair unrelated siblings.
+        if orig != key and orig in taken:
+            orig = key
+        entries[supplied] = (orig, _unrename_args(props.get(orig), value))
+    return entries
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:

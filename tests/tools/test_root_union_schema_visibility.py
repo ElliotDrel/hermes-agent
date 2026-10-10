@@ -210,9 +210,11 @@ def test_nested_native_evidence_and_branch_local_suffixes(monkeypatch, variants,
 
 
 def test_unrename_collision_preserves_both_supplied_keys(monkeypatch):
-    schema = {"properties": {"payload": {"type": "object", "properties": {"a b": {"type": "string"}}}}}
-    args = {"payload": {"a_b": "model", "a b": "wire"}}
-    assert _dispatch_probe(monkeypatch, schema, args) == args
+    schema = {"properties": {"payload": {"type": "object", "properties": {
+        "a b": {"type": "string"}, "fixed key": {"type": "string"}}}}}
+    args = {"payload": {"a_b": "model", "a b": "wire", "fixed_key": "fixed"}}
+    assert _dispatch_probe(monkeypatch, schema, args) == {
+        "payload": {"a_b": "model", "a b": "wire", "fixed key": "fixed"}}
 
 
 def test_nested_identical_maps_and_opaque_branch(monkeypatch):
@@ -222,6 +224,66 @@ def test_nested_identical_maps_and_opaque_branch(monkeypatch):
     assert _dispatch_probe(monkeypatch, schema, args) == {"payload": {"a b": "text", "unknown": "keep"}}
     schema["properties"]["payload"]["anyOf"].append({"$ref": "#/$defs/Other"})
     assert _dispatch_probe(monkeypatch, schema, args) == args
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("projected", [False, True])
+@pytest.mark.parametrize("fragment,value,expected", [
+    (True, "keep", "keep"), (False, "keep", "keep"),
+    ("boolean", "true", True), ("integer", "7", 7),
+    ("object", '{"x": 1}', {"x": 1}), ("array", "[1]", [1]),
+    ("unknown", '{"x": 1}', {"x": 1}),
+])
+def test_projected_raw_schema_fragments_reach_dispatch(monkeypatch, key, projected, fragment, value, expected):
+    schema = {key: [{"properties": {"raw field": fragment}}, {"properties": {"other": {"type": "string"}}}]}
+    if not projected:
+        schema = schema[key][0]
+    snapshot = copy.deepcopy(schema)
+    assert "raw_field" in _sanitize(schema)["properties"]
+    assert _dispatch_probe(monkeypatch, schema, {"raw_field": value}) == {"raw field": expected}
+    assert schema == snapshot
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("reverse_order", [False, True])
+@pytest.mark.parametrize("shape", ["siblings", "common", "collision", "nested", "array", "renamed_container"])
+def test_ambiguous_union_preserves_agreed_sibling_reversals(monkeypatch, key, reverse_order, shape):
+    variants = [{"type": "object", "properties": {
+        name: {"type": "string"}, "fixed key": {"type": "string"}}}
+        for name in ["a b", "a@b"]]
+    if reverse_order:
+        variants.reverse()
+    payload_schema: dict = {key: variants}
+    payload: dict = {"a_b": "ambiguous", "fixed_key": "fixed", "unknown": "keep"}
+    expected: dict = {"a_b": "ambiguous", "fixed key": "fixed", "unknown": "keep"}
+    if shape == "common":
+        for branch in variants:
+            branch["properties"].pop("fixed key")
+        payload_schema["properties"] = {"fixed key": {"type": "string"}}
+    elif shape == "collision":
+        for branch in variants:
+            branch["properties"]["other key"] = {"type": "string"}
+        payload.update({"fixed key": "supplied", "other_key": "other"})
+        expected = {**payload, "other key": payload["other_key"]}
+        expected.pop("other_key")
+    elif shape == "nested":
+        for branch in variants:
+            branch["properties"]["child"] = {"properties": {"child key": {"type": "string"}}}
+        payload["child"] = {"child_key": "child"}
+        expected["child"] = {"child key": "child"}
+    elif shape == "renamed_container":
+        for branch, child_name in zip(variants, ["child key", "child@key"]):
+            branch["properties"]["fixed key"] = {"properties": {child_name: {"type": "string"}}}
+        payload["fixed_key"] = {"child_key": "ambiguous child"}
+        expected["fixed key"] = payload["fixed_key"]
+    schema: dict = {"properties": {"payload": payload_schema}}
+    args, want = {"payload": payload}, {"payload": expected}
+    if shape == "array":
+        schema["properties"]["payload"] = {"type": "array", "items": payload_schema}
+        args, want = {"payload": [payload]}, {"payload": [expected]}
+    snapshot = copy.deepcopy(schema)
+    assert _dispatch_probe(monkeypatch, schema, args) == want
+    assert schema == snapshot
 
 
 def test_root_constraints_win_and_nested_unions_are_unchanged():
