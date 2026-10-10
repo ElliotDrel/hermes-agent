@@ -144,7 +144,8 @@ def _parent_is_live(proc) -> bool:
     return parent is not None and parent.is_running() and parent.create_time() <= proc.create_time()
 
 
-def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str, str]]:
+def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None,
+                                  project_root: Path | None = None) -> list[tuple[int, str, str]]:
     """Live processes running from the project venv's interpreter as ``(pid, name, cmdline)``; never raises.
 
     The hermes.exe shim guard misses the Desktop backend and anything off ``venv\\Scripts\\python(w).exe``;
@@ -158,9 +159,10 @@ def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> li
     if not _m()._is_windows() or psutil is None:
         return []
     from hermes_constants import project_venv_dir
-    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    root = project_root if project_root is not None else _m().PROJECT_ROOT
+    venv_dir = project_venv_dir(root) or root / "venv"
     venv_prefix = _lower_dir_prefix(venv_dir)
-    root_prefix = _lower_dir_prefix(_m().PROJECT_ROOT)
+    root_prefix = _lower_dir_prefix(root)
     skip = set(exclude_pids or set()) | _self_and_non_gateway_ancestor_pids(psutil)
     matches: list[tuple[int, str, str]] = []
     try:
@@ -654,7 +656,7 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     return "hermes_cli.main" in (cmdline or "").lower() and _hermes_holder_subcommand(cmdline) in _BACKEND_PURPOSES
 
 
-def _desktop_owns_gateway_lifecycle() -> bool:
+def _desktop_owns_gateway_lifecycle(*, project_root: Path | None = None) -> bool:
     """True when Desktop currently supervises this install's control plane (updater must not steal gateway start).
 
     Not proof messaging is served: serve is the control plane, the gateway a detached sibling. Prefer the spawn
@@ -669,7 +671,9 @@ def _desktop_owns_gateway_lifecycle() -> bool:
         if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
-    for pid, _name, cmdline in _try_call(_m()._detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
+    holders = (_detect_venv_python_processes(project_root=project_root) if project_root is not None
+               else _try_call(_m()._detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s"))
+    for pid, _name, cmdline in holders or []:
         if not _looks_like_desktop_control_plane(cmdline):
             continue
         if psutil is None:

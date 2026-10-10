@@ -549,6 +549,18 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
+        import subprocess
+        from hermes_cli.update_stage import restart_candidate
+        try:
+            staged = restart_candidate(Path(__file__).resolve().parent.parent)
+        except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+            return f"Staged activation refused; gateway unchanged: {exc}"
+        if staged:
+            if (not event.allow_gateway_control or getattr(event, "internal", False)
+                    or getattr(event.source, "is_bot", False) or event.get_command() != "restart"):
+                return "Staged activation requires an explicit authorized user /restart."
+            self._staged_restart = staged
+
         async def _write_marker(name: str, build, label: str) -> None:
             try:
                 await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)
@@ -1262,68 +1274,34 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_collect_and_upload)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
-        """Prepare through the explicit skill turn; retain native run-scoped reporting."""
-        import json
-        from uuid import uuid4
+        """Prepare only through the explicit user skill turn; never arm installation."""
         from hermes_cli.fork_update_entry import build_update_invocation
         if (not event.allow_gateway_control or getattr(event, "internal", False)
                 or getattr(event.source, "is_bot", False) or event.get_command() != "update"):
             raise ValueError("Update requires an explicit authorized user /update command.")
-        if event.get_command_args().strip():
-            raise ValueError("Usage: /update")
-        from gateway.run import _hermes_home, _resolve_hermes_bin
+        if event.get_command_args().strip() not in {"", "stable"}:
+            raise ValueError("Usage: /update [stable]")
         from hermes_cli.config import is_managed, format_managed_message
-        # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
-        # allow_update_command=True are also allowed.
         src = event.source
         if src.platform not in self._UPDATE_ALLOWED_PLATFORMS:
-            try:
-                from gateway.platform_registry import platform_registry
-                entry = platform_registry.get(src.platform.value)
-                if not entry or not entry.allow_update_command:
-                    raise ValueError(t("gateway.update.platform_not_messaging"))
-            except Exception:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(src.platform.value)
+            if not entry or not entry.allow_update_command:
                 raise ValueError(t("gateway.update.platform_not_messaging"))
         if is_managed():
             raise ValueError(format_managed_message('update Hermes Agent'))
-        if not (Path(__file__).parent.parent.resolve() / '.git').exists():
-            raise ValueError(t("gateway.update.not_git_repo"))
-        hermes_cmd = _resolve_hermes_bin()
-        if not hermes_cmd:
-            raise ValueError(t("gateway.update.hermes_cmd_not_found"))
+        from gateway.run import _hermes_home
         if any((_hermes_home / name).exists() for name in
                (".update_pending.json", ".update_pending.claimed.json")):
             raise ValueError("An update is already pending. Finish that run before starting another.")
         prompt = await self._run_in_executor_with_context(
             lambda: build_update_invocation(event.text, task_id=self._session_key_for_source(src),
                                              platform=src.platform.value))
-        # Skill discovery yields. Recheck the singleton native run before claiming
-        # its files so concurrent threads cannot redirect an existing watcher.
         if self._is_session_running(self._session_key_for_source(src)) or any(
                 (_hermes_home / name).exists() for name in
                 (".update_pending.json", ".update_pending.claimed.json")):
             raise ValueError("An update or session became busy; retry when it finishes.")
-        run_id = uuid4().hex
-        pending_path = _hermes_home / ".update_pending.json"
-        output_path = _hermes_home / ".update_output.txt"
-        exit_code_path = _hermes_home / ".update_exit_code"
-        pending = {
-            "run_id": run_id, "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
-            "user_id": src.user_id, "session_key": self._session_key_for_source(src),
-            "timestamp": datetime.now().isoformat()}
-        # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
-        # requester's own profile bot, not the default profile's adapter for the same platform.
-        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
-                                          ("profile", getattr(src, "profile", None))) if v})
-        _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
-        _tmp_pending.replace(pending_path)
-        exit_code_path.unlink(missing_ok=True)
-        output_path.write_text("", encoding="utf-8")
-        # Keep native progress/completion reporting alive while the explicit user
-        # turn prepares Git. The skill hands installation to the native launcher.
-        self._schedule_update_notification_watch()
-        return prompt + f"\nNative update reporting run ID: {run_id}. Pass this exact ID to install.py."
+        return prompt
 
 
 

@@ -117,7 +117,13 @@ async def test_idle_native_dispatch_keeps_session_metadata_and_loaded_user_turn(
     assert "OFFLINE_WORKFLOW_BODY" in event.text
     assert UPDATE_REQUEST in event.text
     assert "Explicit command in this turn: /update" in event.text
-    assert "authorizes the complete workflow" in event.text
+    assert "deploy-existing-live mode" in event.text
+    assert "this turn grants no restart" in event.text
+    stable = build_update_invocation("/update stable", platform=platform.value)
+    assert "stable-rebase mode" in stable and "deploy-existing-live mode" not in stable
+    assert "Stop before installation, drain or restart" in stable
+    assert not (isolated_skill.parent / ".update_pending.json").exists()
+    runner._schedule_update_notification_watch.assert_not_called()
     assert scopes == [("enter", "default"), ("exit", "default")]
     assert event.source is source and runner._session_key_for_source(source) == key
     assert event._explicit_update is True

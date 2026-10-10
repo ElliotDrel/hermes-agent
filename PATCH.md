@@ -223,3 +223,80 @@ also rejects earlier rewrites/reordering even when the last priced row survives.
 Persist/restore retain that digest; legacy last-row-only anchors fail closed until
 the next real provider reading. No provider payload, cache key, schema, role/order,
 clean display storage, transcript migration or old-history rewrite is introduced.
+
+## HERMES-FORK-027: Inert pinned staging and explicit user activation
+
+`hermes update --stage SHA --branch live` prepares exact published source and a
+separate relocatable environment without changing active HEAD/refs/dependencies,
+profile configuration or gateway lifecycle. Native managed uv resolution, locked
+installation/streaming, profile update lock, receipts, holder classification and
+rename retry are reused. No pm layer, generation manager, custom installer,
+supervisor, daemon or force-venv path is introduced. Declared enabled plugin and
+native lazy/tool dependencies target the candidate only; conflicts refuse it.
+Relative checkout import binding survives whole-tree source+venv promotion.
+
+Explicit authorized user `/restart` captures the validated pin and uses native
+drain/Windows watcher. Candidate interpreter activates only after gateway exit,
+refuses changed/dirty revisions or live holders, retains previous installation,
+rolls back promotion/import failures, and uses fresh native gateway start with
+readiness/exact code_sha verification. Activation never fetches moving live.
+Preparation /update no longer creates installation/watch markers or generates
+restart permission; /update stable alone selects stable rebase preparation.
+
+Authorization: change-specific *** override after routing/model-boundary
+assessment: https://discord.com/channels/1517646536505557132/1558297938780885114/1558582253687406788.
+Protected scope is explicit current user command rendering/admission, not ordinary
+history/system/tool/schema mutation. Cached/uncached real provider-wire and resume
+regressions remain; deterministic tests cannot prove every model's behavior.
+Rollback source via this intent commit, retain candidate/previous data, and have
+Elliot perform any required activation. No runtime edits/restarts or publication.
+
+Touchpoints: hermes_cli/update_stage.py, native update parser/main/windows holder
+scan, fork_update_entry.py/commands.py, gateway/slash_commands.py/run_shutdown.py;
+tests/hermes_cli/test_update_stage.py, tests/gateway/test_staged_restart.py and
+narrow update-route regression adaptation. User/bootstrap docs:
+website/docs/user-guide/staged-fork-updates.md.
+
+Verification: isolated worktree `.venv` via uv sync --extra dev --extra messaging
+--frozen --no-install-project. Canonical 11-file acceptance: 133 passed, 0 failed,
+no skips; real disposable Git origin/installed/candidate and actual uv venv/locked
+wheel installation plus declared six plugin restoration/relocation. Covers moving
+published live after stage, exact pin activation, unchanged active HEAD/venv,
+dependency failure, live gateway refusal, tampering, wrong token, rename rollback,
+native launch payload and success/failed receipt. Native start/readiness are mocked
+at the last transport boundary; no live gateway or paid model calls. Earlier
+constraint-path failure reproduced with real uv (space-containing absolute
+--constraint split); candidate-relative constraint path fixes it. Syntax, CLI
+--help and scoped diff checks pass. Final rerun command/result follows below.
+
+Limitations: Windows standalone single-profile detached owner only (Startup/Task
+login persistence is not a runtime supervisor); unsupported owners/platforms fail
+clearly. Read-only actual owner probe accepts this machine's detached runtime.
+No UI builds, full fleet, undeclared pip/native dependency preservation, managed
+Python generation replacement or preparation-time state migrations. Failed source
+candidates and previous installations are retained, not auto-deleted. Native lock
+semantics remain; host crash between two tree renames still requires retained-tree
+recovery, not a new journal. Old installed 62c55abdee /restart cannot activate this
+first candidate: publish compatible source, run the new staging module against the
+old root, then Elliot performs native gateway stop and candidate-token activation
+from a terminal outside both trees. Only subsequent loaded handlers offer
+/restart-only activation. This is tested/committed source, not installed readiness.
+
+Final acceptance after all source/test edits: 11 files, 133 passed, 0 failed,
+0 skipped, exit 0, 60.4s. Also verifies relocated real uv console-script launcher.
+Exact command (worktree root, own `.venv`):
+```bash
+TMPDIR='C:/Users/2supe/All Coding/Hermes-Agent/staged-update/.test-scratch/tmp' \
+HERMES_TEST_FILE_RETRIES=0 bash scripts/run_tests.sh -j 1 \
+ tests/hermes_cli/test_update_stage.py tests/gateway/test_staged_restart.py \
+ tests/gateway/test_fork_update_entry.py tests/gateway/test_restart_notification.py \
+ tests/gateway/test_restart_drain.py tests/gateway/test_restart_redelivery_dedup.py \
+ tests/gateway/test_restart_service_detection.py tests/hermes_cli/test_update_command.py \
+ tests/hermes_cli/test_update_lock.py tests/hermes_cli/test_update_list_venv_holders.py \
+ tests/hermes_cli/test_venv_holder_classifier.py \
+ --basetemp='C:/Users/2supe/All Coding/Hermes-Agent/staged-update/.test-scratch/commit-acceptance' \
+ --tb=short
+```
+Edited-file compileall, `git diff --check` and real CLI `update --help` passed.
+Disposable test scratch/venvs are worktree-local and excluded from the source commit.
+No paid calls, live gateway lifecycle, source publication or runtime writes.
