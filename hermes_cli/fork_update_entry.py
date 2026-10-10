@@ -42,7 +42,7 @@ def build_update_invocation(literal_command: str, *, task_id: str | None = None,
     if "hermes-fork-update" in get_disabled_skill_names(platform=platform):
         raise ValueError("hermes-fork-update is disabled for this profile/platform.")
     prompt = build_skill_invocation_message(
-        SKILL_COMMAND, STABLE_REQUEST if literal_command.strip() == "/update stable" else UPDATE_REQUEST, task_id=task_id,
+        SKILL_COMMAND, STABLE_REQUEST if literal_command.split() == ["/update", "stable"] else UPDATE_REQUEST, task_id=task_id,
         runtime_note=f"Explicit command in this turn: {literal_command}",
     )
     if not prompt:

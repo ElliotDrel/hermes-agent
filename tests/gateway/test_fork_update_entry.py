@@ -102,6 +102,15 @@ def event_for(platform=Platform.DISCORD, text="/update"):
             user_id="owner", profile="default"))
 
 
+@pytest.mark.parametrize("literal", ["/update stable", "/update   stable", "/update\tstable", " /update stable  "])
+def test_stable_whitespace_routes_without_rewriting_literal(isolated_skill, literal):
+    from hermes_cli.fork_update_entry import STABLE_REQUEST
+    prompt = build_update_invocation(literal, platform="discord")
+    assert STABLE_REQUEST in prompt
+    assert UPDATE_REQUEST not in prompt
+    assert f"Explicit command in this turn: {literal}" in prompt
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("platform", [Platform.DISCORD, Platform.TELEGRAM])
 async def test_idle_native_dispatch_keeps_session_metadata_and_loaded_user_turn(isolated_skill, platform):
@@ -128,6 +137,20 @@ async def test_idle_native_dispatch_keeps_session_metadata_and_loaded_user_turn(
     assert event.source is source and runner._session_key_for_source(source) == key
     assert event._explicit_update is True
     assert {k: v for k, v in vars(event).items() if k not in {"text", "_explicit_update"}} == {k: v for k, v in before.items() if k != "text"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["/update stable", "/update   stable", "/update\tstable", "/update stable  "])
+async def test_stable_whitespace_routes_through_real_handler(isolated_skill, literal):
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+    runner, _ = make_runner()
+    event = event_for(text=literal)
+    result = await runner._handle_update_command(event)
+    assert "stable-rebase mode" in result
+    assert "deploy-existing-live mode" not in result
+    assert f"Explicit command in this turn: {literal}" in result
+    assert event.text == literal
 
 
 @pytest.mark.asyncio

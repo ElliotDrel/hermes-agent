@@ -300,3 +300,29 @@ HERMES_TEST_FILE_RETRIES=0 bash scripts/run_tests.sh -j 1 \
 Edited-file compileall, `git diff --check` and real CLI `update --help` passed.
 Disposable test scratch/venvs are worktree-local and excluded from the source commit.
 No paid calls, live gateway lifecycle, source publication or runtime writes.
+
+Focused follow-up within approved 027 scope: whitespace token parsing now keeps
+`/update   stable` and `/update\tstable` in stable-rebase mode while preserving
+literal command text. Actual candidate-executable activation runs in a disposable
+Windows subprocess from the tree being renamed; production owner/holder checks,
+rename/probe/rollback and receipt code execute, with only gateway launch/readiness
+and SHA attestation mocked. Windows relocation succeeded; no activation source
+change was necessary. The small fixture borrows development site-packages solely
+to import the production activation helper.
+
+Canonical follow-up: three files (test_update_stage.py, test_fork_update_entry.py,
+test_staged_restart.py), 38 passed, 0 failed, exit 0, 55.9s. TMPDIR/TEMP/TMP and
+HERMES_HOME were isolated; --basetemp ended in .test-scratch/followup-final.
+
+Full-source viability is NOT established: a clean disposable clone of committed
+05b1e75b73d99203832d26d497cbf05e4032173c with an isolated profile and managed uv
+reached real locked resolution (258 packages) but `_prepare_environment` failed:
+`uv sync --no-editable` asks for a Hermes wheel, which setup.py explicitly forbids
+outside Nix. CLI help/import probing therefore never ran. No Nix-build bypass
+was used. Evidence: C:/Users/2supe/Hermes-Workspace/cache/scratch/
+full-stage-05b1e75b73-managed/result.json and terminal proc_a025055e7188 output.
+The first probe lacked isolated managed uv; a copied uv binary in the scratch
+profile resolved that harness prerequisite before reproducing the build blocker.
+The dependency-install strategy needs a separate focused correction before
+claiming production staging or restart readiness; fixture success is not proof.
+No push, runtime writes or gateway lifecycle actions were performed.

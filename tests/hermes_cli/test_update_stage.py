@@ -106,6 +106,59 @@ def test_published_pin_stage_and_activation_keep_active_untouched(install, monke
 
 
 @pytest.mark.windows_only
+def test_activation_from_executing_candidate_interpreter(install):
+    """Exercise actual Windows relocation with the helper's staged executable.
+
+    The tiny fixture borrows development libraries to import the production helper;
+    no filesystem, owner, holder, probe or process-lifecycle check is mocked.
+    Only gateway launch/readiness/status attestation are intercepted.
+    """
+    active, _, old_sha, sha = install
+    data = staging.stage(active, sha)
+    candidate = Path(data["candidate"])
+    source = Path(staging.__file__).resolve().parent.parent
+    libraries = Path(sys.prefix) / "Lib" / "site-packages"
+    script = f'''
+import json, subprocess, sys
+from pathlib import Path
+from argparse import Namespace
+sys.path[:0] = [{str(source)!r}, {str(libraries)!r}]
+assert Path(sys.prefix) == Path({str(candidate / 'venv')!r})
+assert Path(sys.executable) == Path({str(staging.venv_python_path(candidate / 'venv'))!r})
+from hermes_cli import update_stage as staging
+from hermes_cli import gateway_windows
+from gateway import status
+real_run = subprocess.run
+launches = []
+def run(cmd, **kwargs):
+    if 'gateway' in cmd and 'start' in cmd:
+        launches.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+    return real_run(cmd, **kwargs)
+subprocess.run = run
+gateway_windows._wait_for_gateway_ready = lambda **kwargs: True
+status.read_runtime_status = lambda: {{'code_sha': {sha!r}}}
+staging.run_stage_command(Namespace(stage=None, activate_stage={data['token']!r}), Path({str(active)!r}))
+assert len(launches) == 1
+print(json.dumps({{'executing_python': sys.executable, 'promoted_sha': staging._git(Path({str(active)!r}), 'rev-parse', 'HEAD')}}))
+'''
+    env = staging._candidate_env(candidate)
+    env["HERMES_HOME"] = str(staging.get_hermes_home())
+    result = subprocess.run([str(staging.venv_python_path(candidate / "venv")), "-c", script],
+                            cwd=active.parent, env=env, text=True, capture_output=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    evidence = json.loads(result.stdout.strip().splitlines()[-1])
+    assert evidence["promoted_sha"] == sha
+    assert evidence["executing_python"] == str(staging.venv_python_path(candidate / "venv"))
+    assert not candidate.exists()
+    assert not staging.pending_path(active).exists()
+    previous = active.parent / f".{active.name}.previous-{data['token']}"
+    assert git(previous, "rev-parse", "HEAD") == old_sha
+    receipt = json.loads((staging.get_hermes_home() / "logs/update_receipts/latest.json").read_text())
+    assert receipt["outcome"] == "success"
+
+
+@pytest.mark.windows_only
 def test_failures_never_change_active_and_swap_failure_restores_it(install, monkeypatch):
     active, origin, old_sha, sha = install
     real_prepare = staging._prepare_environment
