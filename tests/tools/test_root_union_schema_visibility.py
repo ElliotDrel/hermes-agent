@@ -286,6 +286,143 @@ def test_ambiguous_union_preserves_agreed_sibling_reversals(monkeypatch, key, re
     assert schema == snapshot
 
 
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_nested_enclosing_property_ownership_reaches_dispatch(monkeypatch, key, reverse_order):
+    from jsonschema import Draft202012Validator
+
+    branches = [{"properties": {name: {"type": kind}}}
+                for name, kind in [("a b", "string"), ("a@b", "integer")]]
+    if reverse_order:
+        branches.reverse()
+    schema = {"properties": {"payload": {"type": "object",
+              "properties": {"a_b": {"type": "integer"}}, "required": ["a_b"], key: branches}}}
+    args = {"payload": {"a_b": 7}}
+    received = _dispatch_probe(monkeypatch, schema, args)
+    assert received == args
+    # Both optional branches accept the original anyOf example; oneOf remains
+    # intentionally invalid, but dispatch must still preserve enclosing ownership.
+    assert Draft202012Validator(schema).is_valid(received) == (key == "anyOf")
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_projected_unanimous_boolean_type_reaches_dispatch(monkeypatch, key, reverse_order):
+    from jsonschema import Draft202012Validator
+
+    choices = [{"type": "boolean", "description": "Confirm now", "const": True},
+               {"type": "boolean", "description": "Confirm draft", "enum": [True, False]}]
+    if reverse_order:
+        choices.reverse()
+    # Discriminator keeps the original oneOf valid even when both field choices accept true.
+    schema = {key: [{"properties": {"confirm flag": choice, "mode": {"const": mode}},
+                    "required": ["confirm flag", "mode"]}
+                   for choice, mode in zip(choices, ["now", "draft"])]}
+    received = _dispatch_probe(monkeypatch, schema, {"confirm_flag": "true", "mode": "now"})
+    assert received == {"confirm flag": True, "mode": "now"}
+    Draft202012Validator(schema).validate(received)
+    projected = _sanitize(schema)["properties"]["confirm_flag"]
+    assert projected == {"type": "boolean", "anyOf": choices}
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("reverse_order", [False, True])
+@pytest.mark.parametrize("owner", ["a_b", "a b", "a@b"])
+@pytest.mark.parametrize("shape", ["object", "array", "projected"])
+def test_enclosing_ownership_keeps_branch_only_maps_and_children(monkeypatch, key, reverse_order, owner, shape):
+    branches = [{"properties": {name: {"type": kind}, "fixed key": {"type": "string"}},
+                 "required": [name], "additionalProperties": False}
+                for name, kind in [("a b", "string"), ("a@b", "integer")]]
+    if reverse_order:
+        branches.reverse()
+    payload_schema = {"properties": {owner: {"properties": {"child key": {"type": "string"}}}},
+                      "required": [owner], key: branches}
+    schema = {"properties": {"payload": payload_schema}}
+    # The enclosing spelling owns a_b; its own nested schema, not a branch,
+    # owns the child's map. Closed/required branches must not veto fixed_key.
+    payload = {"a_b": {"child_key": "child"}, "fixed_key": "fixed"}
+    expected = {owner: {"child key": "child"}, "fixed key": "fixed"}
+    args, want = {"payload": payload}, {"payload": expected}
+    if shape == "array":
+        schema["properties"]["payload"] = {"type": "array", "items": payload_schema}
+        args, want = {"payload": [payload]}, {"payload": [expected]}
+    elif shape == "projected":
+        schema = {"anyOf": [schema, {"properties": {"other": {"type": "string"}}}]}
+    snapshot = copy.deepcopy(schema)
+    assert _dispatch_probe(monkeypatch, schema, args) == want
+    assert schema == snapshot
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_branch_target_collision_cannot_overwrite_enclosing_or_supplied_keys(monkeypatch, key, reverse_order):
+    branches = [{"properties": {"a b": {"type": "string"}, "a_b": {"type": "integer"},
+                                "fixed key": {"type": "string", "description": description}}}
+                for description in ["Left", "Right"]]
+    if reverse_order:
+        branches.reverse()
+    schema = {"properties": {"payload": {"properties": {"a b": {"type": "integer"}}, key: branches}}}
+    # Branch a_b_2 wants to become a b, already owned by the enclosing map.
+    args = {"payload": {"a_b": 7, "a_b_2": "branch", "fixed_key": "fixed"}}
+    assert _dispatch_probe(monkeypatch, schema, args) == {
+        "payload": {"a b": 7, "a_b_2": "branch", "fixed key": "fixed"}}
+    # An explicitly supplied wire key remains protected too.
+    schema["properties"]["payload"].pop("properties")
+    args["payload"]["a b"] = "wire"
+    assert _dispatch_probe(monkeypatch, schema, args) == {
+        "payload": {"a_b": 7, "a_b_2": "branch", "a b": "wire", "fixed key": "fixed"}}
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("owner", ["kind", "kind tag"])
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_shared_enclosing_discriminator_still_selects_branch_maps(monkeypatch, key, owner, reverse_order):
+    branches = [{"properties": {owner: {"const": tag}, name: {"type": "integer"}},
+                 "required": [owner], "additionalProperties": False}
+                for tag, name in [("left", "a b"), ("right", "a@b")]]
+    if reverse_order:
+        branches.reverse()
+    schema = {"properties": {"payload": {"properties": {owner: {"type": "string"}}, key: branches}}}
+    model_owner = owner.replace(" ", "_")
+    assert _dispatch_probe(monkeypatch, schema, {"payload": {model_owner: "right", "a_b": 7}}) == {
+        "payload": {owner: "right", "a@b": 7}}
+
+
+@pytest.mark.parametrize("key", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("kind,value,expected", [
+    ("integer", "7", 7), ("number", "7.5", 7.5), ("array", "[1]", [1]),
+    ("object", '{"x": 1}', {"x": 1}), ("string", "true", "true"), ("null", "null", None),
+])
+def test_projected_unanimous_explicit_types_keep_constraints(monkeypatch, key, kind, value, expected):
+    choices = [{"type": kind, "description": "Left"}, {"type": kind, "description": "Right"}]
+    schema = {key: [{"properties": {"value": choice}} for choice in choices]}
+    snapshot = copy.deepcopy(schema)
+    out = _sanitize(schema)["properties"]["value"]
+    assert out["type"] == kind
+    assert len(out["anyOf"]) == 2
+    assert [c["description"] for c in out["anyOf"]] == ["Left", "Right"]
+    assert _dispatch_probe(monkeypatch, schema, {"value": value}) == {"value": expected}
+    assert schema == snapshot
+
+
+@pytest.mark.parametrize("other", [True, False, {}, {"$ref": "#/$defs/Flag"},
+                                    {"enum": [True]}, {"type": ["boolean", "null"]},
+                                    {"type": "string"}, "boolean"])
+def test_projected_missing_or_mixed_types_do_not_guess(monkeypatch, other):
+    choices = [{"type": "boolean", "description": "Explicit"}, other]
+    schema = {"anyOf": [{"properties": {"value": choice}} for choice in choices]}
+    assert "type" not in _sanitize(schema)["properties"]["value"]
+    assert _dispatch_probe(monkeypatch, schema, {"value": "true"}) == {"value": "true"}
+
+
+def test_unanimous_projected_type_cannot_weaken_root_constraint(monkeypatch):
+    schema = {"properties": {"value": {"type": "string", "minLength": 3}}, "anyOf": [
+        {"properties": {"value": {"type": "boolean", "description": description}}}
+        for description in ["Left", "Right"]]}
+    assert _sanitize(schema)["properties"]["value"] == schema["properties"]["value"]
+    assert _dispatch_probe(monkeypatch, schema, {"value": "true"}) == {"value": "true"}
+
+
 def test_root_constraints_win_and_nested_unions_are_unchanged():
     nested = {"oneOf": [{"type": "string"}, {"type": "integer"}]}
     schema = {"type": "object", "properties": {"value": {"type": "string", "minLength": 3}},

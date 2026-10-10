@@ -123,24 +123,47 @@ def _unrename_object_entries(schema: Any, args: dict) -> dict:
     entries = {key: (key, value) for key, value in args.items()}
     if not isinstance(schema, dict):
         return entries
+    props = schema.get("properties")
+    props = props if isinstance(props, dict) else {}
+    reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
+    exposed_owned = set(props) | set(reverse)
     for key in _UNION_KEYS:
         variants = schema.get(key)
         if not isinstance(variants, list):
             continue
         current = dict(entries.values())
-        candidates = [_unrename_object_entries(branch, current) for branch in variants
-                      if not _branch_contradicts(_sanitize_node(branch, "<unrename>"), current)]
+        candidates = []
+        for branch in variants:
+            evidence = _sanitize_node(branch, "<unrename>")
+            # Ignore enclosing-only keys and colliding branch spellings in
+            # branch evidence. Shared wire names still supply discriminator evidence.
+            branch_args = current
+            if isinstance(evidence, dict) and exposed_owned:
+                evidence = dict(evidence)
+                branch_props = evidence.get("properties")
+                branch_props = branch_props if isinstance(branch_props, dict) else {}
+                raw_props = branch.get("properties", {}) if isinstance(branch, dict) else {}
+                raw_props = raw_props if isinstance(raw_props, dict) else {}
+                branch_reverse = {v: k for k, v in _rename_property_keys(raw_props, "<unrename>").items()}
+                ignored = {k for k in exposed_owned if k not in branch_props or
+                           branch_reverse.get(k, k) != reverse.get(k, k)}
+                evidence["properties"] = {k: v for k, v in branch_props.items() if k not in ignored}
+                if isinstance(evidence.get("required"), list):
+                    evidence["required"] = [k for k in evidence["required"] if k not in ignored]
+                branch_args = {k: v for k, v in current.items() if k not in ignored}
+            if not _branch_contradicts(evidence, branch_args):
+                candidates.append(_unrename_object_entries(branch, current))
         if candidates:
             for supplied, (name, value) in list(entries.items()):
+                if supplied in exposed_owned:
+                    continue
                 agreed = candidates[0][name]
                 name_agrees = all(candidate[name][0] == agreed[0] for candidate in candidates[1:])
-                if name_agrees:
+                taken = {n for s, (n, _) in entries.items() if s != supplied}
+                if name_agrees and (agreed[0] == name or
+                                    agreed[0] not in taken | exposed_owned):
                     value_agrees = all(candidate[name][1] == agreed[1] for candidate in candidates[1:])
                     entries[supplied] = (agreed[0], agreed[1] if value_agrees else value)
-    props = schema.get("properties")
-    if not isinstance(props, dict):
-        return entries
-    reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
     taken = {name for name, value in entries.values()}
     for supplied, (key, value) in list(entries.items()):
         orig = reverse.get(key, key)
@@ -229,7 +252,16 @@ def _preserve_root_union_properties(params: dict) -> dict:
         for name, choices in alternatives.items():
             # Root properties constrain every branch and must not be weakened.
             if name not in properties:
-                properties[name] = choices[0] if len(choices) == 1 else {"anyOf": choices}
+                projected: Any = choices[0] if len(choices) == 1 else {"anyOf": choices}
+                if len(choices) > 1:
+                    kind = choices[0].get("type") if isinstance(choices[0], dict) else None
+                    if isinstance(kind, str) and kind in _BARE_TYPE_NAMES and all(
+                            isinstance(choice, dict) and choice.get("type") == kind
+                            for choice in choices):
+                        # Keep every alternative's constraints; only the explicit
+                        # unanimous type is also safe for existing scalar coercion.
+                        projected["type"] = kind
+                properties[name] = projected
         # Keep deterministic property order; a branch-only requirement is not global.
         required.extend(name for name in properties
                         if name in (common_required or ()) and name not in required)

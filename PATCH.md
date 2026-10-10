@@ -310,6 +310,36 @@ Only the same two established Windows baseline tests excluded; no new exclusions
 Python compile and scoped diff checks pass. Parent independently reran all 365
 cases successfully before publication; no runtime changes or installation.
 
+Latest two findings: [4239378691](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239378691)
+and [4239378692](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239378692)
+reproduced on unchanged 440e2934abdef33671e92bcede2036e64d7258d5 before source edits:
+eight actual-dispatch regressions failed (both union kinds and branch orders).
+An enclosing required a_b disappeared into a@b; projected same-type boolean
+alternatives left "true" as a string. Enclosing properties now own their raw and
+exposed names before branch reversal; branch evidence ignores enclosing-only keys
+and colliding spellings, while shared wire-name discriminator evidence remains.
+Branch-only reversals cannot overwrite enclosing or supplied keys. Conflicting
+projected schemas retain every alternative and additionally expose a type only
+when all choices declare the same explicit native single type. Missing, opaque,
+bare-string, type-array and mixed choices do not infer a type; root constraints win.
+No new resolver, ref resolution, pattern/range validation or arg-coercion path.
+
+Added 77 actual-dispatch cases covering both findings, renamed/native enclosing
+owners, child maps, closed/required branches, arrays, root projection, shared
+const discriminators, target/supplied collisions, native scalar/container/null
+unanimous types and missing/mixed-type controls. Original schema validation checks
+the valid anyOf ownership example and boolean repairs; optional overlapping oneOf
+ownership controls intentionally remain server-invalid rather than be rewritten.
+An initial GREEN run exposed two invalid oneOf fixture-validation assertions;
+the fixture now explicitly asserts that original invalidity, not server success.
+Final isolated canonical acceptance: the same eight named suites, 442 passed,
+0 failed, exit 0 (144.0 seconds), including 185 root-union and 19 coercion cases.
+HERMES_TEST_FILE_RETRIES=0; worktree-local HERMES_HOME and TMPDIR/TEMP/TMP;
+--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/ownership-type-acceptance
+--tb=short. Only the same two established Windows baseline tests excluded;
+no new exclusions. Python compile and scoped whitespace checks pass. Parent
+independently reran all 442 cases successfully; no runtime calls or installation.
+
 Worktree-local .venv, test home and scratch only; no runtime dependency/profile
 writes, model/server calls, installation or gateway restart. Root union references
 are not resolved or relocated, branch-local definitions are not hoisted, and allOf
@@ -318,7 +348,8 @@ schema validation (no refs, patterns, ranges, or branch correlations). Ambiguous
 renames remain unchanged and can fail server validation rather than guess. Branch
 selection uses native values, not speculative scalar coercion; pre-existing JSON
 container parsing occurs after reversal and is not a generalized union decoder.
-Conflicting projected field schemas without one explicit type remain uncoerced.
+Conflicting projected field schemas without a unanimous explicit single native
+type remain uncoerced.
 
 Upstream candidate correctness fix; retain until stable preserves root-union fields.
 Rollback: revert this intent-shaped commit. Published source is not installed or
