@@ -60,7 +60,8 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
     import model_tools
     from tools import arg_coercion
 
-    owned = {"type": "object", "properties": {"a_b": {"type": "integer"}},
+    owned = {"type": "object", "properties": {"a_b": {"type": "integer"},
+             "mixed child": {"anyOf": [{"type": "object"}, {"type": "string"}]}},
              "required": ["a_b"], "anyOf": [
                  {"properties": {"a b": {"type": "string"}, "fixed key": {"type": "string"}}},
                  {"properties": {"a@b": {"type": "integer"}, "fixed key": {"type": "string"}}},
@@ -83,8 +84,14 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
             "required": ["bad key"], "additionalProperties": False}},
         {"type": "string"},
     ]}
-    common = {"owned": owned, "selected": selected, "ambiguous": ambiguous, "payload": payload}
-    raw = {"oneOf": [
+    common = {"owned": owned, "selected": selected, "ambiguous": ambiguous, "payload": payload,
+              "container payload": {"oneOf": [payload["anyOf"][0], {"type": "object",
+                  "properties": {"bad key": {"type": "string"}},
+                  "required": ["bad key"], "additionalProperties": False}]},
+              "mixed object": {"oneOf": [{"type": "string"}, owned]},
+              "mixed types": {"type": ["object", "string"]},
+              "opaque payload": {"anyOf": [payload["anyOf"][0], {"$ref": "#/$defs/opaque"}]}}
+    raw = {"$defs": {"opaque": {"type": "string"}}, "oneOf": [
         {"type": "object", "properties": {**common, "mode": {"const": "now"},
             "confirm flag": "boolean",
             "nullable flag": {"type": ["boolean", "null"]}}, "required": ["mode", "confirm flag"]},
@@ -122,14 +129,16 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
     Draft202012Validator.check_schema(parameters)
 
     args = {"mode": "now", "confirm_flag": "true", "nullable_flag": "true",
-            "owned": {"a_b": 7, "fixed_key": "owned sibling"}, "selected": {"mode": "right", "a_b": "chosen"},
+            "owned": {"a_b": 7, "fixed_key": "owned sibling", "mixed_child": '{"x":1}'},
+            "selected": {"mode": "right", "a_b": "chosen"},
             "payload": [{"bad_key": "array item"}]}
     result = model_tools.handle_function_call(name, copy.deepcopy(args),
         skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
         skip_tool_execution_middleware=True)
     assert json.loads(result) == {}
     wire = {"mode": "now", "confirm flag": True, "nullable flag": True,
-            "owned": {"a_b": 7, "fixed key": "owned sibling"}, "selected": {"mode": "right", "a@b": "chosen"},
+            "owned": {"a_b": 7, "fixed key": "owned sibling", "mixed child": '{"x":1}'},
+            "selected": {"mode": "right", "a@b": "chosen"},
             "payload": [{"bad key": "array item"}]}
     assert received == [wire]
     # Bare-string shorthand is not JSON Schema; spell that fragment out solely
@@ -152,18 +161,34 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
                       "ambiguous": {"a_b": "uncertain", "fixed key": "agreed sibling"}}
     assert received == [wire, ambiguous_wire]
     assert not server.is_valid(ambiguous_wire)
-    # Decode model-spelled containers before their nested keys are reversed.
+    # Mixed/opaque contracts accept JSON-looking strings without inferring intent.
+    # Container-only contracts decode model spelling before the single reversal.
     encoded_args = copy.deepcopy(args)
     encoded_args.pop("ambiguous")
     encoded_args["nullable_flag"] = "true"
     encoded_args["selected"] = json.dumps({"mode": "right", "a_b": "chosen"})
     encoded_args["owned"] = json.dumps(args["owned"])
     encoded_args["payload"] = json.dumps(args["payload"])
+    encoded_args["container_payload"] = json.dumps(args["payload"])
+    encoded_args["mixed_object"] = json.dumps(args["owned"])
+    encoded_args["mixed_types"] = '{"x":1}'
+    encoded_args["opaque_payload"] = json.dumps(args["payload"])
+    encoded_wire = {**wire, "payload": encoded_args["payload"],
+                    "container payload": wire["payload"], "mixed object": encoded_args["mixed_object"],
+                    "mixed types": encoded_args["mixed_types"], "opaque payload": encoded_args["opaque_payload"]}
     result = model_tools.handle_function_call(name, encoded_args,
         skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
         skip_tool_execution_middleware=True)
     assert json.loads(result) == {}
-    assert received == [wire, ambiguous_wire, wire]
+    assert received == [wire, ambiguous_wire, encoded_wire]
+    server.validate(received[-1])
+    object_args = copy.deepcopy(encoded_args)
+    object_args["container_payload"] = json.dumps({"bad_key": "object item"})
+    result = model_tools.handle_function_call(name, object_args,
+        skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True)
+    assert json.loads(result) == {}
+    assert received[-1] == {**encoded_wire, "container payload": {"bad key": "object item"}}
     server.validate(received[-1])
     assert raw == snapshot
     assert registry.get_schema(name) == registered_snapshot

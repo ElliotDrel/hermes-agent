@@ -291,9 +291,12 @@ For native lists, select compatible inline union arms before item descent. Their
 item schemas use the existing per-key agreement logic; enclosing items keep
 ownership, opaque viable arms block guesses, and supplied wire keys never get
 overwritten. No general resolver or new validation layer is introduced.
-Schema-guided JSON-container decoding now precedes the single key-reversal pass,
-using projected model-spelled properties. Existing scalar coercion remains after
-reversal; restored wire names are not fed through a second reverse map.
+Unambiguous JSON-container decoding precedes the single key-reversal pass,
+using projected model-spelled properties. String-compatible and opaque arms retain
+the original string. The later raw type-array pass cannot override that decision;
+recursive dispatch normalization uses the same guard. Existing standalone walker
+and unrelated scalar coercion remain native; restored wire names are not fed
+through a second reverse map.
 
 Authorization: Elliot *** 1558586766108135495, "Your plan sounds good. Execute
 on it.", approved the specific raw MCP schema -> sanitizer -> model definitions ->
@@ -314,8 +317,10 @@ type-array/dict alternatives, enclosing wire ownership, nullable-const nested
 rename evidence, and ambiguous names left unguessed while agreed siblings reverse.
 One array-or-string payload contract now verifies sanitized required item fields
 reverse through actual dispatch and validate against the original server schema.
-The same invariant dispatches JSON-encoded object and array payloads back to the
-same validated wire arguments, without adding tests, parametrization or matrices.
+The same invariant decodes container-only JSON-encoded objects and arrays back to
+validated wire arguments, while mixed array/string, object/string, type-array,
+opaque-ref and nested mixed fields retain their accepted strings. No tests,
+parametrization or matrices were added.
 It bypasses MCP pre-normalization deliberately so nullable-discriminator mismatches
 remain observable. Server validation spells out the nonstandard bare-string
 boolean solely in its validation copy; the registered schema stays untouched.
@@ -362,12 +367,30 @@ syntax and scoped whitespace checks pass. No install/live/lifecycle operations.
 Latest finding [4239517814](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239517814)
 was also fetched and reproduced before its repair: with the array-arm fix present,
 encoded objects retained nested exposed keys and encoded array-or-string payloads
-remained strings (1 passed, 1 failed, exit 1). Decoding before reversal repairs
-the operation ordering without double-renaming. Final combined acceptance on the
+remained strings (1 passed, 1 failed, exit 1). The mixed array/string decoding
+expectation is superseded below: its string arm legitimately accepts that input.
+Decoding unambiguous containers before reversal repairs the operation ordering
+without double-renaming. That combined acceptance on the
 same eight files: **259 passed, 0 failed, exit 0**, 70.2s; same two exclusions and
 isolation, retries off, `--tb=short`, and
 `--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/container-order-acceptance`.
 Exactly the original two invariant functions remain.
+
+Review finding [4239544570](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239544570)
+was fetched and reproduced on `9eae5c59743681265d7b9db1f00845f5fbd562a5` before
+production edits: actual dispatch decoded valid JSON-looking mixed/opaque strings
+into containers (1 passed, 1 failed, exit 1). The extended representative invariant
+now preserves those strings, including nested fields through the later coercion
+walk, while native union lists still reverse and container-only encoded object/array
+arms decode before reversal and validate against the original schema. The raw
+object/string type-array guard also prevents later scalar decoding. Exactly two
+invariant functions remain; no general validator or ref resolution was introduced.
+Current eight-suite isolated canonical acceptance: **259 passed, 0 failed, exit 0**,
+76.0s, same two exclusions, retries off, local `.venv` and test home/TMPDIR/TEMP/TMP,
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/string-union-acceptance-final`.
+Python syntax, scoped whitespace and AST checks passed (two tests, no decorators).
+Parent independently reran all 259 acceptance tests, syntax and whitespace checks;
+no live, installation or lifecycle operations were performed.
 
 Limits: no ref resolution/relocation, branch-local definition hoisting, allOf field
 extraction or general schema validator. Rename evidence does not evaluate patterns,
@@ -379,7 +402,9 @@ whole-array constraints/correlations, resolve refs or add tuple/prefixItems supp
 An existing item combinator is retained rather than overwritten by an arm combinator.
 Container decoding reuses the existing schema walker; no combinator resolver for
 deeper JSON-encoded elements/subfields is added. JSON-looking scalar strings are
-only decoded where the model schema permits the corresponding container kind.
+only decoded in dispatch where the model schema permits the corresponding container
+kind and explicit type evidence rules out a string interpretation. Opaque arms
+conservatively block decoding; full constraint satisfiability is not evaluated.
 Nullable-single-survivor handling and definition-cache policy remain native.
 
 Integration preserves live intent 027; this schema intent is 029; live staging retains 028.
