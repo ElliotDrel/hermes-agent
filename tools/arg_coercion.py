@@ -23,17 +23,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return args
 
     schema = registry.get_schema(tool_name)
-    properties = ((schema or {}).get("parameters") or {}).get("properties")
-    if not properties:
-        return args
-
-    # The model saw the SANITIZED schema (provider-illegal property keys were
-    # renamed); map those keys back to the registry's wire names first.
+    parameters = (schema or {}).get("parameters") or {}
+    # Map projected root-union keys even when the original has no root properties.
     try:
         from tools.schema_sanitizer import unrename_tool_args
-        args = unrename_tool_args(schema.get("parameters"), args)
+        args = unrename_tool_args(parameters, args)
     except Exception:  # pragma: no cover — never break dispatch
         pass
+    properties = parameters.get("properties")
+    if not properties:
+        return args
 
     for key, value in list(args.items()):
         prop_schema = properties.get(key)

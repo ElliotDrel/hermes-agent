@@ -514,3 +514,48 @@ The user has NOT consented to this write." No alternate write path was used.
 Its stale completion/new-turn and follow-up-only wording remains unmodified;
 026 above records the corrected active-boundary/idle-wake contract. Roll back this
 follow-up commit to restore the initial bridge, or both commits to retire 026.
+
+## HERMES-FORK-027: Preserve root-union tool fields
+
+Before removing unsupported root `anyOf`/`oneOf`, expose inline branch properties
+in the model-facing argument object, retain identical fields once, and represent
+conflicting field schemas with a nested `anyOf`. Existing root properties remain
+constraints, and only requirements shared by every branch become global.
+
+Touchpoints: tools/schema_sanitizer.py and tools/arg_coercion.py; reverse renamed
+projected keys before the no-root-properties return. MCP registry/server validation
+schemas are unchanged. Independent review exposed branch-local boolean-required
+flags becoming global and projected key names not returning to wire names; parent
+reproduced both with failing regressions and fixed them within this intent. Nested schema behavior, nullable-single-survivor handling,
+root-combinator rejection compatibility, and definition-cache policy remain native.
+
+Authorization: Elliot message 1558586766108135495, "Your plan sounds good. Execute
+on it.", approved the specific raw MCP schema -> sanitizer -> model definitions ->
+tool_describe loss assessment and scoped source fix instead of a WHOOP workaround.
+Protected impact: model tool-schema bytes and cached definitions change; this
+permissive projection drops branch correlations, so handlers still enforce the
+original alternatives and deterministic tests cannot prove every model behavior.
+
+Verification: copied only WHOOP whoop_feedback inputSchema into a schema-only
+fixture; real MCP conversion, registry definitions, cached/uncached loading and
+actual tool_describe bridge preserve title, description, call_id, confirm and draft_id.
+The same two regressions fail on unchanged eaca181c20 with properties: {}; adjacent
+cases cover shared/conflicting fields, required intersection, empty/null/opaque
+branches, property refs/definitions, root constraints and nested schemas.
+
+Canonical parent acceptance: scripts/run_tests.sh -j 1 with eight named files
+(test_root_union_schema_visibility, test_schema_sanitizer, test_schema_boolean_required,
+test_model_tools, test_mcp_tool, test_tool_search, test_registry and test_tool_arg_coercion),
+277 passed, exit 0. Syntax and scoped whitespace checks passed.
+Two unrelated Windows failures reproduced in an unchanged git-archive baseline
+and were excluded: test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime
+and test_windows_location_vars_passed_without_secrets; neither was modified.
+
+Worktree-local .venv, test home and scratch only; no runtime dependency/profile
+writes, model/server calls, installation or gateway restart. Root union references
+are not resolved or relocated, branch-local definitions are not hoisted, and allOf
+field extraction remains out of scope.
+
+Upstream candidate correctness fix; retain until stable preserves root-union fields.
+Rollback: revert this intent-shaped commit. Published source is not installed or
+running behavior; native installation remains Elliot's action.

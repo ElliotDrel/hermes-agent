@@ -61,6 +61,8 @@ def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
 def unrename_tool_args(params_schema: Any, args: Any) -> Any:
     """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
     ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through."""
+    if isinstance(params_schema, dict):
+        params_schema = _preserve_root_union_properties(params_schema)
     props = params_schema.get("properties") if isinstance(params_schema, dict) else None
     if not isinstance(props, dict) or not isinstance(args, dict):
         return args
@@ -93,7 +95,7 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"] = _empty_object()
         return out
     name = fn.get("name", "<tool>")
-    top = _sanitize_node(params, path=name)
+    top = _sanitize_node(_preserve_root_union_properties(params), path=name)
     top = top if isinstance(top, dict) else {}  # guarantee an object with properties on top
     top["type"] = "object"
     if not isinstance(top.get("properties"), dict):
@@ -123,10 +125,52 @@ def _strip_ref_siblings(node: Any) -> Any:
 _TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
 
 
+def _preserve_root_union_properties(params: dict) -> dict:
+    """Expose inline root-union fields before strict-backend combinator removal.
+    This is a permissive model hint, not a replacement for server-side validation."""
+    out = dict(params)
+    root_props = params.get("properties")
+    properties = dict(root_props) if isinstance(root_props, dict) else {}
+    root_required = params.get("required")
+    required = list(root_required) if isinstance(root_required, list) else []
+    for key in _UNION_KEYS:
+        variants = params.get(key)
+        if not isinstance(variants, list) or not variants:
+            continue
+        alternatives: dict[str, list] = {}
+        common_required: set[str] | None = None
+        for branch in variants:
+            branch_props = branch.get("properties", {}) if isinstance(branch, dict) else {}
+            branch_props = branch_props if isinstance(branch_props, dict) else {}
+            branch_required = branch.get("required", []) if isinstance(branch, dict) else []
+            names = {name for name in branch_required if isinstance(name, str)} \
+                if isinstance(branch_required, list) else set()
+            names.update(name for name, schema in branch_props.items()
+                         if isinstance(schema, dict) and schema.get("required") is True)
+            common_required = names if common_required is None else common_required & names
+            for name, schema in branch_props.items():
+                # Branch-local legacy flags must not become unconditional root requirements.
+                if isinstance(schema, dict) and isinstance(schema.get("required"), bool):
+                    schema = {k: v for k, v in schema.items() if k != "required"}
+                choices = alternatives.setdefault(name, [])
+                if schema not in choices:
+                    choices.append(schema)
+        for name, choices in alternatives.items():
+            # Root properties constrain every branch and must not be weakened.
+            if name not in properties:
+                properties[name] = choices[0] if len(choices) == 1 else {"anyOf": choices}
+        # Keep deterministic property order; a branch-only requirement is not global.
+        required.extend(name for name in properties
+                        if name in (common_required or ()) and name not in required)
+    if properties:
+        out["properties"] = properties
+        out["required"] = required
+    return out
+
+
 def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
-    """Drop combinators from the TOP level only (Codex rejects them there). They are usually
-    conditional-required hints, so validity is unchanged (handlers re-validate); nested ones
-    stay."""
+    """Drop root combinators after preserving inline union fields for strict backends.
+    Nested combinators stay intact; handlers still validate the original constraints."""
     if not isinstance(params, dict):
         return params
     out = dict(params)
