@@ -13,13 +13,12 @@ while waiting. Native timeout, forced-stop fallback, install and restart remain 
 
 ## HERMES-FORK-001: Rebase preparation with native installation
 
-Discord `/update` enters the profile's hermes-fork-update skill as the explicit user
-turn. Ordinary admission, authorization, session history and cached system inputs
-remain intact. Busy sessions reject the command. The CLI `hermes update` stays native.
-The skill prepares a separate clone, rebases live onto official stable, resolves
-conflicts, audits this file and tests before publishing main/live. A small handoff
-calls the existing native detached updater with --branch live --yes. Native Hermes
-owns dependencies, migrations, drain, install, restart and its receipt.
+Discord `/update` enters the profile's hermes-fork-update skill as an explicit
+prepare-only deploy-existing-live user turn. `/update stable` selects stable rebase
+preparation. Neither grants install/drain/restart permission. Ordinary admission,
+authorization, session history and cached system inputs remain intact; busy
+sessions reject. CLI `hermes update` remains backward-compatible. Native pinned
+staging and user activation (028) replace the old detached-install handoff.
 
 The update skill reviews keep/adapt/retire decisions in the current run's thread.
 Established preferences remain settled; proposed behavior changes wait for Elliot's
@@ -28,9 +27,8 @@ has not changed. Preparation accepts that clean ancestor state, while unpublishe
 or divergent installed commits require review. Installation is skipped only when
 installed and prepared revisions match; running revision is verified separately.
 
-The native watcher is armed for this request before preparation. A run ID binds the
-handoff to that marker, and a pending run rejects a concurrent request. No custom
-installer, dependency repair, health daemon or subprocess supervisor remains.
+Preparation reports through its invoking agent turn without arming the old
+install-pending marker/watcher. Ordinary native updates retain their reporting.
 
 ## HERMES-FORK-016: Per-run Discord update reporting
 
@@ -224,7 +222,52 @@ Persist/restore retain that digest; legacy last-row-only anchors fail closed unt
 the next real provider reading. No provider payload, cache key, schema, role/order,
 clean display storage, transcript migration or old-history rewrite is introduced.
 
-## HERMES-FORK-028: Preserve root-union tool fields
+## HERMES-FORK-028: Inert pinned staging and explicit user activation
+
+`hermes update --stage SHA --branch live` prepares exact published source and a
+separate relocatable environment without changing active HEAD/refs/dependencies,
+profile configuration or gateway lifecycle. Reuse native managed uv, locked sync,
+profile update lock, receipts, holder classification and rename retry. Install
+locked dependencies with `--no-install-project --no-editable`; Hermes forbids
+non-Nix wheels. The existing relative checkout binding and native module launcher
+survive whole-tree promotion. Restore declared enabled plugin/lazy/tool dependencies
+in the candidate only; conflicts refuse preparation.
+
+Explicit user `/restart` captures the validated pin and uses native drain/Windows
+watcher. Activation refuses changed/dirty revisions or live holders, retains the
+previous installation, rolls back promotion/import failures and starts the fresh
+native gateway with readiness/exact code_sha verification. Never fetch moving live
+at activation. Prepare-only `/update` does not arm install/watch markers or grant
+restart permission; `/update stable` alone selects stable rebase preparation.
+
+Authorization: specific *** routing override (original staging ID 027,
+renumbered 028 to preserve the concurrently published compaction intent):
+https://discord.com/channels/1517646536505557132/1558297938780885114/1558582253687406788.
+Protected scope is explicit command rendering/admission, not ordinary history,
+system inputs, schemas or provider policy. Cached/uncached provider-wire/resume
+regressions remain; deterministic tests cannot prove every model behavior.
+
+Touchpoints: update_stage.py, native update parser/main/windows holder scan,
+fork_update_entry.py/commands.py, slash_commands.py/run_shutdown.py and staged
+update/route tests. Documentation: website/docs/user-guide/staged-fork-updates.md.
+169 tests passed across 12 named files on the integrated live target (including
+compaction_recovery_anchors): exit 0, no failures, 108.4s. Clean committed full
+source at 7ab45c7083f9db9d611e37c4f738800733b8b3ae successfully prepared with
+real locked uv, fresh candidate imports and CLI help in an isolated profile.
+Wheel-refusing fixture verifies module launch after relocation and executing-
+candidate activation. Prior aggregate/fixture-only readiness claims are superseded.
+
+Windows standalone single-profile detached owner only; unsupported ownership fails.
+No UI builds, fleets, undeclared dependency preservation, runtime Python replacement
+or state migrations. Keep failed candidates and previous installations. A host crash
+between tree renames still needs retained-tree recovery, not a new journal.
+Old installed 62c55abdee handlers cannot activate the first candidate: reviewed
+module stages against the old root, then Elliot performs native gateway stop and
+candidate-token activation from a terminal outside both trees. Subsequent loaded
+handlers offer `/restart` activation. Staged/published is not installed or running.
+Rollback reverts this intent and retains candidate/previous data; lifecycle is user-owned.
+
+## HERMES-FORK-029: Preserve root-union tool fields
 
 Before removing unsupported root `anyOf`/`oneOf`, project inline branch fields
 into model-facing arguments. Normalize fragments using the existing model pass
@@ -297,10 +340,11 @@ Existing JSON-container parsing still follows reversal. Ambiguous renames may fa
 server validation rather than guess; mixed/opaque projected types stay uncoerced.
 Nullable-single-survivor handling and definition-cache policy remain native.
 
-Integration preserves live intent 027; this independent schema intent remains 028.
+Integration preserves live intent 027; this schema intent is 029; live staging retains 028.
 Upstream candidate correctness fix; retain until stable preserves root-union fields.
 Rollback: revert this intent-shaped change. Parent independently reproduced both
 normalization defects on the previous head, verified the repaired probes, and reran
 all 259 acceptance tests. No runtime/profile writes, installation or gateway restart.
 Published source is not installed/running behavior; native installation remains
 Elliot's action.
+

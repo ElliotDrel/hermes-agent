@@ -1409,9 +1409,17 @@ class GatewayShutdownMixin:
             watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
         watcher_argv = [
             watcher_python, "-c", _WINDOWS_RESTART_WATCHER,
-            str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart",
+            str(current_pid), str(restart_after_s), *hermes_cmd,
+            *([] if "hermes_cli.update_stage" in hermes_cmd else ["gateway", "restart"]),
         ]
-        popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=watcher_env)
+        if "hermes_cli.update_stage" in hermes_cmd:
+            watcher_python = hermes_cmd[0]
+            watcher_argv[0] = watcher_python
+            candidate = Path(hermes_cmd[0]).parent.parent.parent
+            watcher_env["PYTHONPATH"] = str(candidate)
+            watcher_env["VIRTUAL_ENV"] = str(candidate / "venv")
+        popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=watcher_env,
+                            cwd=str(project_root.parent))
         # Break away from the parent CLI's job object or be reaped when the CLI exits; a job without
         # BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB (OSError) — retry once without the bit.
         try:
@@ -1438,6 +1446,12 @@ class GatewayShutdownMixin:
         import shutil
         import subprocess
         hermes_cmd = _resolve_hermes_bin()
+        staged = getattr(self, "_staged_restart", None)
+        if staged:
+            from hermes_constants import venv_python_path
+            hermes_cmd = [str(venv_python_path(Path(staged["candidate"]) / "venv")),
+                          "-m", "hermes_cli.update_stage", "--root", staged["root"],
+                          "--activate-stage", staged["token"]]
         if not hermes_cmd:
             logger.error("Could not locate hermes binary for detached /restart")
             return
@@ -1453,7 +1467,7 @@ class GatewayShutdownMixin:
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
+            f"{cmd}" + ("" if staged else " gateway restart")
         )
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]

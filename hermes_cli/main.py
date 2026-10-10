@@ -2415,6 +2415,9 @@ def _update_preflight_handled(args) -> bool:
 
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
+    if getattr(args, "stage", None) or getattr(args, "activate_stage", None):
+        from hermes_cli.update_stage import run_stage_command
+        return run_stage_command(args, PROJECT_ROOT)
     if _update_preflight_handled(args):
         return
     gateway_mode = getattr(args, "gateway", False)

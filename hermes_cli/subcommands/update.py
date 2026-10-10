@@ -76,13 +76,16 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser.add_argument(
         "--no-gateway-restart", action="store_true", default=False,
         help="Update code and dependencies but skip the final gateway restart. "
-            "Use for cron/automated updates that run inside the gateway process: "
-            "the gateway would otherwise restart its own cgroup and kill the updater. "
-            "Pair with a separate restart step (e.g. a cron that runs 10-15 min later).",
+            "This is NOT inert staging: native Windows update can still drain/stop holders and "
+            "mutates active dependencies. Use --stage SHA for no-live-change preparation.",
     )
     update_parser.add_argument(
         "--post-swap", default=None, metavar="FILE", help=argparse.SUPPRESS,
         # Internal: the pre-pull interpreter re-executes itself here after the code swap so the
         # rest of the update runs on the pulled code (hermes_cli/update_handoff.py).
     )
+    stage_mode = update_parser.add_mutually_exclusive_group()
+    stage_mode.add_argument("--stage", metavar="SHA",
+        help="Prepare exact published SHA and separate dependencies without touching the active gateway (Windows detached install).")
+    stage_mode.add_argument("--activate-stage", metavar="TOKEN", help=argparse.SUPPRESS)
     update_parser.set_defaults(func=cmd_update)
