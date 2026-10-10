@@ -77,24 +77,43 @@ fallback). Update and ordinary auto-threads share `discord.auto_thread_archive_d
 the existing seven-day setting is passed through the normal profile config bridge.
 Tests exercise the real helper, membership, fallback, and equal configured durations.
 
-## HERMES-FORK-005: Durable response-footer metadata
+## HERMES-FORK-005: Discord visual-only response metadata
 
-Restore provider context usage and the lifetime compaction count to the existing
-output hook consumed by the workspace model-context-suffix plugin. Persist counts
-through agent rebuilds, gateway reloads, compression rotation and Codex compaction.
-Native early output transformation remains unchanged: the footer is saved with the
-response and replays in subsequent history, as explicitly approved by Elliot.
+Supersedes the formerly approved persisted-footer behavior. Elliot explicitly
+approved "and also fix the Discord footer now" after the pre-persistence/replay
+assessment: use a separate delivery copy, no old-history cleanup or runtime edits.
+Native transform_llm_output retains its persistence contract; the workspace footer
+no longer registers there. Durable compaction counts remain unchanged.
 
-Restoration authorization: Elliot approved 005/007 after reviewing this data flow
-and cache/history impact. No system prompt, schema or request routing changes.
-Touchpoints: agent/turn_finalizer.py, agent/context_compressor.py,
-agent/codex_runtime.py. Source restored from archived 852cef97.
-Verification: 24 tests passed across test_transform_llm_output_persistence.py,
-test_compression_anti_thrash_persistence.py and test_codex_app_server_compaction.py
-using scripts/run_tests.sh -j 1. Real SQLite and cached/uncached request tests cover
-one footer per response, persisted response replay, and durable count restoration.
-Installed in live on 2026-10-05; individual model behaviors are not exhaustively verified.
-Upstream candidate: richer output-hook metadata. Remove when stable supplies it.
+A bounded transform_gateway_response hook receives the completed agent's live
+model/provider, compressor.last_total_tokens, threshold_tokens and compression_count.
+Only Discord final send/edit and queued responses consume its display string.
+SQLite/JSON, model-facing messages, post-turn observers and cache prefixes keep the
+original answer. Self-authored Discord reply previews and anchored backfill strip
+recognized trailing metadata from input copies; earlier stored history is untouched.
+The workspace formatter performs no route DB reads, network model metadata or
+subscription-quota refresh. Percent is labeled "of compaction trigger" and uses the
+effective runtime threshold, including small-context floors/caps, not the nominal
+window or configured raw cap. Missing telemetry is not fabricated.
+
+Touchpoints: gateway/response_metadata.py, run_turn.py, run_turn_runner.py,
+plugins/platforms/discord/adapter.py and hook registration/timeout/activation.
+No provider routing, prompts, schemas or compaction policy changes. Protected risk:
+new replies no longer replay presentation metadata; reply hydration omits it.
+Offline tests reduce but cannot prove all model behaviors. Rollback: revert this
+source change AND restore the prior workspace plugin together; do not rewrite old
+history. Published source is not installed or active behavior.
+
+Verification: real SQLite and cached/uncached provider payload regressions,
+stream/send/queued telemetry, failed edits, silence, duplicate tails, and real
+Discord reply/backfill handling, with adjacent persistence/count/plugin suites.
+Final isolated canonical run: 156 passed across nine named source files; workspace
+formatter tests: 24 passed, native doctor one hook. Seven unrelated Windows
+path/URI expectations reproduced unchanged on e3905a9a4f were deselected. Syntax
+and scoped diff checks passed. See workspace notes/response-metadata-footer.md
+for exact commands and baseline attribution. No live Discord/model calls occurred.
+Upstream candidate: a delivery-only hook with live telemetry. Retain until stable
+has an equivalent seam; visual metadata must not use pre-persistence transforms.
 
 ## HERMES-FORK-015: Windows search pattern transport
 

@@ -1481,6 +1481,59 @@ async def test_non_editable_interim_final_is_recorded_for_final_send_dedup(monke
     assert adapter.edits == []
 
 
+class TelemetryFooterAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+        self.model = "active-fallback-model"
+        self.provider = "nous"
+        from agent.context_compressor import ContextCompressor
+        self.context_compressor = ContextCompressor(model=self.model)
+        self.context_compressor.context_length = 1000
+        self.context_compressor.threshold_tokens = 700
+        self.context_compressor.last_total_tokens = 350
+        self.context_compressor.compression_count = 2
+
+    def run_conversation(self, message, conversation_history=None, **kwargs):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("answer")
+        return {"final_response": "answer", "messages": [{"role": "user", "content": message},
+                {"role": "assistant", "content": "answer"}], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming,queued", [(False, False), (True, False), (False, True), (True, True)])
+async def test_discord_delivery_footer_uses_actual_compressor_without_history_mutation(monkeypatch, tmp_path, streaming, queued):
+    hook_calls = []
+    def hook(name, **kwargs):
+        if name != "transform_gateway_response":
+            return []
+        hook_calls.append(kwargs)
+        assert kwargs["provider"] == "nous"
+        assert kwargs["model"] == "active-fallback-model"
+        assert kwargs["context_used_tokens"] == 350
+        assert kwargs["compaction_trigger_tokens"] == 700
+        assert kwargs["compaction_count"] == 2
+        return [kwargs["response_text"] + "\n\n*Model: active · Provider: nous · Context used: 350 tokens (50% of compaction trigger) · Compactions: 2*"]
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+    adapter, result = await _run_with_agent(
+        monkeypatch, tmp_path, TelemetryFooterAgent, session_id="offline-footer",
+        pending_text="follow up" if queued else None, platform=Platform.DISCORD,
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+        config_data={"display": {"tool_progress": "off", "interim_assistant_messages": False},
+                     "streaming": {"enabled": streaming, "edit_interval": 0.01, "buffer_threshold": 1}},
+    )
+    assert result["final_response"] == "answer"
+    assert "Model:" not in str(result["messages"])
+    assert "50% of compaction trigger" in result["delivery_response"]
+    visible = [item["content"] for item in adapter.sent + adapter.edits]
+    if streaming or queued:
+        assert any("50% of compaction trigger" in text for text in visible)
+    if streaming:
+        assert result.get("already_sent") is True
+    assert hook_calls
+
+
 class TransformedStreamAgent:
     """Streams a response, then signals the gateway that a plugin hook
     (``transform_llm_output``) modified the final text after streaming

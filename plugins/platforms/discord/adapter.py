@@ -5177,6 +5177,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
                 content = getattr(msg, "clean_content", msg.content) or ""
+                if msg.author == self._client.user:
+                    from gateway.response_metadata import strip_response_metadata_footer
+                    content = strip_response_metadata_footer(content)
                 if _is_discord_draft_message(content):
                     return None
                 if (
@@ -6336,6 +6339,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 candidate_reply_text = getattr(message.reference.resolved, "content", None) or None
+                if getattr(message.reference.resolved, "author", None) == self._client.user:
+                    from gateway.response_metadata import strip_response_metadata_footer
+                    candidate_reply_text = strip_response_metadata_footer(candidate_reply_text or "") or None
                 if not _is_discord_draft_message(candidate_reply_text or ""):
                     reply_to_text = candidate_reply_text
         event = MessageEvent(

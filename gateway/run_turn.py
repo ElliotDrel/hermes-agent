@@ -2338,6 +2338,13 @@ class GatewayTurnMixin:
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
+            # Persistence and observers saw the original text. Only transport sees the footer.
+            if not _intentional_silence:
+                if response == agent_result.get("final_response") and "delivery_response" in agent_result:
+                    response = agent_result["delivery_response"]
+                else:
+                    from gateway.response_metadata import transform_discord_response
+                    response = transform_discord_response(response, agent_result, source.platform)
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
@@ -3837,8 +3844,11 @@ class GatewayTurnMixin:
                 logger.debug("Stream consumer wait before queued message failed: %s", e)
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
-        first_response = _delivery_result.get("final_response", "")
-        _already_streamed = self._run_agent_stream_confirmed_final_delivery(
+        self._run_agent_prepare_delivery_response(_delivery_result, turn_ctx.source)
+        first_response = _delivery_result.get("delivery_response", _delivery_result.get("final_response", ""))
+        if _delivery_result.get("delivery_transformed"):
+            await self._run_agent_mark_streamed_delivery(_delivery_result, turn_ctx)
+        _already_streamed = bool(_delivery_result.get("already_sent")) or self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
         _delivered = _already_streamed
@@ -4137,6 +4147,18 @@ class GatewayTurnMixin:
         response["already_sent"] = True
         logger.info(*ok)
 
+    @staticmethod
+    def _run_agent_prepare_delivery_response(response, source):
+        """Keep presentation metadata outside durable/model-facing response text."""
+        if not isinstance(response, dict) or "delivery_response" in response:
+            return
+        from gateway.response_metadata import transform_discord_response
+        text = response.get("final_response") or ""
+        display = transform_discord_response(text, response, source.platform)
+        if display != text:
+            response["delivery_response"] = display
+            response["delivery_transformed"] = True
+
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
 
@@ -4147,7 +4169,7 @@ class GatewayTurnMixin:
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed"):
             return
-        _final = response.get("final_response") or ""
+        _final = response.get("delivery_response", response.get("final_response")) or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
         # Unrelated commentary/progress must not be mistaken for the final response (#14238).
@@ -4170,7 +4192,7 @@ class GatewayTurnMixin:
             if _stale_finalized:
                 _content_delivered = False
         # Plugin hooks may append content after streaming finished — then send the final version.
-        _transformed = bool(response.get("response_transformed"))
+        _transformed = bool(response.get("response_transformed") or response.get("delivery_transformed"))
         # Suppress the normal send only when the actual final reply reached the user.
         _streamed = self._run_agent_stream_confirmed_final_delivery(_sc, _final, previewed=_previewed)
         if _is_empty_sentinel:
@@ -4204,10 +4226,12 @@ class GatewayTurnMixin:
                     _sk,
                 )
         elif _transformed and _sc is not None:
+            # The final chunk cannot hold a whole split response. Keep native send fallback.
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
-            if _sc.message_id:
+            if (_sc.message_id and _sc.message_id != "__no_edit__"
+                    and not (response.get("delivery_transformed") and getattr(_sc, "_turn_split_delivery", False))):
                 await self._run_agent_edit_streamed_message(
-                    _sc, source, response, response["final_response"], _sk=_sk,
+                    _sc, source, response, _final, _sk=_sk,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
@@ -4515,6 +4539,7 @@ class GatewayTurnMixin:
                 if cleanup is not None:
                     await cleanup()
 
+        self._run_agent_prepare_delivery_response(response, source)
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)
         if (isinstance(response, dict) and is_machinery_display_kind(turn_ctx.persist_user_display_kind)
                 and self._is_intentional_silence(response, response.get("final_response", ""))):

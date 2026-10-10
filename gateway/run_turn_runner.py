@@ -2122,6 +2122,10 @@ class TurnRunner:
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
             "model": getattr(agent, "model", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+            "provider": getattr(agent, "provider", None) if agent else None,
+            "context_used_tokens": getattr(comp, "last_total_tokens", None),
+            "compaction_trigger_tokens": getattr(comp, "threshold_tokens", None),
+            "compaction_count": getattr(comp, "compression_count", None),
         }
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
