@@ -218,6 +218,7 @@ def test_real_writer_verified_native_route_privacy_drop_and_failure(tmp_path, mo
     # A contradictory native route must exclude even when one route matches.
     with sqlite3.connect(tmp_path / 'state.db') as db:
         db.execute('INSERT INTO gateway_routing VALUES (?)', (json.dumps({'session_id': 's', 'origin': {'platform': 'discord', 'guild_id': 'other'}}),))
+    writer._routes_expire = writer._routes_retry = 0
     assert not writer._scoped(record)
     # Queue failure/drop without a consumer races neither the test nor real writer.
     stopped = object.__new__(timing.Writer)

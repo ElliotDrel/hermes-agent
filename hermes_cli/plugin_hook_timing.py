@@ -2,22 +2,27 @@
 from __future__ import annotations
 
 import contextvars
+from contextlib import closing
 import functools
-import hashlib
 import inspect
 from typing import Any
 import json
 import os
 from pathlib import Path
 import queue
+import re
 import sqlite3
 import threading
 import time
 import uuid
 
 APPROVED_GUILD = "1517646536505557132"
+_ROUTE_TTL = 1.0
+_STATUS_INTERVAL = 1.0
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}", re.ASCII)
+_PLUGIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*", re.ASCII)
 _FIELDS = frozenset({"schema", "event", "process_id", "dispatch_id", "callback_index",
-                     "callback_id", "hook", "mode", "session_id", "turn_id",
+                     "plugin_id", "hook", "mode", "session_id", "turn_id",
                      "parent_session_id", "parent_turn_id", "start_ns", "end_ns",
                      "duration_ms", "gap_ms", "admission_ms", "outcome", "observed_at"})
 _current: contextvars.ContextVar[Any] = contextvars.ContextVar("plugin_hook_timing", default=None)
@@ -26,9 +31,16 @@ _writer_lock = threading.Lock()
 
 
 def identifier(value):
-    # Hash even malformed identifiers: no arbitrary payload text can enter the queue.
-    if type(value) is str and 0 < len(value) <= 256:
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    # Preserve native correlation tokens verbatim; never normalize or truncate text.
+    if type(value) is str and _IDENTIFIER.fullmatch(value):
+        return value
+    return None
+
+
+def plugin_identifier(value):
+    # Native keys may include a category prefix (e.g. food/nutrition).
+    if type(value) is str and len(value) <= 256 and _PLUGIN_ID.fullmatch(value):
+        return value
     return None
 
 
@@ -38,6 +50,8 @@ class Writer:
         self.home = Path(home)
         self.queue = queue.Queue(maxsize=capacity)
         self.dropped = self.failed = self.excluded = self.written = 0
+        self._routes = {}
+        self._routes_expire = self._routes_retry = self._status_due = 0.0
         self.thread = threading.Thread(target=self._run, name="hermes-hook-timing", daemon=True)
         self.thread.start()
 
@@ -45,6 +59,11 @@ class Writer:
         try:
             clean = {k: v for k, v in record.items()
                      if k in _FIELDS and type(v) in (str, int, float, bool)}
+            for field in ("session_id", "turn_id", "parent_session_id", "parent_turn_id"):
+                if field in clean and identifier(clean[field]) is None:
+                    del clean[field]
+            if "plugin_id" in clean:
+                clean["plugin_id"] = plugin_identifier(clean["plugin_id"]) or "unknown"
             self.queue.put_nowait(clean)
         except Exception:
             self.dropped += 1
@@ -52,20 +71,49 @@ class Writer:
     def _scoped(self, record):
         sid = record.get("parent_session_id") if record.get("hook") == "subagent_stop" else None
         sid = sid or record.get("session_id")
-        if not sid:
+        if identifier(sid) is None:
             return False
+        now = time.monotonic()
+        if now >= self._routes_expire and now >= self._routes_retry:
+            self._refresh_routes(now)
+        return time.monotonic() < self._routes_expire and self._routes.get(sid, False)
+
+    def _refresh_routes(self, now):
+        # Clear before every refresh: errors/slow reads must never extend old trust.
+        self._routes = {}
+        self._routes_expire = 0.0
+        self._routes_retry = now + _ROUTE_TTL
         # Read-only URI: do not create a DB, migrate it, import gateway, or take its write lock.
         uri = (self.home / "state.db").resolve().as_uri() + "?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=0.05) as db:
-            matches = []
-            for (raw,) in db.execute("SELECT entry_json FROM gateway_routing"):
-                entry = json.loads(raw)
-                if isinstance(entry, dict) and identifier(entry.get("session_id")) == sid:
-                    source = entry.get("origin") or {}
-                    matches.append(source.get("platform") == "discord" and
-                                   source.get("scope_id", source.get("guild_id")) == APPROVED_GUILD)
-            # Conflicting routes fail closed; no trust in kwargs platform/guild claims.
-            return bool(matches) and all(matches)
+        try:
+            routes = {}
+            with closing(sqlite3.connect(uri, uri=True, timeout=0.05)) as db:
+                for (raw,) in db.execute("SELECT entry_json FROM gateway_routing"):
+                    entry = json.loads(raw)
+                    if not isinstance(entry, dict):
+                        raise ValueError("invalid route")
+                    sid = identifier(entry.get("session_id"))
+                    if sid is None:
+                        continue
+                    source = entry.get("origin")
+                    approved = (isinstance(source, dict) and source.get("platform") == "discord" and
+                                source.get("scope_id", source.get("guild_id")) == APPROVED_GUILD)
+                    # Every matching route must agree; kwargs are never routing evidence.
+                    routes[sid] = routes.get(sid, True) and approved
+            self._routes = routes
+            self._routes_expire = now + _ROUTE_TTL
+        except Exception:
+            self.failed += 1
+
+    def _maybe_status(self):
+        now = time.monotonic()
+        if now < self._status_due:
+            return
+        self._status_due = now + _STATUS_INTERVAL
+        try:
+            self._status()
+        except Exception:
+            self.failed += 1
 
     def _status(self):
         directory = self.home / "runtime" / "hermes-timing"
@@ -102,16 +150,22 @@ class Writer:
                     self.failed += 1  # No exception text, logging, or recursive hook dispatch.
                 finally:
                     self.queue.task_done()
-            try:
-                self._status()
-            except Exception:
-                self.failed += 1
+            self._maybe_status()
 
 
 class Dispatch:
-    def __init__(self, writer, hook, mode, payload):
+    def __init__(self, writer, hook, mode, payload, manager):
         from hermes_cli.plugins import VALID_HOOKS
         self.writer = writer
+        # Reuse native active registration handles, not names/modules/closure guesses.
+        self.owners = {}
+        for registration in manager._registration_order:
+            if registration.active and registration.kind == "hook" and registration.key == hook:
+                callback = registration.callback
+                if callback is not None:
+                    key = id(callback)
+                    owner = plugin_identifier(registration.plugin_key) or "unknown"
+                    self.owners[key] = owner if self.owners.get(key, owner) == owner else "unknown"
         self.base = {"schema": 1, "process_id": os.getpid(), "dispatch_id": uuid.uuid4().hex,
                      "hook": hook if hook in VALID_HOOKS else "other", "mode": mode}
         for field in ("session_id", "turn_id", "parent_session_id", "parent_turn_id"):
@@ -141,7 +195,7 @@ class Callback:
         self.dispatch = dispatch
         self.start = time.monotonic_ns()
         self.gap = (self.start - dispatch.previous) / 1e6
-        self.meta = {"callback_index": index, "callback_id": hex(id(cb))}
+        self.meta = {"callback_index": index, "plugin_id": dispatch.owners.get(id(cb), "unknown")}
         self.outcome = "ok"
 
     def mark(self, outcome):
@@ -203,7 +257,7 @@ def begin(manager, hook, mode, payload):
                 manager._hook_timing_writer = writer
             finally:
                 _writer_lock.release()
-        return Dispatch(writer, hook, mode, payload)
+        return Dispatch(writer, hook, mode, payload, manager)
     except Exception:
         return None
 

@@ -28,16 +28,21 @@ manager (`home_path`):
 
 - `runtime/hermes-timing/plugin-hook-events.jsonl`: append-only scalar JSON records.
 - `runtime/hermes-timing/plugin-hook-status-<process_id>.json`: atomic status per
-  process (written, dropped, failed, excluded, queued, updated_at). A stale status
+  process (written, dropped, failed, excluded, queued, updated_at), at most once
+  per second under load and approximately once per second while idle. A stale status
   is not evidence the process is alive; counts are process-local and best effort.
 
 Events: `dispatch`, `callback_wait`, `callback_execution`. Schema 1 includes
 `process_id`, unique `dispatch_id`, hook allowlist name (unknown names become
-`other`), mode, zero-based callback index, process-local callback identity
-(`hex(id(cb))`), `start_ns`, `end_ns`, elapsed `duration_ms`, wall-clock
-`observed_at`, and outcomes. No plugin/callback names or source paths are retained.
-Callback IDs may be recycled after unload; do not attribute across registrations
-or processes. Dispatch totals include bookkeeping, signature narrowing, failure
+`other`), mode, zero-based `callback_index`, stable native owner `plugin_id`,
+`start_ns`, `end_ns`, elapsed `duration_ms`, wall-clock `observed_at`, and outcomes.
+Attribution uses exact callback references on the manager's existing active
+registration handles and canonical plugin keys (including category/name keys).
+Untracked config/shell hooks, malformed keys, and callbacks shared by conflicting
+owners emit `plugin_id: "unknown"`; index is the explicit fallback, not a guessed
+module/name. No callback names, memory addresses or source paths are exported.
+Indices are registration-order positions, not persistent callback identities
+across reloads. Dispatch totals include bookkeeping, signature narrowing, failure
 reporting, and gaps. First gap is dispatch start to first callback admission;
 subsequent `gap_ms` is previous caller-wait end to next callback admission.
 
@@ -63,9 +68,14 @@ and exception type are not exported; existing native logging is unchanged.
 **The `duration_ms` supplied to `subagent_stop` is CHILD runtime, not hook runtime.**
 It is never copied. Every exported duration comes from monotonic start/end. Stop
 correlation uses `parent_session_id`/`parent_turn_id` when supplied. Session and turn
-IDs (including parents) are SHA-256 digests, not raw strings: the daily analyzer
-must apply SHA-256 to native identifiers before joining. IDs longer than 256 chars,
-non-string IDs, request/response bodies, args, results, errors, model/provider
+IDs (including parents) are raw native tokens, suitable for direct observer/session
+joins. Only exact strings matching `[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}` are retained;
+malformed text is omitted, never normalized, truncated or hashed. This includes
+canonical timestamp/UUID sessions and colon-delimited native turn tokens. These IDs
+and plugin keys are identity metadata, not anonymized data; token-shaped arbitrary
+values cannot be semantically distinguished from legitimate IDs. Plugin keys are
+bounded to 256 characters and slash-separated `[A-Za-z0-9][A-Za-z0-9_.-]*` segments.
+Non-string IDs, request/response bodies, args, results, errors, model/provider
 settings, credentials, child runtime and arbitrary kwargs are never queued.
 
 ## Conservative scope and bounds
@@ -74,23 +84,32 @@ No session or parent-session identifier: no spans. A single daemon per profile
 (maximum eight profile writers per process, shared across manager reloads) reads
 `state.db` with SQLite `mode=ro`, never creating/migrating the database. It uses the
 actual `gateway_routing.entry_json` -> `SessionEntry.origin` ->
-`SessionSource.platform/scope_id` (deprecated `guild_id` fallback). Only a current
-route uniquely agreeing on Discord guild `1517646536505557132` is persisted.
+`SessionSource.platform/scope_id` (deprecated `guild_id` fallback). Only a verified
+snapshot route agreeing on Discord guild `1517646536505557132` is persisted.
 Multiple agreeing routes are accepted; any contradictory matching route fails
 closed. For subagent_stop, route the parent when available. Hook kwargs claiming
 guild/platform are not evidence. Unknown, rotated, stale, missing/malformed and
-unreadable routes are excluded or counted failed, never labeled as guild work.
-Route reads occur when writing, so a reset between dispatch and write can lose an
-otherwise valid sample. No legacy JSON fallback or child ancestry guessing.
+unreadable routes are excluded or counted failed. The background writer reuses a
+session-to-approval snapshot for at most one monotonic second, refreshing on the
+next event after expiry. It closes the read-only connection after every refresh.
+Expiry clears trust before reading; any SQLite/JSON refresh error discards the
+snapshot and throttles retries for one second. Slow refreshes cannot grant an
+already-expired snapshot. Conflicts deny the matching session; missing origins
+also deny it. No expired snapshot is used, but resets/route conflicts introduced
+inside the one-second window can still label records using the last verified
+snapshot until expiry. This bounded freshness tradeoff replaces per-event scans;
+it is not instantaneous routing validation. No legacy JSON fallback or child
+ancestry guessing.
 
 Only projected scalar metadata reaches the fixed 1024-record queue. Dispatch uses
 `put_nowait`, never awaits disk/routing, retries, joins, or backpressure. Full queues
 drop samples. Writer initialization uses a non-waiting lock; contention can omit
-whole dispatches. Status counters cannot count those omitted spans. Memory is
-bounded; append-only disk usage is not rotated automatically and needs retention
+whole dispatches. Status counters cannot count those omitted spans. The queue is
+fixed-size; the routing snapshot scales with current native routing entries.
+Append-only disk usage is not rotated automatically and needs retention
 by the analysis operator. Concurrent process appenders can produce an incomplete
 last record; readers must tolerate it. Abrupt exit loses queued events. Timing,
-hashing and queue submission add small but nonzero scheduling overhead.
+identifier validation and queue submission add small but nonzero scheduling overhead.
 
 ## Coverage: not all plugin execution
 

@@ -388,22 +388,33 @@ and is never exported as hook time. No provider calls or runtime changes.
 Approval: Elliot's change-specific "fix it" manual override, responding to the
 protected dispatcher assessment (prehook block/context injection and stop result
 finalization) at https://discord.com/channels/1517646536505557132/1557462052820221955/1558279264162422916.
-Residual risk: additional scheduling/hashing/queue overhead can affect timing even
+KISS simplification authorization: Elliot's change-specific "Act on all of your
+recommendations" after the routing/status/identity overhead assessment at
+https://discord.com/channels/1517646536505557132/1557462052820221955/1558284705705623654.
+Residual risk: additional scheduling/validation/queue overhead can affect timing even
 with invariant tests; async timed awaits add a wrapper coroutine. Tests cannot
 prove nondeterministic behavior safe. Dispatcher kwargs/results and model-facing
 content remain untouched; native logging still has its existing payload risks.
 
 A fixed 1024-record nonblocking metadata queue and profile-local daemon writer
 (max eight profiles/process, reused across manager generations) export only scalar
-allowlisted timing/outcomes and hashed correlation IDs, never args, request/response,
-result/error text, credentials or callback names. Writer verifies current read-only
-state.db gateway_routing SessionEntry.origin for Discord guild 1517646536505557132;
-unknown/conflicting/rotated routes fail closed. No session identity means no spans.
+allowlisted timing/outcomes, raw bounded token correlation IDs and stable native
+plugin owner keys, never args, request/response, result/error text, credentials or
+callback names. Malformed identifier text is omitted. Existing registration handles
+retain exact callback references; ownerless/ambiguous registrations emit unknown
+plus callback index, not a guessed name or memory address. Writer caches read-only
+state.db gateway_routing SessionEntry.origin verification for Discord guild
+1517646536505557132 for at most one second. Expiry/errors clear trust; refresh
+conflicts fail closed. Route changes inside that window remain a bounded freshness
+limitation, not instantaneous route validation. Status writes are at most one/sec,
+not per event. No session identity means no spans.
 Queued metadata may be lost/dropped; counters are best effort; append-only disk
 retention is operator-owned. Status is per process, not proof of process liveness.
 
-Touchpoints: hermes_cli/plugins_dispatch.py, plugin_hook_timing.py,
-config_defaults.py; tests/hermes_cli/test_plugin_hook_timing.py;
+Touchpoints: hermes_cli/plugins_dispatch.py, plugin_hook_timing.py, plugins.py,
+plugins_ledger.py (callback reference on the existing registration handle),
+config_defaults.py; tests/hermes_cli/test_plugin_hook_timing.py and
+test_plugin_hook_timing_kiss.py;
 docs/plugin-hook-timing.md (schema, scope, metrics and coverage limitations).
 Activation after source loading: hermes config set plugins.hook_timing.enabled true.
 Disable rollback: same command with false, noticed on future dispatches; queued/late
@@ -417,7 +428,7 @@ workers, built-in Relay observers, command/tool/platform handlers and prompt/loa
 surfaces are not covered; "all plugin runs" requires separately assessed work.
 See docs/plugin-hook-timing.md for traced callers and conservative exclusions.
 
-Verification: canonical isolated scripts/run_tests.sh -j 1 across seven named
+Initial verification: canonical isolated scripts/run_tests.sh -j 1 across seven named
 files passed 137 tests (18 new timing cases), with one Windows portable-plugin
 Darwin-path fixture excluded after reproducing its identical failure on unchanged
 origin/live e3905a9a4f in an isolated baseline. Native sync/async dispatch, parent
@@ -429,3 +440,23 @@ registry/middleware, subagent stop, transform persistence, tool result and strea
 Python compile, scoped diff and new-module/test Ruff checks pass. Offline tests
 make no inference calls; live installation/Discord acceptance remains Elliot's.
 Upstream disposition: personal metadata experiment; retain only while needed.
+
+KISS verification: scripts/run_tests.sh -j 1 passed 217 tests across ten named
+files: hermes_cli/test_plugin_hook_timing, test_plugin_hook_timing_kiss,
+test_plugin_ownership_ledger, test_plugin_hook_failure_reporting, test_plugins,
+test_plugin_event_bus; agent/test_subagent_stop_hook, test_plugin_stream_hooks,
+test_transform_llm_output_persistence; plugins/test_transform_tool_result_hook.
+The 34 new KISS cases exercise snapshot reuse/expiry/conflicts/rotation/errors,
+slow refresh exclusion, status cadence/failure throttling, strict raw token privacy,
+actual background route I/O and sync/async native-ledger attribution/disposal/reload.
+SQLite context managers did not close read handles on Windows; explicit closing
+now avoids relying on garbage collection (the missing-DB regression reproduced it).
+Four unrelated failures were reproduced unchanged on isolated e3905a9a4f and
+excluded from acceptance only: shared_entrypoint_module_uses_the_active_profile_scope,
+provider_overlay_switches_profiles_and_reveals_fresh_global_fallback,
+direct_plugin_platform_registration_infers_immutable_scope (ownership suite), and
+enabled_portable_plugin_registers_components (Darwin path on Windows fixture).
+Edited Python syntax, timing-module/test Ruff and scoped diff checks pass.
+No live traffic/inference, installation, runtime config change, restart or push.
+Raw IDs are not anonymized; token-shaped arbitrary strings cannot be distinguished
+semantically. Native hook dispatcher coverage/exclusions above remain unchanged.

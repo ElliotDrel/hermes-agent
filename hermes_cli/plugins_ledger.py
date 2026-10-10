@@ -34,6 +34,8 @@ class PluginRegistration:
     key: str
     release: Callable[[], None]
     plugin_key: str = ""
+    # Exact callback identity for host-owned attribution; no separate ownership map.
+    callback: Optional[Callable] = field(default=None, repr=False, compare=False, kw_only=True)
     # Process-global host infrastructure (e.g. dashboard-auth providers): kept out of ``_registration_order``
     # so unload-all cannot dispose it, but still disposed by a *targeted* unload and evicted on force
     # re-discovery when the plugin no longer re-registers it.
