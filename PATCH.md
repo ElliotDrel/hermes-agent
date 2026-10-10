@@ -227,9 +227,10 @@ clean display storage, transcript migration or old-history rewrite is introduced
 ## HERMES-FORK-028: Preserve root-union tool fields
 
 Before removing unsupported root `anyOf`/`oneOf`, project inline branch fields
-into model-facing arguments. Keep identical fields once, preserve conflicting
-schemas as nested `anyOf`, and expose a native type only when every alternative
-explicitly agrees. Root properties retain ownership and constraints; only shared
+into model-facing arguments. Normalize fragments using the existing model pass
+before comparing alternatives, while preserving wire keys. Keep identical fields
+once, preserve conflicting schemas as nested `anyOf`, and expose a native type
+only when every normalized alternative explicitly agrees. Root properties retain ownership and constraints; only shared
 branch requirements become global. Raw MCP/server validation schemas are unchanged.
 
 Touchpoints: `tools/schema_sanitizer.py` and `tools/arg_coercion.py`. Coercion uses
@@ -239,6 +240,10 @@ closed objects can disambiguate a rename. Agreed siblings still reverse when
 another key is ambiguous; unknown, unmatched, ambiguous or colliding keys remain
 unchanged for server validation. Bare-string schema fragments use existing
 normalization; boolean/non-dict fragments pass through without crashing.
+Projection, model exposure and branch-reversal evidence share bare-string,
+type-array, nullable-union and ref-sibling normalization. Agreed types retain
+nullable hints; a null discriminator keeps all nullable rename candidates possible.
+Root requirements and legacy flags are collected before normalization can prune them.
 
 Authorization: Elliot *** 1558586766108135495, "Your plan sounds good. Execute
 on it.", approved the specific raw MCP schema -> sanitizer -> model definitions ->
@@ -253,13 +258,25 @@ case-matrix loop. The schema-only WHOOP fixture passes through real MCP conversi
 registry, cached/uncached model definitions and actual `tool_describe` dispatch:
 all five fields retain their server constraints, and raw server validation still
 accepts each valid alternative while rejecting incomplete or mixed arguments.
-A small representative schema exercises model definitions -> actual dispatch,
-unanimous boolean coercion, enclosing wire ownership, evidence-based nested
-renames, and ambiguous names left unguessed while agreed siblings reverse.
+A small representative raw-registry schema exercises model definitions -> actual
+dispatch, unanimous boolean coercion across bare-string/dict and nullable
+type-array/dict alternatives, enclosing wire ownership, nullable-const nested
+rename evidence, and ambiguous names left unguessed while agreed siblings reverse.
+It bypasses MCP pre-normalization deliberately so nullable-discriminator mismatches
+remain observable. Server validation spells out the nonstandard bare-string
+boolean solely in its validation copy; the registered schema stays untouched.
 
-Both tests fail on an isolated unchanged git archive of
+Review findings [4239463297](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239463297)
+and [4239463299](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239463299)
+were fetched and reproduced before source edits on `46c6396ed070f3a5be82e9af29b74f62f1cbecef`:
+both boolean forms left `"true"` as strings, and nullable-const selection left
+`a_b` instead of chosen wire key `a@b`. The same isolated probes now report both
+booleans coerced and the selected wire name reversed. Exactly the original two
+test functions remain; no parametrization, extra tests or case-matrix loop.
+
+The earlier two-invariant fixture failed on an isolated unchanged git archive of
 `eaca181c20a641d27d9132195d7e55fd6632449b` (WHOOP properties empty; projected
-confirm_flag absent), and both pass on this branch. The archive received only the
+confirm_flag absent). Both current invariant tests pass on this branch. The archive received only the
 new test file and WHOOP schema fixture; production source was not changed.
 Canonical `scripts/run_tests.sh -j 1` acceptance: **259 passed, 0 failed, exit 0**
 across `tests/tools/test_root_union_schema_visibility.py`,
@@ -270,7 +287,7 @@ across `tests/tools/test_root_union_schema_visibility.py`,
 exclusions remain: `test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime`
 and `test_windows_location_vars_passed_without_secrets`. No other suite was edited.
 Retries off; worktree-local `.venv`, test home and TMPDIR/TEMP/TMP;
-`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/two-invariants-acceptance`
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/normalization-acceptance-final`
 and `--tb=short`. Python syntax and scoped whitespace checks passed.
 
 Limits: no ref resolution/relocation, branch-local definition hoisting, allOf field
@@ -282,7 +299,8 @@ Nullable-single-survivor handling and definition-cache policy remain native.
 
 Integration preserves live intent 027; this independent schema intent remains 028.
 Upstream candidate correctness fix; retain until stable preserves root-union fields.
-Rollback: revert this intent-shaped change. Parent independently verified both
-baseline failures and the 259-test acceptance run. No runtime/profile writes,
-installation or gateway restart; published source is not installed/running behavior.
-Native installation remains Elliot's action.
+Rollback: revert this intent-shaped change. Parent independently reproduced both
+normalization defects on the previous head, verified the repaired probes, and reran
+all 259 acceptance tests. No runtime/profile writes, installation or gateway restart.
+Published source is not installed/running behavior; native installation remains
+Elliot's action.

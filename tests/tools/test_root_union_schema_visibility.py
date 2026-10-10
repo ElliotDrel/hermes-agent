@@ -66,8 +66,10 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
                  {"properties": {"a@b": {"type": "integer"}, "fixed key": {"type": "string"}}},
              ]}
     selected = {"type": "object", "oneOf": [
-        {"properties": {"a b": {"type": "string"}}, "required": ["a b"], "additionalProperties": False},
-        {"properties": {"a@b": {"type": "integer"}}, "required": ["a@b"], "additionalProperties": False},
+        {"properties": {"mode": {"anyOf": [{"const": "left"}, {"type": "null"}]},
+                        "a b": {"type": "string"}}, "required": ["mode", "a b"], "additionalProperties": False},
+        {"properties": {"mode": {"anyOf": [{"const": "right"}, {"type": "null"}]},
+                        "a@b": {"type": "string"}}, "required": ["mode", "a@b"], "additionalProperties": False},
     ]}
     ambiguous = {"type": "object", "anyOf": [
         {"properties": {"a b": {"type": "string"}, "fixed key": {"type": "string"}},
@@ -78,13 +80,16 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
     common = {"owned": owned, "selected": selected, "ambiguous": ambiguous}
     raw = {"oneOf": [
         {"type": "object", "properties": {**common, "mode": {"const": "now"},
-            "confirm flag": {"type": "boolean", "const": True}}, "required": ["mode", "confirm flag"]},
+            "confirm flag": "boolean",
+            "nullable flag": {"type": ["boolean", "null"]}}, "required": ["mode", "confirm flag"]},
         {"type": "object", "properties": {**common, "mode": {"const": "draft"},
-            "confirm flag": {"type": "boolean", "enum": [True, False]}}, "required": ["mode", "confirm flag"]},
+            "confirm flag": {"type": "boolean", "enum": [True, False]},
+            "nullable flag": {"type": "boolean", "const": True}}, "required": ["mode", "confirm flag"]},
     ]}
     snapshot = copy.deepcopy(raw)
-    converted = _convert_mcp_schema("schema-test", SimpleNamespace(
-        name="probe", description="Inspect arguments.", inputSchema=raw))
+    # Register raw fragments directly: MCP conversion already collapses nullable
+    # discriminators and would hide the model/dispatch normalization mismatch.
+    converted = {"name": "normalization_probe", "description": "Inspect arguments.", "parameters": raw}
     received = []
     registered_snapshot = copy.deepcopy(converted)
     registry = ToolRegistry()
@@ -96,34 +101,44 @@ def test_projected_types_dispatch_without_stealing_or_guessing_wire_fields(monke
     monkeypatch.setattr(model_tools, "_select_tool_names", lambda *args: [name])
     parameters = model_tools.get_tool_definitions(quiet_mode=False, skip_tool_search_assembly=True)[0]["function"]["parameters"]
     exposed = parameters["properties"]
-    assert exposed["confirm_flag"]["type"] == raw["oneOf"][0]["properties"]["confirm flag"]["type"]
+    assert exposed["confirm_flag"]["type"] == raw["oneOf"][0]["properties"]["confirm flag"]
     assert exposed["confirm_flag"]["anyOf"] == [
-        raw["oneOf"][0]["properties"]["confirm flag"], raw["oneOf"][1]["properties"]["confirm flag"]]
+        {"type": "boolean"}, raw["oneOf"][1]["properties"]["confirm flag"]]
+    assert exposed["nullable_flag"] == {"type": "boolean", "nullable": True, "anyOf": [
+        {"type": "boolean", "nullable": True}, raw["oneOf"][1]["properties"]["nullable flag"]]}
     assert exposed["owned"]["properties"]["a_b"] == owned["properties"]["a_b"]
     assert exposed["selected"]["oneOf"][1]["properties"]["a_b"] == selected["oneOf"][1]["properties"]["a@b"]
+    assert exposed["selected"]["oneOf"][1]["properties"]["mode"] == {"const": "right", "nullable": True}
     assert parameters["required"] == ["mode", "confirm_flag"]
     Draft202012Validator.check_schema(parameters)
 
-    args = {"mode": "now", "confirm_flag": "true",
-            "owned": {"a_b": 7, "fixed_key": "owned sibling"}, "selected": {"a_b": 9}}
+    args = {"mode": "now", "confirm_flag": "true", "nullable_flag": "true",
+            "owned": {"a_b": 7, "fixed_key": "owned sibling"}, "selected": {"mode": "right", "a_b": "chosen"}}
     result = model_tools.handle_function_call(name, copy.deepcopy(args),
         skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
         skip_tool_execution_middleware=True)
     assert json.loads(result) == {}
-    wire = {"mode": "now", "confirm flag": True,
-            "owned": {"a_b": 7, "fixed key": "owned sibling"}, "selected": {"a@b": 9}}
+    wire = {"mode": "now", "confirm flag": True, "nullable flag": True,
+            "owned": {"a_b": 7, "fixed key": "owned sibling"}, "selected": {"mode": "right", "a@b": "chosen"}}
     assert received == [wire]
-    server = Draft202012Validator(registry.get_schema(name)["parameters"])
+    # Bare-string shorthand is not JSON Schema; spell that fragment out solely
+    # for validation, retaining the server's unions and every real constraint.
+    validation_schema = copy.deepcopy(raw)
+    validation_schema["oneOf"][0]["properties"]["confirm flag"] = {"type": "boolean"}
+    server = Draft202012Validator(validation_schema)
     server.validate(wire)
 
     # Same model spelling and type fit both wire names: do not guess, but still
     # reverse the agreed sibling. The original server, not the projection, rejects it.
     args["ambiguous"] = {"a_b": "uncertain", "fixed_key": "agreed sibling"}
+    args["nullable_flag"] = "null"
+    args["selected"] = {"mode": None, "a_b": "uncertain"}
     result = model_tools.handle_function_call(name, copy.deepcopy(args),
         skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
         skip_tool_execution_middleware=True)
     assert json.loads(result) == {}
-    ambiguous_wire = {**wire, "ambiguous": {"a_b": "uncertain", "fixed key": "agreed sibling"}}
+    ambiguous_wire = {**wire, "nullable flag": None, "selected": {"mode": None, "a_b": "uncertain"},
+                      "ambiguous": {"a_b": "uncertain", "fixed key": "agreed sibling"}}
     assert received == [wire, ambiguous_wire]
     assert not server.is_valid(ambiguous_wire)
     assert raw == snapshot

@@ -75,6 +75,8 @@ def _branch_contradicts(schema: Any, value: Any) -> bool:
         return True
     if not isinstance(schema, dict):
         return False
+    if value is None and schema.get("nullable") is True:
+        return False  # The normalized non-null survivor cannot contradict its null arm.
     kind = {dict: "object", list: "array", type(None): "null"}.get(
         type(value), _CONST_PRIMITIVE_TYPES.get(type(value)))
     value_types = {kind}
@@ -134,7 +136,7 @@ def _unrename_object_entries(schema: Any, args: dict) -> dict:
         current = dict(entries.values())
         candidates = []
         for branch in variants:
-            evidence = _sanitize_node(branch, "<unrename>")
+            evidence = _normalize_schema_node(branch, "<unrename>")
             # Ignore enclosing-only keys and colliding branch spellings in
             # branch evidence. Shared wire names still supply discriminator evidence.
             branch_args = current
@@ -189,16 +191,13 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"] = _empty_object()
         return out
     name = fn.get("name", "<tool>")
-    top = _sanitize_node(_preserve_root_union_properties(params), path=name)
+    top = _normalize_schema_node(_preserve_root_union_properties(params), path=name)
     top = top if isinstance(top, dict) else {}  # guarantee an object with properties on top
     top["type"] = "object"
     if not isinstance(top.get("properties"), dict):
         top["properties"] = {}
     if not isinstance(top.get("required"), list):
         top["required"] = []
-    # The recursive pass only handles array-form ``type: [X, "null"]``; collapse anyOf unions
-    # here, keeping ``nullable: true`` so ``tools.arg_coercion._schema_allows_null`` still coerces.
-    top = strip_nullable_unions(top, keep_nullable_hint=True)
     top = _strip_top_level_combinators(top, path=name)
     fn["parameters"] = _strip_ref_siblings(top)
     return out
@@ -224,9 +223,16 @@ def _preserve_root_union_properties(params: dict) -> dict:
     This is a permissive model hint, not a replacement for server-side validation."""
     out = dict(params)
     root_props = params.get("properties")
-    properties = dict(root_props) if isinstance(root_props, dict) else {}
+    # Normalize fragments before deriving types, without renaming their wire keys
+    # or pruning root requirements before the branch fields have been projected.
+    properties = {name: _normalize_schema_node(schema, "<projection>", rename_properties=False)
+                  for name, schema in root_props.items()} if isinstance(root_props, dict) else {}
     root_required = params.get("required")
     required = list(root_required) if isinstance(root_required, list) else []
+    if isinstance(root_props, dict):
+        required.extend(name for name, schema in root_props.items()
+                        if isinstance(schema, dict) and schema.get("required") is True
+                        and name not in required)
     for key in _UNION_KEYS:
         variants = params.get(key)
         if not isinstance(variants, list) or not variants:
@@ -246,6 +252,7 @@ def _preserve_root_union_properties(params: dict) -> dict:
                 # Branch-local legacy flags must not become unconditional root requirements.
                 if isinstance(schema, dict) and isinstance(schema.get("required"), bool):
                     schema = {k: v for k, v in schema.items() if k != "required"}
+                schema = _normalize_schema_node(schema, "<projection>", rename_properties=False)
                 choices = alternatives.setdefault(name, [])
                 if schema not in choices:
                     choices.append(schema)
@@ -261,6 +268,8 @@ def _preserve_root_union_properties(params: dict) -> dict:
                         # Keep every alternative's constraints; only the explicit
                         # unanimous type is also safe for existing scalar coercion.
                         projected["type"] = kind
+                        if any(choice.get("nullable") is True for choice in choices):
+                            projected["nullable"] = True
                 properties[name] = projected
         # Keep deterministic property order; a branch-only requirement is not global.
         required.extend(name for name in properties
@@ -389,7 +398,13 @@ def _normalize_type_array(value: list, out: dict) -> None:
         out.setdefault("nullable", True)
 
 
-def _sanitize_node(node: Any, path: str) -> Any:
+def _normalize_schema_node(node: Any, path: str, *, rename_properties: bool = True) -> Any:
+    """Share the model's fragment normalization without necessarily renaming wire keys."""
+    node = _sanitize_node(node, path, rename_properties=rename_properties)
+    return _strip_ref_siblings(strip_nullable_unions(node, keep_nullable_hint=True))
+
+
+def _sanitize_node(node: Any, path: str, *, rename_properties: bool = True) -> Any:
     """Recursively sanitize a JSON-Schema fragment: bare-string schemas → ``{"type": <value>}``
     (unknown strings → permissive object); object nodes gain ``properties: {}``; ``type`` arrays
     are normalized; property keys are renamed to the provider-safe pattern and ``required``
@@ -409,13 +424,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
                      "with empty object schema", path, node)
         return _empty_object()
     if isinstance(node, list):
-        return [_sanitize_node(item, f"{path}[{i}]") for i, item in enumerate(node)]
+        return [_sanitize_node(item, f"{path}[{i}]", rename_properties=rename_properties)
+                for i, item in enumerate(node)]
     if not isinstance(node, dict):
         return node
     # Renames computed up front so ``required`` remaps even when it precedes ``properties``.
     props_in = node.get("properties")
     prop_renames = (_rename_property_keys(props_in, f"{path}.properties")
-                    if isinstance(props_in, dict) else {})
+                    if rename_properties and isinstance(props_in, dict) else {})
     out: dict = {}
     for key, value in node.items():
         # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common in MCP tool schemas) are
@@ -433,14 +449,16 @@ def _sanitize_node(node: Any, path: str) -> Any:
         elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             renames = prop_renames if key == "properties" else {}
             out[key] = {
-                renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}")
+                renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}",
+                                                rename_properties=rename_properties)
                 for k, v in value.items()}
         elif key == "dependencies" and isinstance(value, dict):
-            out[key] = {k: _sanitize_node(v, f"{path}.{key}.{k}") if isinstance(v, dict)
+            out[key] = {k: _sanitize_node(v, f"{path}.{key}.{k}", rename_properties=rename_properties) if isinstance(v, dict)
                         else copy.deepcopy(v) for k, v in value.items()}
         elif key in {"items", "additionalProperties"}:
             # Bool ``additionalProperties`` is valid; bool ``items`` is non-standard but preserved.
-            out[key] = value if isinstance(value, bool) else _sanitize_node(value, f"{path}.{key}")
+            out[key] = value if isinstance(value, bool) else _sanitize_node(
+                value, f"{path}.{key}", rename_properties=rename_properties)
         elif key in _NON_SCHEMA_LIST_KEYS:
             if key == "required" and isinstance(value, bool):
                 continue  # Legacy property flags are lifted by the parent below.
@@ -449,7 +467,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
             else:
                 out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         elif key in _SCHEMA_CHILD_KEYS:
-            out[key] = _sanitize_node(value, f"{path}.{key}")
+            out[key] = _sanitize_node(value, f"{path}.{key}", rename_properties=rename_properties)
         else:
             # Defaults, consts and extension metadata are literal data, not schemas.
             out[key] = copy.deepcopy(value)
