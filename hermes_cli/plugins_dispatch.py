@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from hermes_cli.plugin_hook_timing import callback_span, timed_dispatch
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -206,6 +207,7 @@ class PluginDispatchMixin:
         from hermes_cli.plugins import resolve_plugin_command_result
         return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
 
+    @timed_dispatch
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
@@ -224,22 +226,33 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for index, cb in enumerate(self._hooks.get(hook_name, [])):
+            timing = callback_span(index, cb)
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout, timing=timing)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
+                    ret = (timing.execute(self._invoke_hook_callback, cb, kwargs) if timing
+                           else self._invoke_hook_callback(cb, kwargs))
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
+                if timing:
+                    timing.mark("error")
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if fail_closed:  # a guard that raised made no decision: same veto as a timeout
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
+            except BaseException:
+                if timing:
+                    timing.mark("aborted")
+                raise
+            finally:
+                if timing:
+                    timing.finish()
         return results
 
     def _report_hook_failure(
@@ -267,7 +280,7 @@ class PluginDispatchMixin:
             surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
 
     def _run_hook_callback_bounded(
-        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float, *, timing=None
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
         suppressed, still running for this call id, over the abandoned-worker cap, timed out
@@ -286,6 +299,8 @@ class PluginDispatchMixin:
                 logger.warning(
                     "Hook '%s' callback %s skipped after previous "
                     "timeout or while still running", hook_name, callback_name)
+                if timing:
+                    timing.mark("skipped_suppressed_or_running")
                 return _HOOK_SKIPPED
             # Workers abandoned on timeout still hold threads. Once the suppression window has
             # passed, a fresh call id may start a new worker (a hung guard must not fail every
@@ -299,6 +314,8 @@ class PluginDispatchMixin:
                     "Hook '%s' callback %s (%s) skipped: %d abandoned worker(s) still running — "
                     "the plugin is hung; fix or disable it (retried when a worker finishes)",
                     hook_name, callback_name, getattr(cb, "__module__", "unknown plugin"), len(abandoned))
+                if timing:
+                    timing.mark("skipped_worker_cap")
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(suppression_key, None)
@@ -321,7 +338,8 @@ class PluginDispatchMixin:
 
         def _runner() -> None:
             try:
-                outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                outcome["value"] = (context.run(timing.execute, self._invoke_hook_callback, cb, kwargs)
+                                    if timing else context.run(self._invoke_hook_callback, cb, kwargs))
             except BaseException as exc:
                 failure["exc"] = exc
             finally:
@@ -336,6 +354,8 @@ class PluginDispatchMixin:
             logger.warning(
                 "Hook '%s' callback %s worker failed to start: %s — skipping",
                 hook_name, callback_name, exc)
+            if timing:
+                timing.mark("skipped_worker_start")
             return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
             with self._hook_timeout_lock:
@@ -349,6 +369,8 @@ class PluginDispatchMixin:
                     self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
+            if timing:
+                timing.mark("timeout")
             return _HOOK_SKIPPED
         if "exc" in failure:
             raise failure["exc"]
@@ -480,6 +502,7 @@ class PluginDispatchMixin:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
 
+    @timed_dispatch
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
 
@@ -498,24 +521,48 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for index, cb in enumerate(self._hooks.get(hook_name, [])):
+            timing = callback_span(index, cb)
+            execution_start = time.monotonic_ns() if timing else None
+            execution_outcome = "ok"
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
+                    if timing:
+                        ret = timing.await_execution(ret)
+                        execution_start = None
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:
                     results.append(ret)
             except asyncio.TimeoutError:
+                execution_outcome = "timeout"
+                if timing:
+                    timing.mark("timeout")
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
             except (Exception, SystemExit) as exc:
+                execution_outcome = "error"
+                if timing:
+                    timing.mark("error")
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if fail_closed:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
+            except BaseException:
+                execution_outcome = "aborted"
+                if timing:
+                    timing.mark("aborted")
+                raise
+            finally:
+                if timing:
+                    if execution_start is not None:
+                        timing.dispatch.emit("callback_execution", execution_start, time.monotonic_ns(),
+                                             execution_outcome, admission_ms=(execution_start - timing.start) / 1e6,
+                                             **timing.meta)
+                    timing.finish()
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

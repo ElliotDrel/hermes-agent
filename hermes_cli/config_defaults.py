@@ -1698,6 +1698,8 @@ DEFAULT_CONFIG = {
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,
+        # Metadata-only hook timing; writer verifies the approved Discord guild in state.db.
+        "hook_timing": {"enabled": False},
         # Deadline (seconds) for one plugin's import + register() at load. A plugin that overruns it is
         # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
         # abandoned. 0 = no deadline (load inline). Max 600.

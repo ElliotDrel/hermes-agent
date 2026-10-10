@@ -375,3 +375,57 @@ Deployment checkpoint (2026-10-05): native update completed successfully at
 Discord connected, a user greeting received a reply, and real CarbManager and
 WHOOP MCP calls succeeded. All active entries above are installed; this is not
 a claim that every feature or next-release rebase has been exercised live.
+
+## HERMES-FORK-026: Opt-in scoped plugin hook timing
+
+Instrument native synchronous and asynchronous hook dispatch and per-callback
+caller wait/execution using monotonic spans. Preserve payload narrowing, result
+identity/order, context/thread ownership, fail-closed directives, timeout admission,
+abandoned-worker cap/suppression and exception propagation. Timeout workers emit
+late execution independently; subagent_stop's payload duration_ms is child runtime
+and is never exported as hook time. No provider calls or runtime changes.
+
+Approval: Elliot's change-specific "fix it" manual override, responding to the
+protected dispatcher assessment (prehook block/context injection and stop result
+finalization) at https://discord.com/channels/1517646536505557132/1557462052820221955/1558279264162422916.
+Residual risk: additional scheduling/hashing/queue overhead can affect timing even
+with invariant tests; async timed awaits add a wrapper coroutine. Tests cannot
+prove nondeterministic behavior safe. Dispatcher kwargs/results and model-facing
+content remain untouched; native logging still has its existing payload risks.
+
+A fixed 1024-record nonblocking metadata queue and profile-local daemon writer
+(max eight profiles/process, reused across manager generations) export only scalar
+allowlisted timing/outcomes and hashed correlation IDs, never args, request/response,
+result/error text, credentials or callback names. Writer verifies current read-only
+state.db gateway_routing SessionEntry.origin for Discord guild 1517646536505557132;
+unknown/conflicting/rotated routes fail closed. No session identity means no spans.
+Queued metadata may be lost/dropped; counters are best effort; append-only disk
+retention is operator-owned. Status is per process, not proof of process liveness.
+
+Touchpoints: hermes_cli/plugins_dispatch.py, plugin_hook_timing.py,
+config_defaults.py; tests/hermes_cli/test_plugin_hook_timing.py;
+docs/plugin-hook-timing.md (schema, scope, metrics and coverage limitations).
+Activation after source loading: hermes config set plugins.hook_timing.enabled true.
+Disable rollback: same command with false, noticed on future dispatches; queued/late
+completion events may drain. Neither command requires a gateway restart after the
+instrumented source is already loaded. No push, install or restart performed.
+
+Coverage is hook dispatcher only. Hook-based LLM/tool/terminal transforms are
+eligible only with a verified session route. Gateway pre-dispatch currently lacks
+session_id and is intentionally excluded. Middleware, event bus, streaming callback
+workers, built-in Relay observers, command/tool/platform handlers and prompt/load
+surfaces are not covered; "all plugin runs" requires separately assessed work.
+See docs/plugin-hook-timing.md for traced callers and conservative exclusions.
+
+Verification: canonical isolated scripts/run_tests.sh -j 1 across seven named
+files passed 137 tests (18 new timing cases), with one Windows portable-plugin
+Darwin-path fixture excluded after reproducing its identical failure on unchanged
+origin/live e3905a9a4f in an isolated baseline. Native sync/async dispatch, parent
+stop correlation, payload/result/order/thread invariance, concurrent bounded calls,
+worker cap/start failure, timeout late completion, cancellation/BaseException,
+privacy, queue drop/write failure, actual route serialization and real config
+setter/loader activation+disable are exercised. Adjacent suites cover plugin
+registry/middleware, subagent stop, transform persistence, tool result and streaming.
+Python compile, scoped diff and new-module/test Ruff checks pass. Offline tests
+make no inference calls; live installation/Discord acceptance remains Elliot's.
+Upstream disposition: personal metadata experiment; retain only while needed.
