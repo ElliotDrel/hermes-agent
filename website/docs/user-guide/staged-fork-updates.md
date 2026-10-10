@@ -2,8 +2,12 @@
 
 `hermes update --stage <40-character-published-SHA> --branch live` prepares a
 standalone sibling Git clone at that exact commit and a separate, relocatable
-`venv`. Native managed `uv` does the locked `all` dependency installation;
-enabled plugin declarations and native active lazy/tool dependencies are restored
+`venv`. Native managed `uv` does the locked `all` dependency installation without
+building/installing a Hermes wheel. The relative source binding survives relocation.
+The installed Windows launcher stub supplies `hermes.exe`, `hermes-acp.exe` and
+`hermes-agent.exe` with the candidate's declared entrypoints and FINAL installation
+interpreter binding; they are used after promotion, not from the staged sibling.
+Enabled plugin declarations and native active lazy/tool dependencies are restored
 into the candidate only, under core constraints. Conflicts fail preparation,
 never disable a plugin. Candidate imports are checked with an isolated probe home.
 
@@ -19,9 +23,15 @@ restart drain, and uses the existing Windows watcher to run activation from the
 candidate interpreter after the old gateway exits. Activation refuses live venv
 holders and changed/dirty revisions. It renames whole source+environment trees,
 retains the previous install, rolls back failed promotion/import checks, then
-uses native `gateway start` and checks readiness plus exact running `code_sha`.
-A failed activation attempts native recovery start and persists a failed receipt;
-a healthy running candidate is never renamed out from underneath its process.
+uses native `gateway start`. A fresh promoted interpreter polls stable process-table
+readiness plus matching live PID/exact `code_sha`, including delayed status writes.
+Native Windows start/stop can return zero after printed failure: exit status alone
+is not readiness or proof of stop. The activation gate still refuses live holders.
+Promotion/import failures roll back and attempt native recovery start. Once a launch
+is attempted, never rename a possibly booting generation: retain both trees, remove
+the consumed marker, persist a failed receipt, and ask the user to inspect native
+status/logs and run native `gateway start` if needed. No automatic post-launch
+rollback or second spawn is attempted.
 
 No activation fetches Git or resolves dependencies. Moving `live` after staging
 cannot change the pin. There is no `--force-venv` override.
@@ -78,7 +88,7 @@ installed/candidate directory:
 ```bash
 hermes gateway stop
 HERMES_HOME='C:/Users/2supe/Hermes-Workspace' \
-  '<candidate>/venv/Scripts/python.exe' -m hermes_cli.update_stage \
+  '<candidate>/venv/Scripts/python.exe' -I -m hermes_cli.update_stage \
   --root 'C:/Users/2supe/AppData/Local/hermes/hermes-agent' \
   --activate-stage '<token>'
 ```

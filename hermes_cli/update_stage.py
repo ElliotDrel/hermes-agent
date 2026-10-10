@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from uuid import uuid4
 
 from hermes_constants import get_hermes_home, venv_python_path
@@ -46,7 +47,7 @@ def _candidate_env(root: Path) -> dict:
     return env
 
 
-def _prepare_environment(candidate: Path) -> None:
+def _prepare_environment(candidate: Path, root: Path | None = None) -> None:
     # Reuse the native managed uv resolver and streamed locked installation.
     # Dependencies only: Hermes forbids wheels outside Nix. The existing source
     # binding below supplies Hermes without a non-relocatable editable install.
@@ -72,7 +73,44 @@ def _prepare_environment(candidate: Path) -> None:
         "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.prefix).parent))\n",
         encoding="utf-8")
     _restore_declared_dependencies(candidate, uv, env)
+    if root is not None:
+        _preserve_console_launchers(candidate, root)
     _probe(candidate)
+
+
+def _preserve_console_launchers(candidate: Path, root: Path) -> None:
+    """Reuse the installed Windows launcher stub, targeting the final install path.
+
+    Dependency-only sync cannot generate project entrypoints. Build their tiny
+    script zip from the candidate's declarations, without building a Hermes wheel.
+    These launchers are for the promoted install, not for the sibling candidate.
+    """
+    import io
+    import tomllib
+    import zipfile
+    scripts = tomllib.loads((candidate / "pyproject.toml").read_text(encoding="utf-8")).get("project", {}).get("scripts", {})
+    entries = {name: scripts[name] for name in ("hermes", "hermes-acp", "hermes-agent") if name in scripts}
+    if not entries:
+        return
+    template = (root / "venv" / "Scripts" / "hermes.exe").read_bytes()
+    if not template.startswith(b"MZ") or not zipfile.is_zipfile(io.BytesIO(template)):
+        raise ValueError("Installed Hermes console launcher is not a native script launcher.")
+    with zipfile.ZipFile(io.BytesIO(template)) as bundle:
+        archive_offset = min(info.header_offset for info in bundle.infolist())
+    # The PE stub itself contains the literal '#!' in its parser; only the LAST
+    # occurrence before the appended zip is the actual interpreter binding.
+    shebang_offset = template.rfind(b"#!", 0, archive_offset)
+    if shebang_offset < 0:
+        raise ValueError("Installed Hermes console launcher has no interpreter binding.")
+    stub = template[:shebang_offset]
+    interpreter = str(venv_python_path(root / "venv"))
+    shebang = f'#!"{interpreter}"\n'.encode("utf-8")
+    for name, entry in entries.items():
+        module, function = entry.split(":", 1)
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("__main__.py", f"import sys\nfrom {module} import {function}\nif __name__ == '__main__':\n    sys.exit({function}())\n")
+        (candidate / "venv" / "Scripts" / f"{name}.exe").write_bytes(stub + shebang + archive.getvalue())
 
 
 def _restore_declared_dependencies(candidate: Path, uv: str, env: dict) -> None:
@@ -163,7 +201,7 @@ def stage(root: Path, sha: str, branch: str = "live") -> dict:
     _git(candidate, "checkout", "-B", branch, sha)
     if not (candidate / "hermes_cli" / "update_stage.py").is_file():
         raise ValueError("Published candidate predates staged activation support; publish a compatible candidate first.")
-    _prepare_environment(candidate)
+    _prepare_environment(candidate, root)
     _clean(candidate)
     if _git(candidate, "rev-parse", "HEAD") != sha:
         raise ValueError("Candidate revision changed during preparation.")
@@ -251,6 +289,10 @@ def activate(root: Path, token: str) -> dict:
 def run_stage_command(args, root: Path) -> None:
     from hermes_cli.update_lock import UpdateLock
     from hermes_cli.update_receipt import begin_update_receipt, record_step, finalize_update_receipt
+    # The executing candidate's package paths disappear on promotion. Receipt
+    # finalization must not depend on a first import from those vanished paths.
+    from hermes_cli import update_serve_obligations, process_identity
+    launch_attempted = False
     lock = UpdateLock()
     if not lock.acquire():
         raise ValueError("Another native update is running.")
@@ -258,41 +300,35 @@ def run_stage_command(args, root: Path) -> None:
     try:
         if args.stage:
             data = stage(root, args.stage, args.branch or "live")
-            record_step("stage", True, f"{data['sha']} at {data['candidate']}; active installation unchanged")
-            print(f"Staged {data['sha']}. Active gateway unchanged. Send /restart yourself to activate.")
+            record_step("stage", True, f"previous_sha={data['previous_sha']}; target_sha={data['sha']}; candidate={data['candidate']}; active installation unchanged")
+            print(f"Staged {data['sha']}. Active gateway unchanged. /restart activates only once the staged handler is installed and loaded.")
+            print("First deployment: explicitly stop the native gateway, then run from outside both trees:")
+            print(subprocess.list2cmdline([str(venv_python_path(Path(data['candidate']) / 'venv')), '-I', '-m', 'hermes_cli.update_stage', '--root', str(root), '--activate-stage', data['token']]))
         else:
             data = activate(root, args.activate_stage)
-            record_step("activate", True, f"{data['sha']}; previous installation retained at {data['previous']}")
+            record_step("activate", True, f"previous_sha={data['previous_sha']}; target_sha={data['sha']}; previous={data['previous']}")
             # Fresh code/environment owns native launch, never the pre-swap interpreter.
             env = _candidate_env(root)
-            env["PYTHONPATH"] = str(root)
-            # A failed native launch restores the complete old installation, not a
-            # half-updated venv. A successfully running candidate is never renamed.
-            try:
-                subprocess.run([str(venv_python_path(root / "venv")), "-m", "hermes_cli.main",
-                                "gateway", "start"], cwd=root.parent, env=env, check=True)
-                from hermes_cli.gateway_windows import _wait_for_gateway_ready
-                from gateway.status import read_runtime_status
-                if not _wait_for_gateway_ready(timeout_s=15.0):
-                    raise ValueError("Native gateway start did not become ready.")
-                status = read_runtime_status() or {}
-                if status.get("code_sha") != data["sha"]:
-                    raise ValueError("Native start did not attest the pinned candidate SHA; inspect gateway status.")
-            except BaseException:
-                from gateway.status import get_running_pid
-                if not get_running_pid():
-                    from hermes_cli.managed_uv import _rename_with_retry
-                    _rename_with_retry(root, Path(data["candidate"]))
-                    _rename_with_retry(Path(data["previous"]), root)
-                raise
+            # Consume the marker once promotion/import checks succeed. A failed
+            # launch retains BOTH generations; it must not leave a missing-path
+            # marker blocking every later /restart.
             pending_path(root).unlink()
+            launch_attempted = True
+            # Never rename after a spawn attempt: even a nonzero CLI result or a
+            # missing pid file cannot exclude a child still booting from root.
+            subprocess.run([str(venv_python_path(root / "venv")), "-I", "-m", "hermes_cli.main",
+                            "gateway", "start"], cwd=root.parent, env=env, check=True)
+            subprocess.run([str(venv_python_path(root / "venv")), "-I", "-c",
+                            "from hermes_cli.update_stage import _verify_started_gateway; "
+                            f"_verify_started_gateway({data['sha']!r})"],
+                           cwd=root.parent, env=env, check=True, timeout=40)
         finalize_update_receipt("success")
     except BaseException as exc:
         record_step("stage" if args.stage else "activate", False, str(exc))
         # Preparation never touches the gateway. Activation was user-requested;
         # if cutover refused/rolled back, recover the untouched old install using
         # its native start rather than strand the gateway after the manual drain.
-        if not args.stage:
+        if not args.stage and not launch_attempted:
             from gateway.status import get_running_pid
             if not get_running_pid() and root.exists():
                 env = _candidate_env(root)
@@ -308,6 +344,25 @@ def run_stage_command(args, root: Path) -> None:
         raise
     finally:
         lock.release()
+
+
+def _verify_started_gateway(sha: str, timeout_s: float = 15.0) -> None:
+    """Fresh promoted interpreter: stable process discovery AND matching live SHA.
+
+    Native start may return zero after a printed failure. Old status can also
+    survive startup, so poll identity instead of treating one stale read as final.
+    """
+    from hermes_cli.gateway_windows import _wait_for_gateway_ready, _live_gateway_pids
+    from gateway.status import read_runtime_status
+    if not _wait_for_gateway_ready(timeout_s=timeout_s):
+        raise ValueError("Native gateway start did not become ready.")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        status = read_runtime_status() or {}
+        if status.get("code_sha") == sha and status.get("pid") in _live_gateway_pids(False):
+            return
+        time.sleep(0.2)
+    raise ValueError("Native start did not attest the pinned candidate SHA from a live gateway; inspect gateway status.")
 
 
 if __name__ == "__main__":
