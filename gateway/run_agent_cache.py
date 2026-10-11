@@ -491,6 +491,10 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
+        # Invalidate before yielding: a selected composition no longer owns a turn.
+        composition = getattr(self, "_discord_compositions", {}).pop(session_key, None)
+        if composition is not None:
+            composition.cancelled = True
         from gateway.run import _AGENT_PENDING_SENTINEL
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.

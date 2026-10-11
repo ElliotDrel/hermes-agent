@@ -48,7 +48,8 @@ async def test_fixed_window_seals_edits_and_waits_even_when_run_finishes(monkeyp
     await runner._seal_discord_composition("s", a, adapter)
     await task
     assert a.text == "edited first\nsecond"
-    assert a.message_id == "2"
+    assert a.message_id == "1"
+    assert a.raw_message is first_raw
     assert first_raw.channel.fetch_message.await_count == 1
     assert b.raw_message.channel.fetch_message.await_count == 1
     b.raw_message.content = "too late"
@@ -90,7 +91,7 @@ async def test_deadline_sender_and_security_boundaries_and_waiting_reaction(monk
 
 
 @pytest.mark.asyncio
-async def test_begin_twice_removes_waiting_marker_once_even_if_removal_fails():
+async def test_begin_twice_retries_failed_removal_without_claiming_success():
     from gateway.discord_composition import begin_composition_turn, Composition
     a = _event("hello", 1)
     state = Composition(event=a, deadline=0, messages=[a.raw_message])
@@ -101,7 +102,10 @@ async def test_begin_twice_removes_waiting_marker_once_even_if_removal_fails():
     a.raw_message.remove_reaction.side_effect = RuntimeError("permission denied")
     await begin_composition_turn(a)
     await begin_composition_turn(a)
-    assert a.raw_message.remove_reaction.await_count == 1
+    assert a.raw_message.remove_reaction.await_count == 2
+    assert not state.reaction_removed
+    await begin_composition_turn(a)
+    assert a.raw_message.remove_reaction.await_count == 2
 
 
 def test_media_after_composition_stays_separate_fifo_turn():
@@ -220,8 +224,11 @@ async def test_full_fifo_does_not_fall_through_to_adapter_text_merge():
     runner.adapters[a.source.platform] = adapter
     runner._running_agents[key] = MagicMock()
     runner._BUSY_QUEUE_MAX_PENDING = 0
+    runner._send_busy_reply = AsyncMock()
     assert await runner._handle_active_session_busy_message(a, key)
     assert key not in adapter._pending_messages
+    assert not a._gateway_accepted
+    assert "not accepted" in runner._send_busy_reply.await_args.args[-1]
 
 
 @pytest.mark.asyncio
@@ -344,6 +351,7 @@ async def test_current_answer_is_delivered_before_queued_window_closes():
     runner._is_goal_continuation_event = lambda event: True
     runner._goal_still_active_for_session = lambda session_id: False
     ctx = SimpleNamespace(source=a.source, session_id="id", session_key="s",
+                          progress_compositor=None,
                           run_generation=1, _interrupt_depth=0, history=[],
                           _status_thread_metadata=None, result_holder=[{"final_response": "answer"}])
     job = asyncio.create_task(runner._run_agent_queued_followup(

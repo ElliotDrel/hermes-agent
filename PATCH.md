@@ -104,9 +104,48 @@ normal per-platform overrides) can hide execution and pre-agent compression
 progress, including hold-expiry notices, without hiding actionable failures or
 material final results. Close the owned compositor before deletion; do not reuse
 closed pre-agent messages across queued successors, even within one generation.
-Refused queued delivery must not fire delivery callbacks. Final delivery, queue
-admission/grouping, model inputs, history/cache and compression policy stay native;
-progress metadata is nonconversational. Other transports retain native rendering.
+Refused queued delivery must not fire delivery callbacks. Exact-turn presentation
+owners coexist within one run generation; refused/interrupted/cancelled/incomplete
+predecessors retain their own obligations and never lend UI to a successor.
+Register ownership before every terminal return, including the interrupt recursion
+cap. Capture immutable terminal ownership before adapter delivery; finish bounded
+confirmed predecessor cleanup before spawning a drain successor. Remove an owned
+ID only after transport-confirmed deletion. Two attempts per ID within the existing
+25-second budget are terminal: exhaustion retains ownership, not a success claim;
+no sweeper, retry service or automatic replay is added.
+Final delivery, queue admission/grouping, model inputs, history/cache and compression
+policy stay native; progress metadata is nonconversational. Other transports retain
+native rendering.
+
+Authorization: exact input/cleanup ownership override, preserving fixed-window
+grouping and seal-time edit cutoff:
+https://discord.com/channels/1517646536505557132/1558581315274805291/1558648435417284670.
+Residual protected risk: callback/guard timing changes turn lifecycle; deterministic
+checks cannot prove every concurrent transport/model behavior. Rollback reverts the
+scoped source/tests/contract commit; no historical user rows are rewritten.
+Touchpoints: platforms/base.py exact callback ownership and delivery-finally handoff;
+run_turn.py producer quiescence, progress registration, retained ownership and
+bounded deletion; run_turn_runner.py background-review ownership and pending
+status sends; run_goals.py terminal-owned deferred notices.
+Combined review repair: exact delivery never fires an ownerless same-generation
+slot; review release and deferred goals capture the immutable terminal owner.
+Chained callbacks retain only unsuccessful siblings, never replay successful ones.
+Before cleanup snapshots, await progress cancellation/overflow, stream completion,
+long-running sends and already scheduled cleanup-bearing status futures, including
+queued predecessors. Freeze compositor sharing before successor admission.
+Combined offline verification supersedes the separate-branch totals: 372 passed,
+zero failed, exit 0 across 26 named gateway files (120.9s), retries disabled, using
+scripts/run_tests.sh -j 1 --tb=short and
+--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/discord-ownership-combined/scratch/test-temp/verified.
+Worktree-owned .venv, HERMES_HOME and TMPDIR/TEMP/TMP; exact commands and output
+retained in worktree scratch/verified-command.txt and scratch/verified-output.txt.
+Coverage includes actual recursive turn orchestration, cancel-time late physical
+IDs and pending status, ownerless isolation, terminal goals/background release,
+bounded failure retention, model-boundary inputs/history prefixes, agent cache,
+stream/final/ledger invariants and native restart accepted FIFO. Python compile
+and path-scoped whitespace checks pass. Fake agents/transports only, no paid calls
+or live Discord validation; no push, staging, activation or gateway restart.
+This remains fork-specific progress behavior, not a stock-upstream defect.
 
 ## HERMES-FORK-018: Fixed Discord composition window
 
@@ -116,6 +155,62 @@ is fetched once at seal to include edits; edits cannot become control commands.
 The current answer is delivered before waiting for the next composition window.
 Media, other senders, explicit commands and other transports stay separate.
 Only the final queued message receives the waiting reaction, removed on admission.
+
+Accepted-input ownership repair (approved specifically in
+https://discord.com/channels/1517646536505557132/1558581315274805291/1558648435417284670):
+joins require the FIFO owner or its explicitly selected drain capability, cannot
+cross an already queued boundary, and stop/reset revokes that capability before
+any asynchronous teardown. Capacity refuses admission with a resend notice; the
+Discord ingress receipt reports actual acceptance instead of unconditional success.
+Sealing retains the owner's original physical ID/raw message; existing Discord
+recovery processing hooks account for every member. Waiting-marker removal commits
+success only after transport success, serializes concurrent drains and retains one
+bounded retry at completion. Preserve fixed deadlines, seal-time edits, sender,
+command/media/security boundaries and prior history/system/cache prefixes.
+
+Graceful restart now finishes previously accepted FIFO follow-ups within the native
+restart after-turn/drain budget instead of dequeuing and discarding them merely
+because `_draining` is true. New human ingress is refused with a resend notice,
+including busy/sentinel paths; explicit stop/reset still revokes the selected owner.
+The native timeout phase closes successor execution before its first await.
+Interrupted workers leave the queue untouched; delivery/seal cancellation returns
+an unstarted selected physical event ahead of its promoted successor. Adapter
+completion/finally cannot redrain residuals through the cold refusal gate and
+mistakenly account them as completed. No DB, service, text-only executable replay,
+provider payload rewrite or history migration is introduced.
+
+Touchpoints: run_busy.py, run_agent_cache.py, run_turn.py, run_inbound.py,
+run_shutdown.py, platforms/base.py, discord_composition.py, Discord adapter
+processing/admission; composition, input-ownership and restart-pending regressions.
+Combined review preserves the first physical message ID/raw object for ledger
+accounting while reply_anchor_override at seal targets the last physical member
+(native reply behavior). Inline busy/control admission and real debounce storage
+now stamp acceptance; failed dispatch, denied admission, pause/drain and full FIFO
+remain refusals. A debounce path that cannot store the event returns False.
+The combined 26-file verification in 017 passes all 372 tests. The unchanged
+external-drain watcher additionally passed 16 tests (3.8s) on an isolated rerun;
+a broader run hit its known Windows WinError 32 marker-removal race (387 passed,
+1 failed). No watcher source or assertions changed. The /update busy-bypass
+expectation in test_session_race_guard.py fails identically on unchanged captured
+ac297a4c4c (8 passed, 1 failed): maintained 001 deliberately rejects mid-turn update;
+no unrelated behavior/test rewrite is included. Prior independent-branch evidence
+is superseded by the combined checks above. No production lifecycle commands,
+live traffic, remote integration or publishing were performed.
+Rollback the intent-scoped source/test/doc commits; do not rewrite old history.
+Fork-specific; no upstream report, push, staging or live activation in this task.
+
+Guarantee boundary: accepted FIFO executes before a graceful restart when it fits
+the existing budgets. Residual Discord work at timeout uses the existing optional
+missed-message history recovery with physical IDs and current ingress/security
+checks, not shutdown_flush text as an executable event. Recovery requires enabled
+backfill, a healthy ledger, eligible configured channels/threads, readable retained
+Discord history within the scan window/limits and remaining attempts. Fresh active
+claims may defer recovery for ten minutes; offline recovery does not preserve the
+old process's composition grouping or promise globally identical FIFO across lanes.
+Arbitrary crash persistence, disabled/unavailable backfill and deleted/inaccessible
+messages are not guaranteed; no durable queue subsystem was added. Two failed marker
+removals retain reaction ownership but exhaust retries; no sweeper is added.
+Deterministic fake-transport/model-boundary tests do not prove live/model behavior.
 
 ## HERMES-FORK-021: Scoped Discord session messages
 

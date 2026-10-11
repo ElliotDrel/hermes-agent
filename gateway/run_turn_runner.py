@@ -1018,7 +1018,8 @@ class TurnRunner:
         from gateway.run import _COMPRESSION_PROGRESS_STATUS_RE, _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
-        if ctx.mute_notification_reply or not self._status_live():
+        if (ctx.mute_notification_reply or getattr(ctx, "_presentation_quiesced", False)
+                or not self._status_live()):
             return
         if (ctx.progress_compositor_mode == "single_message" and ctx.progress_queue is not None
                 and _COMPRESSION_PROGRESS_STATUS_RE.search(str(message or ""))):
@@ -1057,6 +1058,9 @@ class TurnRunner:
             )
             if fut is not None and ctx._cleanup_progress:
                 fut.add_done_callback(self._track_future_cleanup_id)
+                if not hasattr(ctx, "_cleanup_status_futures"):
+                    ctx._cleanup_status_futures = []
+                ctx._cleanup_status_futures.append(fut)
         render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
                             diagnostic=is_warning_status(event_type, message))
 
@@ -1438,7 +1442,11 @@ class TurnRunner:
         # main response is delivered.
         if ctx._status_adapter and ctx.session_key:
             if getattr(type(ctx._status_adapter), "register_post_delivery_callback", None) is not None:
-                ctx._status_adapter.register_post_delivery_callback(ctx.session_key, bg_release, generation=ctx.run_generation)
+                if not hasattr(ctx, "_delivery_owner"):
+                    ctx._delivery_owner = object()
+                ctx._status_adapter.register_post_delivery_callback(
+                    ctx.session_key, bg_release, generation=ctx.run_generation, owner=ctx._delivery_owner,
+                )
             else:
                 pdc = getattr(ctx._status_adapter, "_post_delivery_callbacks", None)
                 if pdc is not None:

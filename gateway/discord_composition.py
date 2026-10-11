@@ -20,6 +20,10 @@ class Composition:
     begun: bool = False
     reacted: bool = False
     reaction_removed: bool = False
+    reaction_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    reaction_attempts: int = 0
+    selected: bool = False
+    cancelled: bool = False
 
 
 async def begin_composition_turn(event):
@@ -29,14 +33,25 @@ async def begin_composition_turn(event):
         return
     state.begun = True
     await state.sealed.wait()
-    if state.reacted and not state.reaction_removed:
-        # Both drain paths can enter; reserve removal before awaiting Discord.
-        state.reaction_removed = True
-        message = state.messages[-1]
+    await remove_composition_reaction(event)
+
+
+async def remove_composition_reaction(event):
+    """Retry a failed waiting-marker removal at completion, bounded to two attempts."""
+    state = getattr(event, "_discord_composition", None)
+    if state is None:
+        return
+    async with state.reaction_lock:
+        if not state.reacted or state.reaction_removed or state.reaction_attempts >= 2:
+            return
+        state.reaction_attempts += 1
         try:
-            await message.remove_reaction("⏳", getattr(event, "_discord_composition_bot", None))
+            await state.messages[-1].remove_reaction(
+                "⏳", getattr(state.event, "_discord_composition_bot", None))
         except Exception:
             logger.debug("Could not remove Discord queue reaction", exc_info=True)
+        else:
+            state.reaction_removed = True
 
 
 async def seal_composition(state, adapter, is_waiting=None):
@@ -66,9 +81,10 @@ async def seal_composition(state, adapter, is_waiting=None):
                                  else state.event.text)
             state.event.text = "\n".join(parts)
             last = state.messages[-1]
-            state.event.message_id = str(last.id)
-            state.event.raw_message = last
-            if not state.begun and (is_waiting is None or is_waiting()):
+            state.event.reply_anchor_override = str(last.id)
+            # The FIFO owner keeps its physical identity. The last member owns only
+            # the waiting marker; recovery hooks account for every member separately.
+            if not state.cancelled and not state.begun and (is_waiting is None or is_waiting()):
                 try:
                     await last.add_reaction("⏳")
                     state.reacted = True

@@ -89,6 +89,12 @@ class GatewayBusySessionMixin:
         now = time.monotonic()
         state = states.get(session_key)
         if (state is not None and now < state.deadline and not state.sealed.is_set()
+                and not state.cancelled
+                # A boundary already queued after the owner closes its join lane.
+                and ((self._overflow_queue(session_key) or [
+                    getattr(adapter, "_pending_messages", {}).get(session_key)
+                ])[-1] is state.event
+                     or (state.selected and not self._queue_depth(session_key, adapter=adapter)))
                 and state.event.source.user_id == event.source.user_id
                 and state.event.source.thread_id == event.source.thread_id
                 # Discord's history backfill grows after every new message. It is
@@ -96,15 +102,19 @@ class GatewayBusySessionMixin:
                 and all(getattr(state.event, name, None) == getattr(event, name, None)
                         for name in ("reply_to_message_id", "reply_to_text",
                                      "channel_prompt", "auto_skill"))
-                and state.event.source.role_authorized == event.source.role_authorized):
+                and state.event.source.role_authorized == event.source.role_authorized
+                and state.event.allow_gateway_control == event.allow_gateway_control):
             state.messages.append(raw)
             state.received.append(event.text)
+            setattr(event, "_discord_composition", state)
             event._gateway_accepted = True
             return True
         # A new window must occupy a new FIFO item, even if the old timer has not run yet.
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             # Consume at capacity: falling through to base would merge into the occupied slot.
-            logger.warning("Dropping Discord composition for full FIFO session %s", session_key)
+            logger.warning("Refusing Discord composition for full FIFO session %s", session_key)
+            event._gateway_accepted = False
+            setattr(event, "_gateway_queue_full", True)
             return True
         state = Composition(event=event, deadline=now + WINDOW_SECONDS, messages=[raw], received=[event.text])
         event._discord_composition = state
@@ -131,11 +141,6 @@ class GatewayBusySessionMixin:
             states = getattr(self, "_discord_compositions", {})
             if states.get(session_key) is state:
                 states.pop(session_key, None)
-
-    def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
-        # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
-        mode = busy_input_mode or self._busy_input_mode
-        return self._restart_requested and mode in {"queue", "steer"}
 
     def _overflow_queue(self, session_key: str):
         """The session's FIFO overflow list, or None when no session state exists yet."""
@@ -170,6 +175,21 @@ class GatewayBusySessionMixin:
             adapter._pending_messages[session_key] = overflow.pop(0)
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
+
+    def _restore_selected_fifo_head(self, session_key, adapter, event) -> None:
+        """Return an unstarted selected owner ahead of its already promoted successor."""
+        if event is None or adapter is None:
+            return
+        composition = getattr(event, "_discord_composition", None)
+        if composition is not None and composition.cancelled:
+            return  # Explicit stop/reset owns the discard policy.
+        slot = adapter._pending_messages
+        promoted = slot.get(session_key)
+        if promoted is not None and promoted is not event:
+            self._session_state(session_key).conversation.queued_events.insert(0, promoted)
+        slot[session_key] = event
+        if composition is not None:
+            composition.selected = False
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -543,15 +563,11 @@ class GatewayBusySessionMixin:
         )
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
-        """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
+        """Refuse new input; only previously admitted work belongs to the drain."""
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
-        if self._queue_during_drain_enabled(effective_mode):
-            self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-        else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+        message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now. Please resend after it comes back."
         await self._send_busy_reply(event, adapter, message)
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.
@@ -892,6 +908,11 @@ class GatewayBusySessionMixin:
         # Reserve a Discord composition slot before legacy busy-text debounce can merge it.
         if (effective_mode == "queue" and event.message_type == MessageType.TEXT
                 and self._queue_discord_composition(session_key, event, adapter)):
+            if getattr(event, "_gateway_queue_full", False):
+                await self._send_busy_ack_reply(
+                    event, adapter,
+                    "The pending queue is full; this message was not accepted. Please resend after it drains.",
+                )
             return True
         if (
             event.message_type == MessageType.TEXT

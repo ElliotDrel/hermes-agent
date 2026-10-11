@@ -432,7 +432,7 @@ async def test_cleanup_retries_a_refused_delete(caplog):
         {"final_response": "partial", "completed": False},
     ],
 )
-async def test_cleanup_is_not_registered_for_nonfinal_turns(response):
+async def test_nonfinal_turn_retains_owned_cleanup_without_deleting(response):
     adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
     session_key = "agent:main:discord:thread:123:123"
@@ -446,7 +446,10 @@ async def test_cleanup_is_not_registered_for_nonfinal_turns(response):
 
     runner._run_agent_schedule_bubble_cleanup(response, adapter, ctx)
 
-    assert adapter.pop_post_delivery_callback(session_key, generation=9) is None
+    await adapter._fire_post_delivery_callback(session_key, 9, ctx._delivery_owner)
+    assert adapter.deleted == []
+    assert ctx._cleanup_msg_ids == ["progress-1"]
+    assert callable(adapter.pop_post_delivery_callback(session_key, generation=9, owner=ctx._delivery_owner))
     assert adapter.deleted == []
 
 
