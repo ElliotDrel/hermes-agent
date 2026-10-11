@@ -153,25 +153,46 @@ success only after transport success, serializes concurrent drains and retains o
 bounded retry at completion. Preserve fixed deadlines, seal-time edits, sender,
 command/media/security boundaries and prior history/system/cache prefixes.
 
-Touchpoints: run_busy.py, run_agent_cache.py, run_turn.py (selected drain marker
-only), discord_composition.py, Discord adapter processing/admission; composition
-and accepted-input regressions. Verification: 77 tests passed across nine explicit
-files via scripts/run_tests.sh -j 1 in this worktree's locked-uv .venv (33.3s,
-exit 0), covering real queued-followup model-boundary payload/history/cache order,
-Discord ingress capacity refusal, stop/boundary ownership and every member's real
-recovery SQLite state; adjacent composition, backfill, FIFO, cache, interrupted-ID
-persistence and shutdown-flush suites. Python compilation and git diff --check pass.
-Rollback this intent-scoped source/test/doc commit;
-do not rewrite old history. Fork-specific; no upstream report or live activation.
+Graceful restart now finishes previously accepted FIFO follow-ups within the native
+restart after-turn/drain budget instead of dequeuing and discarding them merely
+because `_draining` is true. New human ingress is refused with a resend notice,
+including busy/sentinel paths; explicit stop/reset still revokes the selected owner.
+The native timeout phase closes successor execution before its first await.
+Interrupted workers leave the queue untouched; delivery/seal cancellation returns
+an unstarted selected physical event ahead of its promoted successor. Adapter
+completion/finally cannot redrain residuals through the cold refusal gate and
+mistakenly account them as completed. No DB, service, text-only executable replay,
+provider payload rewrite or history migration is introduced.
 
-Remaining blocker: restart drain still discards pending input in run_turn.py.
-The existing shutdown_flush recovery appends text to transcript, not an executable
-FIFO event; it lacks physical IDs/security/routing fields and recovers files by
-random filename, not FIFO sequence. Re-parking a selected event in the adapter slot
-immediately redrains it. Neither is a safe restart execution handoff; no new queue
-subsystem or speculative replay was introduced. Parent must resolve this gap before
-claiming the entire approved input-loss repair complete. Existing recovery DB is
-optional and cannot prove all-member crash dedup when disabled. Two failed marker
+Touchpoints: run_busy.py, run_agent_cache.py, run_turn.py, run_inbound.py,
+run_shutdown.py, platforms/base.py, discord_composition.py, Discord adapter
+processing/admission; composition, input-ownership and restart-pending regressions.
+Verification: the 19-file scripts/run_tests.sh -j 1 run passed 149 tests (87.6s,
+exit 0). After the final pre-worker timeout guard, the same run passed 148 and
+failed one external-drain watcher assertion on Windows file sharing (89.3s);
+the unchanged watcher file then passed all 16 on an isolated rerun (5.1s, exit 0).
+All runs used this worktree's own .venv. Coverage includes real native
+restart after-turn/drain orchestration around the queued-followup model-boundary
+seam, unsealed composition waits and edits, all physical members' SQLite accounting,
+FIFO restoration on timeout/cancellation, explicit stop, refused ingress, fresh
+Discord recovery through history/live allowlist gates, final delivery/ledger,
+cache/history/role ordering, dedup, notifications and shutdown flush. Python
+compilation and path-scoped git diff --check pass. A broader shutdown test has one
+Windows zombie/psutil assertion failure, reproduced unchanged at b4a4a48f7094f2d731e208dbfd7d18c7d4f2b8c2
+in an isolated archived baseline; no unrelated fix is included.
+Rollback the intent-scoped source/test/doc commits; do not rewrite old history.
+Fork-specific; no upstream report, push, staging or live activation in this task.
+
+Guarantee boundary: accepted FIFO executes before a graceful restart when it fits
+the existing budgets. Residual Discord work at timeout uses the existing optional
+missed-message history recovery with physical IDs and current ingress/security
+checks, not shutdown_flush text as an executable event. Recovery requires enabled
+backfill, a healthy ledger, eligible configured channels/threads, readable retained
+Discord history within the scan window/limits and remaining attempts. Fresh active
+claims may defer recovery for ten minutes; offline recovery does not preserve the
+old process's composition grouping or promise globally identical FIFO across lanes.
+Arbitrary crash persistence, disabled/unavailable backfill and deleted/inaccessible
+messages are not guaranteed; no durable queue subsystem was added. Two failed marker
 removals retain reaction ownership but exhaust retries; no sweeper is added.
 Deterministic fake-transport/model-boundary tests do not prove live/model behavior.
 

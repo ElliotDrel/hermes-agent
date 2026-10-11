@@ -704,6 +704,8 @@ class GatewayInboundMixin:
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
+        if self._draining and event.get_command() != "stop":
+            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now. Please resend after it comes back."
         if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
                 self._release_running_agent_state(_quick_key)
@@ -711,15 +713,6 @@ class GatewayInboundMixin:
                 return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
-        if self._draining:
-            queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
-            if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
-            return (
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                if queue_during_drain
-                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-            )
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
             self._queue_or_replace_pending_event(_quick_key, event)

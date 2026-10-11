@@ -4436,6 +4436,11 @@ class BasePlatformAdapter(ABC):
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
+        if getattr(self.gateway_runner, "_drain_interrupted", False):
+            # Shutdown owns the residual event. Starting it through the cold
+            # ingress drain gate would refuse it and falsely mark it complete.
+            self._cleanup_finished_session_task(session_key, interrupt_event)
+            return
         late_pending = self._pending_messages.pop(session_key, None)
         current_task = asyncio.current_task()
         if late_pending is not None:

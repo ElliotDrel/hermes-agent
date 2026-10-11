@@ -3799,6 +3799,12 @@ class GatewayTurnMixin:
         from gateway.run import (
             _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
         )
+        # A graceful drain finishes work already admitted to this chain. Once
+        # its budget hard-interrupts the worker, leave residual FIFO ownership
+        # intact for shutdown/recovery rather than starting another worker.
+        if self._draining and (getattr(self, "_drain_interrupted", False)
+                               or (result and result.get("interrupted"))):
+            return None, None
         pending_event = None
         pending = None
         leftover = result.get("pending_steer") if result else None
@@ -3871,13 +3877,6 @@ class GatewayTurnMixin:
                         pending_event = None
                         pending = None
 
-        if self._draining and (pending_event or pending):
-            logger.info(
-                "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
-            )
-            pending_event = None
-            pending = None
         return pending_event, pending
 
     async def _run_agent_deliver_first_response(
@@ -3998,21 +3997,32 @@ class GatewayTurnMixin:
                 adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
-        # Interrupted: discard the response ("Operation interrupted." is noise).
-        if not result.get("interrupted"):
-            await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+        try:
+            # Interrupted: discard the response ("Operation interrupted." is noise).
+            if not result.get("interrupted"):
+                await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
 
-        # An incomplete/refused predecessor retains its IDs but must never lend
-        # a live compositor to the successor, even within the same generation.
-        if turn_ctx.progress_compositor is not None:
-            turn_ctx.progress_compositor.closed = True
+            # An incomplete/refused predecessor must never lend its compositor
+            # to a successor within the same generation.
+            if turn_ctx.progress_compositor is not None:
+                turn_ctx.progress_compositor.closed = True
 
-        # The prior answer must reach Discord before the next item's edit window
-        # can hold this chain. Freeze the composed text only after that delivery.
-        if pending_event is not None:
-            from gateway.discord_composition import begin_composition_turn
-            await begin_composition_turn(pending_event)
-            pending = pending_event.text or pending
+            # Deliver the prior answer before waiting for the next edit window.
+            if pending_event is not None:
+                from gateway.discord_composition import begin_composition_turn
+                await begin_composition_turn(pending_event)
+                pending = pending_event.text or pending
+        except asyncio.CancelledError:
+            if self._draining:
+                self._restore_selected_fifo_head(session_key, adapter, pending_event)
+            raise
+
+        composition = getattr(pending_event, "_discord_composition", None)
+        if composition is not None and composition.cancelled:
+            return result  # /stop or reset explicitly revoked the selected owner.
+        if getattr(self, "_drain_interrupted", False):
+            self._restore_selected_fifo_head(session_key, adapter, pending_event)
+            return result
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
@@ -4086,12 +4096,20 @@ class GatewayTurnMixin:
         # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
         # different profile's adapter, and only that instance holds the per-message reaction state.
         from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
+        if getattr(self, "_drain_interrupted", False):
+            self._restore_selected_fifo_head(session_key, adapter, pending_event)
+            return result
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
         # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
         # (the helper's own ``except Exception`` does not catch cancellation).
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
+            if getattr(self, "_drain_interrupted", False):
+                self._restore_selected_fifo_head(session_key, adapter, pending_event)
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+                return result
 
             followup_result = await self._run_agent(
                 message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,

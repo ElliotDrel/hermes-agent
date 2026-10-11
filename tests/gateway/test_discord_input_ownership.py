@@ -179,13 +179,16 @@ async def test_queued_boundary_cannot_be_crossed_by_later_composition_join(bound
 
 
 @pytest.mark.asyncio
-async def test_real_discord_ingress_returns_refused_capacity_receipt(monkeypatch):
+@pytest.mark.parametrize('refusal', ['capacity', 'drain'])
+async def test_real_discord_ingress_returns_refused_capacity_receipt(monkeypatch, refusal):
     from tests.gateway.test_busy_session_ack import _make_runner
     from tests.gateway.test_discord_free_response import FakeTextChannel, make_message
     runner, _ = _make_runner()
     runner._busy_input_mode = 'queue'
     runner._busy_text_mode = 'queue'
     runner._BUSY_QUEUE_MAX_PENDING = 0
+    runner._draining = refusal == 'drain'
+    runner._restart_requested = refusal == 'drain'
     runner._send_busy_reply = AsyncMock()
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='placeholder'))
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
@@ -206,4 +209,5 @@ async def test_real_discord_ingress_returns_refused_capacity_receipt(monkeypatch
     adapter._heal_stale_session_lock = lambda key: None
     assert await adapter._handle_message(message, recovered=True) is False
     assert not adapter._pending_messages
-    assert 'not accepted' in runner._send_busy_reply.await_args.args[-1]
+    notice = runner._send_busy_reply.await_args.args[-1]
+    assert ('not accepting' if refusal == 'drain' else 'not accepted') in notice

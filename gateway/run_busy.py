@@ -142,11 +142,6 @@ class GatewayBusySessionMixin:
             if states.get(session_key) is state:
                 states.pop(session_key, None)
 
-    def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
-        # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
-        mode = busy_input_mode or self._busy_input_mode
-        return self._restart_requested and mode in {"queue", "steer"}
-
     def _overflow_queue(self, session_key: str):
         """The session's FIFO overflow list, or None when no session state exists yet."""
         state = self._peek_session_state(session_key)
@@ -180,6 +175,21 @@ class GatewayBusySessionMixin:
             adapter._pending_messages[session_key] = overflow.pop(0)
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
+
+    def _restore_selected_fifo_head(self, session_key, adapter, event) -> None:
+        """Return an unstarted selected owner ahead of its already promoted successor."""
+        if event is None or adapter is None:
+            return
+        composition = getattr(event, "_discord_composition", None)
+        if composition is not None and composition.cancelled:
+            return  # Explicit stop/reset owns the discard policy.
+        slot = adapter._pending_messages
+        promoted = slot.get(session_key)
+        if promoted is not None and promoted is not event:
+            self._session_state(session_key).conversation.queued_events.insert(0, promoted)
+        slot[session_key] = event
+        if composition is not None:
+            composition.selected = False
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -553,15 +563,11 @@ class GatewayBusySessionMixin:
         )
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
-        """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
+        """Refuse new input; only previously admitted work belongs to the drain."""
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
-        if self._queue_during_drain_enabled(effective_mode):
-            self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-        else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+        message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now. Please resend after it comes back."
         await self._send_busy_reply(event, adapter, message)
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.

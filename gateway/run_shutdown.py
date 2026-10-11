@@ -1845,6 +1845,9 @@ class GatewayShutdownMixin:
 
     async def _stop_interrupt_remaining_work(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Drain timed out: mark resume_pending, interrupt, settle, kill tool subprocesses, notify cron."""
+        # Close successor admission before the first await. A completed worker
+        # may still be delivering its answer or waiting for a composition seal.
+        self._drain_interrupted = True
         from gateway.run import GatewayRunner
         logger.warning(
             "Gateway drain timed out after %.1fs with %d active agent(s), "
