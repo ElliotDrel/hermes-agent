@@ -842,7 +842,23 @@ class GatewaySessionCommandsMixin:
         parts = str(event.text or "").split(maxsplit=1)
         requested = parts[1].strip() if len(parts) > 1 else ""
         confirmed = False
+        candidate = requested
         try:
+            # Acknowledge before validation, DB work or auxiliary generation.
+            thread_id = str(source.thread_id or source.chat_id)
+            visible = await adapter.get_thread_name(thread_id)
+            from gateway.run import _non_conversational_metadata
+            action = (f"Requested title: **{requested[:100]}**"
+                      + (" ← 100-character cutoff" if len(requested) > 100 else "")
+                      + f"\nRequested title length: {len(requested)} characters."
+                      if requested else "Generating new title…")
+            notice = await adapter.send(
+                source.chat_id, f"Current title: **{visible}**\n{action}",
+                reply_to=event.message_id,
+                metadata=_non_conversational_metadata(
+                    {"force_proactive_send": True}, platform=source.platform))
+            if notice is not None and getattr(notice, "success", True) is False:
+                return "Rename not completed: could not deliver the rename acknowledgement. No rename was sent."
             if requested:
                 validate_thread_name(requested)
             entry = await self.async_session_store.get_or_create_session(source)
@@ -851,8 +867,6 @@ class GatewaySessionCommandsMixin:
             if not previous:
                 return "The current session was not found; no rename was sent."
             old_title, old_source = previous.get("title"), previous.get("title_source")
-            thread_id = str(source.thread_id or source.chat_id)
-            visible = await adapter.get_thread_name(thread_id)
             candidate = requested
             if not candidate:
                 history = await self._session_db.get_messages(session_id, include_compacted=True)
@@ -921,7 +935,11 @@ class GatewaySessionCommandsMixin:
             if status:
                 hint = " Check the bot's Manage Threads permission." if status == 403 else ""
                 return f"Discord rejected the operation with HTTP {status}.{hint} The saved title was not changed; no delayed retry remains."
-            return f"Rename not completed: {exc}. The saved title was not changed; no delayed retry remains."
+            detail = str(exc).rstrip(".")
+            if candidate and len(candidate) > 100:
+                detail += (f"\nFirst 100 characters: **{candidate[:100]}** ← cutoff"
+                           f"\nFull title length: {len(candidate)} characters (maximum 100)")
+            return f"Rename not completed: {detail}. The saved title was not changed; no delayed retry remains."
 
     # -------------------------------------------------------------- /resume, /sessions
 

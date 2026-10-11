@@ -279,6 +279,25 @@ serial per-file verification avoids that harness collision without source change
 Upstream disposition: fork-only rename transaction correction; session-ownership
 issue is intentionally excluded.
 
+Always-on rename acknowledgement (scoped approval
+https://discord.com/channels/1517646536505557132/1558660005300019211/1558937879563210804):
+an admitted native thread rename reads the current visible name and sends a
+nonconversational acknowledgement before validation, database preparation or
+auxiliary generation. Show current title and either requested title/count or
+`Generating new title…`; the normal returned reply reports success or failure.
+Overlength requests show exactly the first 100 code points with a marked cutoff
+and full count, without truncating executable input. Failed acknowledgement
+refuses mutation. Existing context/adapter/pending refusal gates stay intact;
+unavailable current-name reads report their error rather than invent a title.
+No rename retries, stored history, title-generation inputs or persistence/CAS
+policy change. Residual protected timing risk: acknowledgement adds an async
+boundary while ownership remains held; fresh adapter compare-and-edit/CAS gates
+still reject newer decisions. Rollback the scoped source/test/contract commit.
+Verification: 19 passes in four named rename/title suites, retries off, isolated
+home/env/temp, including real SQLite unchanged-history/refusal/CAS invariants,
+ack-before-generation/validation, Unicode100 cutoff and delivery-refusal tests.
+Syntax and diff checks pass; no live Discord test, activation or restart.
+
 ## HERMES-FORK-013: Seven-day manual threads
 
 Manual /thread and Discord-tool creation default to `10080` minutes. Auto, update and

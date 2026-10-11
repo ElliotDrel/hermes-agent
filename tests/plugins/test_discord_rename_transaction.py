@@ -19,7 +19,7 @@ def runner_for(db):
     runner.session_store.get_or_create_session.return_value = SimpleNamespace(session_id="session-1")
     runner._async_session_store = AsyncSessionStore(runner.session_store)
     runner._session_db = AsyncSessionDB(db)
-    adapter = SimpleNamespace(get_thread_name=AsyncMock(return_value="Visible old"), rename_thread=AsyncMock(return_value=True))
+    adapter = SimpleNamespace(send=AsyncMock(), get_thread_name=AsyncMock(return_value="Visible old"), rename_thread=AsyncMock(return_value=True))
     runner._delivery_adapter_for = lambda source: adapter
     return runner, adapter
 
@@ -107,7 +107,8 @@ async def test_validation_failure_cancellation_and_generation(tmp_path):
         for invalid in ("a" * 101, "Bad\nname", "Invisible\u200bname", "Two  spaces"):
             assert "not completed" in await runner._handle_rename_command(event("/rename " + invalid))
         adapter.rename_thread.assert_not_awaited()
-        adapter.get_thread_name.assert_not_awaited()
+        assert adapter.get_thread_name.await_count == 4
+        assert adapter.send.await_count == 4
         for error in (discord.RateLimited(470.7), discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), {"message":"No permission", "code":50013}), discord.HTTPException(SimpleNamespace(status=400, reason="Bad Request"), {"message":"Invalid", "code":50035})):
             adapter.rename_thread.side_effect = error
             reply = await runner._handle_rename_command(event())

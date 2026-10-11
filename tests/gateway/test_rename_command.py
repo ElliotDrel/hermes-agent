@@ -18,7 +18,7 @@ def _runner():
     runner._session_db.get_session_title.return_value = "Old Thread Title"
     runner._session_db.get_session.return_value = {"title": "Old Thread Title", "title_source": "user"}
     runner._session_db.set_session_title.return_value = True
-    adapter = SimpleNamespace(rename_thread=AsyncMock(return_value=True), get_thread_name=AsyncMock(return_value="Old Thread Title"))
+    adapter = SimpleNamespace(send=AsyncMock(), rename_thread=AsyncMock(return_value=True), get_thread_name=AsyncMock(return_value="Old Thread Title"))
     runner._delivery_adapter_for = lambda source: adapter
     runner.adapters = {Platform.DISCORD: adapter}
     return runner, adapter
@@ -72,3 +72,39 @@ async def test_rename_dispatches_while_agent_is_busy():
     assert command and command.busy_policy == "dispatch"
     result = await runner._dispatch_busy_slash_command(_event(), command, "discord:thread-1", _event().source)
     assert "Renamed this thread" in result
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_precedes_validation_and_generation():
+    runner, adapter = _runner()
+    requested = "é" * 100 + "OVERFLOW"
+    reply = await runner._handle_rename_command(_event("/rename " + requested))
+    notice = adapter.send.call_args.args[1]
+    assert "Current title: **Old Thread Title**" in notice
+    assert requested[:100] in notice and "OVERFLOW" not in notice
+    assert "108 characters" in notice and "100-character cutoff" in notice
+    assert "First 100 characters" in reply and "108 characters" in reply
+    assert ".." not in reply
+    adapter.rename_thread.assert_not_awaited()
+    runner._session_db.set_session_title_if_current.assert_not_awaited()
+    runner._session_db.get_session.assert_not_awaited()
+
+    adapter.send.reset_mock()
+    runner._session_db.get_messages.return_value = [{"role": "user", "content": "Rename this project"}]
+    def generate(*args):
+        assert adapter.send.await_count == 1
+        assert "Generating new title…" in adapter.send.call_args.args[1]
+        return "Generated Name"
+    with patch("agent.title_generator.generate_regenerated_title", side_effect=generate):
+        reply = await runner._handle_rename_command(_event("/rename"))
+    assert "Generated Name" in reply and "confirmed" in reply
+
+
+@pytest.mark.asyncio
+async def test_ack_failure_does_not_rename():
+    runner, adapter = _runner()
+    adapter.send.return_value = SimpleNamespace(success=False)
+    reply = await runner._handle_rename_command(_event())
+    assert "acknowledgement" in reply
+    adapter.rename_thread.assert_not_awaited()
+    runner._session_db.set_session_title_if_current.assert_not_awaited()
