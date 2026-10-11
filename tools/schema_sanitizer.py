@@ -61,21 +61,133 @@ def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
 def unrename_tool_args(params_schema: Any, args: Any) -> Any:
     """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
     ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through."""
-    props = params_schema.get("properties") if isinstance(params_schema, dict) else None
-    if not isinstance(props, dict) or not isinstance(args, dict):
+    if isinstance(params_schema, dict):
+        params_schema = _preserve_root_union_properties(params_schema)
+        # Only the exposed root is projected; its original branches are no longer visible.
+        params_schema = {k: v for k, v in params_schema.items() if k not in _UNION_KEYS}
+    return _unrename_args(params_schema, args)
+
+
+def _branch_contradicts(schema: Any, value: Any) -> bool:
+    """Reject a rename candidate using simple native-value evidence, not coercion.
+    Unchecked constraints/refs remain possible candidates; this is not validation."""
+    if schema is False:
+        return True
+    if not isinstance(schema, dict):
+        return False
+    if value is None and schema.get("nullable") is True:
+        return False  # The normalized non-null survivor cannot contradict its null arm.
+    kind = {dict: "object", list: "array", type(None): "null"}.get(
+        type(value), _CONST_PRIMITIVE_TYPES.get(type(value)))
+    value_types = {kind}
+    if kind == "integer":
+        value_types.add("number")
+    elif kind == "number" and value.is_integer():
+        value_types.add("integer")
+    declared = schema.get("type")
+    types = declared if isinstance(declared, list) else [declared]
+    if declared is not None and not (value is None and schema.get("nullable") is True) \
+            and all(isinstance(t, str) and t in _BARE_TYPE_NAMES for t in types) \
+            and not value_types.intersection(types):
+        return True
+    if "const" in schema and (value != schema["const"] or
+                             isinstance(value, bool) != isinstance(schema["const"], bool)):
+        return True
+    if isinstance(schema.get("enum"), list) and not any(
+            value == item and isinstance(value, bool) == isinstance(item, bool)
+            for item in schema["enum"]):
+        return True
+    if isinstance(value, dict):
+        required = schema.get("required")
+        if isinstance(required, list) and any(k not in value for k in required):
+            return True
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            if schema.get("additionalProperties") is False and value.keys() - props.keys():
+                return True
+            return any(_branch_contradicts(props[k], v) for k, v in value.items() if k in props)
+    return False
+
+
+def _unrename_args(schema: Any, args: Any) -> Any:
+    """Follow nested branch-local maps only when possible candidates agree per key."""
+    if not isinstance(schema, dict):
         return args
+    if isinstance(args, list):
+        items = schema.get("items", {})
+        if not isinstance(items, dict):
+            return args
+        items = dict(items)
+        # Select array-compatible arms before descent; their item maps still
+        # require per-key agreement, and enclosing items retain ownership.
+        for key in _UNION_KEYS:
+            variants = schema.get(key)
+            if isinstance(variants, list) and key not in items:
+                candidates = [branch.get("items", {}) if isinstance(branch, dict) else branch
+                              for branch in variants if not _branch_contradicts(
+                                  _normalize_schema_node(branch, "<unrename>"), args)]
+                if candidates:
+                    items[key] = candidates
+        return [_unrename_args(items, item) for item in args]
+    if not isinstance(args, dict):
+        return args
+    return dict(_unrename_object_entries(schema, args).values())
+
+
+def _unrename_object_entries(schema: Any, args: dict) -> dict:
+    """Track each supplied key separately so one ambiguous rename cannot veto siblings."""
+    entries = {key: (key, value) for key, value in args.items()}
+    if not isinstance(schema, dict):
+        return entries
+    props = schema.get("properties")
+    props = props if isinstance(props, dict) else {}
     reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
-    out = {}
-    for key, value in args.items():
+    exposed_owned = set(props) | set(reverse)
+    for key in _UNION_KEYS:
+        variants = schema.get(key)
+        if not isinstance(variants, list):
+            continue
+        current = dict(entries.values())
+        candidates = []
+        for branch in variants:
+            evidence = _normalize_schema_node(branch, "<unrename>")
+            # Ignore enclosing-only keys and colliding branch spellings in
+            # branch evidence. Shared wire names still supply discriminator evidence.
+            branch_args = current
+            if isinstance(evidence, dict) and exposed_owned:
+                evidence = dict(evidence)
+                branch_props = evidence.get("properties")
+                branch_props = branch_props if isinstance(branch_props, dict) else {}
+                raw_props = branch.get("properties", {}) if isinstance(branch, dict) else {}
+                raw_props = raw_props if isinstance(raw_props, dict) else {}
+                branch_reverse = {v: k for k, v in _rename_property_keys(raw_props, "<unrename>").items()}
+                ignored = {k for k in exposed_owned if k not in branch_props or
+                           branch_reverse.get(k, k) != reverse.get(k, k)}
+                evidence["properties"] = {k: v for k, v in branch_props.items() if k not in ignored}
+                if isinstance(evidence.get("required"), list):
+                    evidence["required"] = [k for k in evidence["required"] if k not in ignored]
+                branch_args = {k: v for k, v in current.items() if k not in ignored}
+            if not _branch_contradicts(evidence, branch_args):
+                candidates.append(_unrename_object_entries(branch, current))
+        if candidates:
+            for supplied, (name, value) in list(entries.items()):
+                if supplied in exposed_owned:
+                    continue
+                agreed = candidates[0][name]
+                name_agrees = all(candidate[name][0] == agreed[0] for candidate in candidates[1:])
+                taken = {n for s, (n, _) in entries.items() if s != supplied}
+                if name_agrees and (agreed[0] == name or
+                                    agreed[0] not in taken | exposed_owned):
+                    value_agrees = all(candidate[name][1] == agreed[1] for candidate in candidates[1:])
+                    entries[supplied] = (agreed[0], agreed[1] if value_agrees else value)
+    taken = {name for name, value in entries.values()}
+    for supplied, (key, value) in list(entries.items()):
         orig = reverse.get(key, key)
-        sub = props.get(orig) if isinstance(props.get(orig), dict) else {}
-        if isinstance(value, dict) and sub:
-            value = unrename_tool_args(sub, value)
-        elif isinstance(value, list) and isinstance(sub.get("items"), dict):
-            value = [unrename_tool_args(sub["items"], item) if isinstance(item, dict) else item
-                     for item in value]
-        out[orig] = value
-    return out
+        # Preserve both supplied keys on collision, but still repair unrelated siblings.
+        if orig != key and orig in taken:
+            orig = key
+        entries[supplied] = (orig, _unrename_args(props.get(orig), value))
+    return entries
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
@@ -93,16 +205,13 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"] = _empty_object()
         return out
     name = fn.get("name", "<tool>")
-    top = _sanitize_node(params, path=name)
+    top = _normalize_schema_node(_preserve_root_union_properties(params), path=name)
     top = top if isinstance(top, dict) else {}  # guarantee an object with properties on top
     top["type"] = "object"
     if not isinstance(top.get("properties"), dict):
         top["properties"] = {}
     if not isinstance(top.get("required"), list):
         top["required"] = []
-    # The recursive pass only handles array-form ``type: [X, "null"]``; collapse anyOf unions
-    # here, keeping ``nullable: true`` so ``tools.arg_coercion._schema_allows_null`` still coerces.
-    top = strip_nullable_unions(top, keep_nullable_hint=True)
     top = _strip_top_level_combinators(top, path=name)
     fn["parameters"] = _strip_ref_siblings(top)
     return out
@@ -123,10 +232,71 @@ def _strip_ref_siblings(node: Any) -> Any:
 _TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
 
 
+def _preserve_root_union_properties(params: dict) -> dict:
+    """Expose inline root-union fields before strict-backend combinator removal.
+    This is a permissive model hint, not a replacement for server-side validation."""
+    out = dict(params)
+    root_props = params.get("properties")
+    # Normalize fragments before deriving types, without renaming their wire keys
+    # or pruning root requirements before the branch fields have been projected.
+    properties = {name: _normalize_schema_node(schema, "<projection>", rename_properties=False)
+                  for name, schema in root_props.items()} if isinstance(root_props, dict) else {}
+    root_required = params.get("required")
+    required = list(root_required) if isinstance(root_required, list) else []
+    if isinstance(root_props, dict):
+        required.extend(name for name, schema in root_props.items()
+                        if isinstance(schema, dict) and schema.get("required") is True
+                        and name not in required)
+    for key in _UNION_KEYS:
+        variants = params.get(key)
+        if not isinstance(variants, list) or not variants:
+            continue
+        alternatives: dict[str, list] = {}
+        common_required: set[str] | None = None
+        for branch in variants:
+            branch_props = branch.get("properties", {}) if isinstance(branch, dict) else {}
+            branch_props = branch_props if isinstance(branch_props, dict) else {}
+            branch_required = branch.get("required", []) if isinstance(branch, dict) else []
+            names = {name for name in branch_required if isinstance(name, str)} \
+                if isinstance(branch_required, list) else set()
+            names.update(name for name, schema in branch_props.items()
+                         if isinstance(schema, dict) and schema.get("required") is True)
+            common_required = names if common_required is None else common_required & names
+            for name, schema in branch_props.items():
+                # Branch-local legacy flags must not become unconditional root requirements.
+                if isinstance(schema, dict) and isinstance(schema.get("required"), bool):
+                    schema = {k: v for k, v in schema.items() if k != "required"}
+                schema = _normalize_schema_node(schema, "<projection>", rename_properties=False)
+                choices = alternatives.setdefault(name, [])
+                if schema not in choices:
+                    choices.append(schema)
+        for name, choices in alternatives.items():
+            # Root properties constrain every branch and must not be weakened.
+            if name not in properties:
+                projected: Any = choices[0] if len(choices) == 1 else {"anyOf": choices}
+                if len(choices) > 1:
+                    kind = choices[0].get("type") if isinstance(choices[0], dict) else None
+                    if isinstance(kind, str) and kind in _BARE_TYPE_NAMES and all(
+                            isinstance(choice, dict) and choice.get("type") == kind
+                            for choice in choices):
+                        # Keep every alternative's constraints; only the explicit
+                        # unanimous type is also safe for existing scalar coercion.
+                        projected["type"] = kind
+                        if any(choice.get("nullable") is True for choice in choices):
+                            projected["nullable"] = True
+                properties[name] = projected
+        # Keep deterministic property order; a branch-only requirement is not global.
+        required.extend(name for name in properties
+                        if name in (common_required or ()) and name not in required)
+    if properties:
+        out["properties"] = properties
+        out["required"] = required
+    return out
+
+
 def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
-    """Drop combinators from the TOP level only (Codex rejects them there). They are usually
-    conditional-required hints, so validity is unchanged (handlers re-validate); nested ones
-    stay."""
+    """Drop root combinators after preserving inline union fields for strict backends.
+    Nested combinators stay intact; handlers still validate the original constraints."""
     if not isinstance(params, dict):
         return params
     out = dict(params)
@@ -242,7 +412,13 @@ def _normalize_type_array(value: list, out: dict) -> None:
         out.setdefault("nullable", True)
 
 
-def _sanitize_node(node: Any, path: str) -> Any:
+def _normalize_schema_node(node: Any, path: str, *, rename_properties: bool = True) -> Any:
+    """Share the model's fragment normalization without necessarily renaming wire keys."""
+    node = _sanitize_node(node, path, rename_properties=rename_properties)
+    return _strip_ref_siblings(strip_nullable_unions(node, keep_nullable_hint=True))
+
+
+def _sanitize_node(node: Any, path: str, *, rename_properties: bool = True) -> Any:
     """Recursively sanitize a JSON-Schema fragment: bare-string schemas → ``{"type": <value>}``
     (unknown strings → permissive object); object nodes gain ``properties: {}``; ``type`` arrays
     are normalized; property keys are renamed to the provider-safe pattern and ``required``
@@ -262,13 +438,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
                      "with empty object schema", path, node)
         return _empty_object()
     if isinstance(node, list):
-        return [_sanitize_node(item, f"{path}[{i}]") for i, item in enumerate(node)]
+        return [_sanitize_node(item, f"{path}[{i}]", rename_properties=rename_properties)
+                for i, item in enumerate(node)]
     if not isinstance(node, dict):
         return node
     # Renames computed up front so ``required`` remaps even when it precedes ``properties``.
     props_in = node.get("properties")
     prop_renames = (_rename_property_keys(props_in, f"{path}.properties")
-                    if isinstance(props_in, dict) else {})
+                    if rename_properties and isinstance(props_in, dict) else {})
     out: dict = {}
     for key, value in node.items():
         # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common in MCP tool schemas) are
@@ -286,14 +463,16 @@ def _sanitize_node(node: Any, path: str) -> Any:
         elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             renames = prop_renames if key == "properties" else {}
             out[key] = {
-                renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}")
+                renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}",
+                                                rename_properties=rename_properties)
                 for k, v in value.items()}
         elif key == "dependencies" and isinstance(value, dict):
-            out[key] = {k: _sanitize_node(v, f"{path}.{key}.{k}") if isinstance(v, dict)
+            out[key] = {k: _sanitize_node(v, f"{path}.{key}.{k}", rename_properties=rename_properties) if isinstance(v, dict)
                         else copy.deepcopy(v) for k, v in value.items()}
         elif key in {"items", "additionalProperties"}:
             # Bool ``additionalProperties`` is valid; bool ``items`` is non-standard but preserved.
-            out[key] = value if isinstance(value, bool) else _sanitize_node(value, f"{path}.{key}")
+            out[key] = value if isinstance(value, bool) else _sanitize_node(
+                value, f"{path}.{key}", rename_properties=rename_properties)
         elif key in _NON_SCHEMA_LIST_KEYS:
             if key == "required" and isinstance(value, bool):
                 continue  # Legacy property flags are lifted by the parent below.
@@ -302,7 +481,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
             else:
                 out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         elif key in _SCHEMA_CHILD_KEYS:
-            out[key] = _sanitize_node(value, f"{path}.{key}")
+            out[key] = _sanitize_node(value, f"{path}.{key}", rename_properties=rename_properties)
         else:
             # Defaults, consts and extension metadata are literal data, not schemas.
             out[key] = copy.deepcopy(value)

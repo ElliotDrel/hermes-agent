@@ -23,24 +23,36 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return args
 
     schema = registry.get_schema(tool_name)
-    properties = ((schema or {}).get("parameters") or {}).get("properties")
+    parameters = (schema or {}).get("parameters") or {}
+    # Coercion and root reversal must use the same projected wire properties.
+    try:
+        from tools.schema_sanitizer import (
+            _normalize_schema_node, _preserve_root_union_properties, unrename_tool_args,
+        )
+        parameters = _preserve_root_union_properties(parameters)
+        # Decode against the model's exposed keys before reversing exactly once.
+        # A second reversal could mistake restored wire keys for exposed aliases.
+        exposed = _normalize_schema_node(parameters, "<coercion>")
+        args = _normalize_json_strings_for_schema(args, exposed, preserve_strings=True)
+        args = unrename_tool_args(parameters, args)
+    except Exception:  # pragma: no cover — never break dispatch
+        pass
+    properties = parameters.get("properties")
     if not properties:
         return args
 
-    # The model saw the SANITIZED schema (provider-illegal property keys were
-    # renamed); map those keys back to the registry's wire names first.
-    try:
-        from tools.schema_sanitizer import unrename_tool_args
-        args = unrename_tool_args(schema.get("parameters"), args)
-    except Exception:  # pragma: no cover — never break dispatch
-        pass
-
     for key, value in list(args.items()):
         prop_schema = properties.get(key)
-        if not prop_schema:
+        if not isinstance(prop_schema, dict):
             continue
         expected = prop_schema.get("type")
         is_container = isinstance(value, (list, tuple))
+        # Raw type arrays reach the legacy scalar pass even though their exposed
+        # schema is a union. Do not undo the pre-pass's string preservation.
+        if isinstance(value, str) and isinstance(expected, list) \
+                and any(kind in expected for kind in ("array", "object")) \
+                and _schema_may_accept_string(prop_schema):
+            continue
 
         # Bare non-list value for an array schema. Strings go through
         # _coerce_value first so a JSON-encoded array is parsed and a nullable
@@ -67,7 +79,7 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(value, str):
             # Native container: still normalize JSON-encoded elements/sub-fields.
             if (expected == "array" and is_container) or (expected == "object" and isinstance(value, dict)):
-                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
+                args[key] = _normalize_json_strings_for_schema(value, prop_schema, preserve_strings=True)
             continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
@@ -75,7 +87,7 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if coerced is not value:
             args[key] = coerced
             if isinstance(coerced, (list, tuple, dict)):
-                args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
+                args[key] = _normalize_json_strings_for_schema(coerced, prop_schema, preserve_strings=True)
 
     return args
 
@@ -91,11 +103,30 @@ def _schema_accepts_kind(schema: Any, kind: str) -> bool:
                for union_key in ("anyOf", "oneOf", "allOf"))
 
 
-def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
+def _schema_may_accept_string(schema: Any) -> bool:
+    """Only explicit type evidence rules strings out; opaque arms block guesses."""
+    if schema is False:
+        return False
+    if not isinstance(schema, dict) or "$ref" in schema:
+        return True
+    declared = schema.get("type")
+    if declared is not None:
+        return declared == "string" or isinstance(declared, list) and "string" in declared
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list):
+            return any(_schema_may_accept_string(branch) for branch in branches)
+    branches = schema.get("allOf")
+    return not isinstance(branches, list) or all(_schema_may_accept_string(branch) for branch in branches)
+
+
+def _normalize_json_strings_for_schema(value: Any, schema: Any, *, preserve_strings: bool = False) -> Any:
     """Recursively parse JSON-encoded strings where the schema expects array/object.
 
     Schema-guided: a string is only parsed when its schema position expects a
     container, so legitimate JSON-looking ``type: string`` fields survive.
+    Dispatch uses ``preserve_strings`` to also retain mixed/opaque interpretations;
+    the default keeps this walker's existing standalone behavior.
     Returns the same object when nothing changed (identity = cheap no-op check).
 
     Ported from cline/cline#11803, adapted to hermes-agent's coercion layer.
@@ -105,6 +136,8 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
 
     if isinstance(value, str):
         trimmed = value.strip()
+        if preserve_strings and _schema_may_accept_string(schema):
+            return value
         expects_array = _schema_accepts_kind(schema, "array")
         expects_object = _schema_accepts_kind(schema, "object")
         if not ((expects_array and trimmed.startswith("[")) or (expects_object and trimmed.startswith("{"))):
@@ -121,7 +154,8 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         items_schema = schema.get("items")
         if not isinstance(items_schema, dict):
             return value
-        out = [_normalize_json_strings_for_schema(item, items_schema) for item in value]
+        out = [_normalize_json_strings_for_schema(item, items_schema, preserve_strings=preserve_strings)
+               for item in value]
         return out if any(n is not o for n, o in zip(out, value)) else value
 
     if isinstance(value, dict):
@@ -131,7 +165,7 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         out = dict(value)
         for k, prop_schema in props.items():
             if k in value and isinstance(prop_schema, dict):
-                out[k] = _normalize_json_strings_for_schema(value[k], prop_schema)
+                out[k] = _normalize_json_strings_for_schema(value[k], prop_schema, preserve_strings=preserve_strings)
         return out if any(out[k] is not v for k, v in value.items()) else value
 
     return value
