@@ -392,6 +392,30 @@ or state migrations. Keep failed candidates and previous installations. A host c
 between tree renames still needs retained-tree recovery, not a new journal.
 Staged/published is not installed or running; activation is user-owned.
 
+Restart preflight correction: supervisor detection for the current PID reads the
+native launch context, never blocking IPC back to its own event loop. Candidate
+validation runs in `asyncio.to_thread`; restart admission is rechecked after that
+yield. Existing explicit-user authorization, candidate refusal, native drain,
+watcher and immutable pin remain intact. No control-client transport rewrite.
+Authorization: Elliot's change-specific `allow`, following the self-query deadlock
+assessment, https://discord.com/channels/1517646536505557132/1558660005300019211/1558929874331111561.
+Residual protected risk: validation now yields while state can change; admission
+recheck and native activation validation constrain races, not all concurrency.
+Rollback: revert these scoped source/tests/contract edits before deployment;
+retain both generations after launch rather than renaming a possibly live tree.
+Verification: five gateway files passed 71 tests including three new regressions:
+loop responsiveness/refusal, restart admission after validation yields, and an
+actual disposable Windows named-pipe round trip plus no-self-query owner check.
+Native disposable staging/promotion/rollback suite passed all six with explicit
+worktree `UV_PYTHON` (the canonical runner cleans that variable and its fixture
+initially produced three WinError448 interpreter-discovery errors, not passes).
+External-supervisor/control suites passed seven, skipped sixteen platform tests;
+skips are not Windows coverage. Syntax/scoped whitespace checks passed. No live
+restart, promotion, paid request, model payload/history or runtime mutation.
+A corrected candidate cannot change already-loaded preflight code; user-operated
+native stop then pinned candidate activation is a recovery route, not a repeated
+first-install bootstrap. Future loaded `/restart` uses the corrected path.
+
 ## HERMES-FORK-030: Truthful delegated process completion ownership
 
 Build on upstream PR #132827 pinned at

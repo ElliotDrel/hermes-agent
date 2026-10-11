@@ -552,9 +552,14 @@ class GatewaySlashCommandsMixin(
         import subprocess
         from hermes_cli.update_stage import restart_candidate
         try:
-            staged = restart_candidate(Path(__file__).resolve().parent.parent)
+            staged = await asyncio.to_thread(
+                restart_candidate, Path(__file__).resolve().parent.parent)
         except (ValueError, OSError, subprocess.CalledProcessError) as exc:
             return f"Staged activation refused; gateway unchanged: {exc}"
+        # Validation now yields; another explicit restart may have won admission.
+        if self._restart_requested or self._draining:
+            count = self._running_agent_count()
+            return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
         if staged:
             if (not event.allow_gateway_control or getattr(event, "internal", False)
                     or getattr(event.source, "is_bot", False) or event.get_command() != "restart"):

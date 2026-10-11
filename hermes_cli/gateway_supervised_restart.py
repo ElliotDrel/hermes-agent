@@ -32,7 +32,13 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
     """
     if not pid or pid <= 1:
         return False
-    from gateway.control_socket import identify_gateway
+    import os
+    from gateway.control_socket import _detect_supervisor, identify_gateway
+
+    # The gateway's async slash handler can validate its own owner. A blocking
+    # control request to ourselves would stall the loop serving that request.
+    if pid == os.getpid():
+        return _detect_supervisor() != "manual"
     from gateway.status import _get_process_hermes_home, read_runtime_status
     from hermes_cli.gateway import _capture_gateway_argv
 
