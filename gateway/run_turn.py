@@ -2122,7 +2122,11 @@ class GatewayTurnMixin:
             "Discarding stale agent result for %s — generation %d is no longer current",
             _quick_key or "?", run_generation,
         )
-        self._pop_post_delivery_callback(self._delivery_adapter_for(source), _quick_key, run_generation)
+        adapter = self._delivery_adapter_for(source)
+        callbacks = getattr(adapter, "_post_delivery_callbacks", {})
+        # Drop delivery hooks for the discarded answer, not retained presentation
+        # obligations belonging to its exact incomplete/refused turns.
+        callbacks.pop((_quick_key, run_generation, None), None)
 
     @dataclasses.dataclass
     class _PreparedTurn:
@@ -3879,6 +3883,8 @@ class GatewayTurnMixin:
         """Deliver the first response before a queued follow-up runs, unless streaming already did."""
         if turn_ctx.mute_notification_reply:
             return
+        if not hasattr(turn_ctx, "_delivery_owner"):
+            self._run_agent_schedule_bubble_cleanup(response, adapter, turn_ctx)
         session_key = turn_ctx.session_key
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
@@ -3950,14 +3956,10 @@ class GatewayTurnMixin:
                 _delivered = bool(_text_delivered)
         # Cleanup is presentation-only; keep upstream's fallback and already_sent contract.
         if _delivered:
-            self._run_agent_schedule_bubble_cleanup(_delivery_result, adapter, turn_ctx)
-            # A refused/empty send must not fire callbacks belonging to a confirmed delivery.
-            _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
-            if callable(_bg_cb):
-                with suppress(Exception):
-                    _bg_result = _bg_cb()
-                    if inspect.isawaitable(_bg_result):
-                        await _bg_result
+            # Consume only this exact turn; refused sends retain their own obligation.
+            await adapter._fire_post_delivery_callback(
+                session_key, turn_ctx.run_generation, turn_ctx._delivery_owner,
+            )
 
     async def _run_agent_queued_followup(
         self, turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
@@ -3996,6 +3998,11 @@ class GatewayTurnMixin:
         # Interrupted: discard the response ("Operation interrupted." is noise).
         if not result.get("interrupted"):
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+
+        # An incomplete/refused predecessor retains its IDs but must never lend
+        # a live compositor to the successor, even within the same generation.
+        if turn_ctx.progress_compositor is not None:
+            turn_ctx.progress_compositor.closed = True
 
         # The prior answer must reach Discord before the next item's edit window
         # can hold this chain. Freeze the composed text only after that delivery.
@@ -4298,13 +4305,17 @@ class GatewayTurnMixin:
             return None
         # One owned compositor id can be observed by more than one source callback. Delete it once.
         _ids_snapshot = list(dict.fromkeys(str(mid) for mid in _cleanup_msg_ids if mid))
+        attempted = False
         _chat_id_snapshot = turn_ctx.source.chat_id
 
-        async def _cleanup_temp_bubbles() -> None:
+        async def _cleanup_temp_bubbles() -> bool:
+            nonlocal attempted
+            if attempted:
+                return not any(str(mid) in _ids_snapshot for mid in _cleanup_msg_ids)
+            attempted = True
             # Freeze only this owned UI lane. A queued successor has its own compositor/IDs.
             if turn_ctx.progress_compositor is not None:
                 turn_ctx.progress_compositor.closed = True
-            _cleanup_msg_ids[:] = [mid for mid in _cleanup_msg_ids if str(mid) not in _ids_snapshot]
             # The delivery callback awaits us before releasing the turn. A detached task could be
             # killed by a gateway drain immediately after the final answer reaches Discord.
             from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
@@ -4328,6 +4339,7 @@ class GatewayTurnMixin:
                             timeout=min(5.0, remaining),
                         )
                         if deleted:
+                            _cleanup_msg_ids[:] = [mid for mid in _cleanup_msg_ids if str(mid) != _mid]
                             break
                     except Exception as exc:
                         logger.warning(
@@ -4346,24 +4358,31 @@ class GatewayTurnMixin:
                                    _chat_id_snapshot, _ids_snapshot[index + 1:])
                     break
 
+            return not any(str(mid) in _ids_snapshot for mid in _cleanup_msg_ids)
+
         return _cleanup_temp_bubbles
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
-        """Delete temporary progress after confirmed terminal delivery, including error replies."""
-        if not (isinstance(response, dict) and not response.get("interrupted")
-                and not response.get("cancelled") and response.get("completed", True) is not False
-                and (not response.get("failed") or turn_ctx.progress_compositor_mode == "single_message")
-                and turn_ctx.session_key and hasattr(_cleanup_adapter, "register_post_delivery_callback")):
+        """Retain exact-turn ownership; only confirmed completed delivery permits deletion."""
+        if not (isinstance(response, dict) and turn_ctx.session_key
+                and hasattr(_cleanup_adapter, "register_post_delivery_callback")):
             return
+        if not hasattr(turn_ctx, "_delivery_owner"):
+            turn_ctx._delivery_owner = object()
         cleanup = self._run_agent_bubble_cleanup(_cleanup_adapter, turn_ctx)
         if cleanup is None:
             return
-        try:
-            _cleanup_adapter.register_post_delivery_callback(
-                turn_ctx.session_key, cleanup, generation=turn_ctx.run_generation,
-            )
-        except Exception as _rpe:
-            logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+        eligible = (not response.get("interrupted") and not response.get("cancelled")
+                    and response.get("completed", True) is not False
+                    and (not response.get("failed") or turn_ctx.progress_compositor_mode == "single_message"))
+        async def owned_cleanup():
+            if not eligible:
+                return False
+            return await cleanup()
+        _cleanup_adapter.register_post_delivery_callback(
+            turn_ctx.session_key, owned_cleanup, generation=turn_ctx.run_generation, owner=turn_ctx._delivery_owner,
+        )
+        turn_ctx._cleanup_registered = True
 
     def _run_agent_bind_turn_wiring(
         self, turn_ctx: TurnContext, turn_runner: TurnRunner, source: SessionSource,
@@ -4516,6 +4535,10 @@ class GatewayTurnMixin:
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
         )
+        # This token is presentation-only, never part of model/history metadata.
+        turn_ctx._delivery_owner = object()
+        if _cleanup_adapter is not None:
+            _cleanup_adapter._post_delivery_owner.set((run_generation, turn_ctx._delivery_owner))
         # Expose only the current turn's Discord queue to busy steering. A displaced
         # turn must not publish into a successor; TurnState.clear drops the reference.
         if (session_key and turn_ctx.progress_compositor_mode == "single_message"
@@ -4566,12 +4589,18 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
+            if not scheduled_heartbeat:
+                self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
+            if not scheduled_heartbeat and not getattr(turn_ctx, "_cleanup_registered", False):
+                self._run_agent_schedule_bubble_cleanup(
+                    {"cancelled": True, "completed": False}, _cleanup_adapter, turn_ctx,
+                )
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
@@ -4588,8 +4617,8 @@ class GatewayTurnMixin:
         if (isinstance(response, dict) and is_machinery_display_kind(turn_ctx.persist_user_display_kind)
                 and self._is_intentional_silence(response, response.get("final_response", ""))):
             cleanup = self._run_agent_bubble_cleanup(_cleanup_adapter, turn_ctx)
-            if cleanup is not None:
-                await cleanup()
-        else:
-            self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
+            if cleanup is not None and await cleanup():
+                _cleanup_adapter.pop_post_delivery_callback(
+                    session_key, generation=run_generation, owner=turn_ctx._delivery_owner,
+                )
         return response

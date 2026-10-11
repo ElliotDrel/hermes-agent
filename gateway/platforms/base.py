@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import contextvars
 import inspect
 import ipaddress
 import logging
@@ -1939,9 +1940,12 @@ class BasePlatformAdapter(ABC):
         self._text_debounce: dict[str, TextDebounceState] = {}
         # handle_message() tasks; shutdown cancels them so a replaced gateway stops working.
         self._background_tasks: set[asyncio.Task] = set()
-        # Post-delivery one-shots per session_key: bare callback (legacy) or ``(generation,
-        # callback)`` so a stale run can't clear a fresher run's callback.
-        self._post_delivery_callbacks: Dict[str, Any] = {}
+        # Exact (session, generation, presentation owner) delivery obligations.
+        # A retained predecessor must never be consumed by a successor's final.
+        self._post_delivery_callbacks: Dict[Any, Any] = {}
+        # A handler can run several recursive turns in one adapter task. Keep their
+        # presentation callbacks separate even when they share a run generation.
+        self._post_delivery_owner = contextvars.ContextVar("post_delivery_owner", default=None)
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
@@ -3390,50 +3394,57 @@ class BasePlatformAdapter(ABC):
         await self._stop_typing_quietly(chat_id, metadata)
 
     def register_post_delivery_callback(
-        self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:
-        """Register a deferred callback to fire after the main response. Same-key registrations are
-        chained (both fire in order, per-callback exception isolation) so independent features
-        coexist; ``generation`` ties it to a gateway run — stale generations never overwrite a
-        fresher slot."""
+        self, session_key: str, callback: Callable, *, generation: int | None = None,
+        owner: object | None = None,
+    ) -> None:
+        """Chain only callbacks with the same immutable delivery owner."""
         if not session_key or not callable(callback):
             return
-        existing = self._post_delivery_callbacks.get(session_key)
-        if existing is not None:
-            existing_gen, existing_cb = _split_post_delivery_entry(existing)
-            if existing_gen is not None and generation is not None and int(generation) < int(existing_gen):
-                return
-            # Same-or-newer generation: chain so both fire in registration order.
-            if callable(existing_cb) and (
-                existing_gen is None or generation is None or int(existing_gen) == int(generation)):
-                callback = self._chain_callbacks(existing_cb, callback)
-        self._post_delivery_callbacks[session_key] = (
-            callback if generation is None else (int(generation), callback))
+        key = (session_key, generation, owner)
+        existing = self._post_delivery_callbacks.get(key)
+        if callable(existing):
+            callback = self._chain_callbacks(existing, callback)
+        self._post_delivery_callbacks[key] = callback
 
     @staticmethod
-    def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
-        """Async wrapper running ``callbacks`` in order with per-callback exception isolation;
-        async so coroutines returned by async hooks are awaited, not dropped."""
-        async def _chained() -> None:
-            for _cb in callbacks:
+    def _chain_callbacks(*callbacks: Callable) -> Callable:
+        async def _chained():
+            confirmed = True
+            for cb in callbacks:
                 try:
-                    _result = _cb()
-                    if inspect.isawaitable(_result):
-                        await _result
+                    result = cb()
+                    if inspect.isawaitable(result):
+                        result = await result
+                    confirmed = confirmed and result is not False
                 except Exception:
+                    confirmed = False
                     logger.debug("Post-delivery callback failed", exc_info=True)
+            return confirmed
         return _chained
 
     def pop_post_delivery_callback(
-        self, session_key: str, *, generation: int | None = None) -> Callable | None:
-        """Pop a deferred callback, optionally requiring generation ownership."""
-        entry = self._post_delivery_callbacks.get(session_key) if session_key else None
-        if entry is None:
-            return None
-        entry_generation, callback = _split_post_delivery_entry(entry)
-        if generation is not None and (entry_generation is None or int(entry_generation) != int(generation)):
-            return None
-        self._post_delivery_callbacks.pop(session_key, None)
-        return callback if callable(callback) else None
+        self, session_key: str, *, generation: int | None = None,
+        owner: object | None = None,
+    ) -> Callable | None:
+        """Pop an exact owner; legacy consumers select the latest matching slot."""
+        keys = [key for key in self._post_delivery_callbacks
+                if isinstance(key, tuple) and key[0] == session_key
+                and (generation is None or key[1] == generation)
+                and (owner is None or key[2] is owner)]
+        if keys:
+            if owner is not None:
+                return self._post_delivery_callbacks.pop(keys[-1])
+            latest_generation = keys[-1][1]
+            matching = [key for key in keys if key[1] == latest_generation]
+            callbacks = [self._post_delivery_callbacks.pop(key) for key in matching]
+            return callbacks[0] if len(callbacks) == 1 else self._chain_callbacks(*callbacks)
+        entry = self._post_delivery_callbacks.get(session_key)
+        if entry is not None:
+            entry_generation, callback = _split_post_delivery_entry(entry)
+            if generation is None or entry_generation == generation:
+                self._post_delivery_callbacks.pop(session_key, None)
+                return callback if callable(callback) else None
+        return None
 
     # ── Processing lifecycle hooks (Discord 👀/✅/❌ reactions). Adapters exposing
     # ``_add_reaction(chat_id, message_id, emoji)`` / ``_remove_reaction(chat_id, message_id)``
@@ -4399,17 +4410,26 @@ class BasePlatformAdapter(ABC):
             text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
 
-    async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
-        """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
-        read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
-        would let stale runs fire a fresher run's callbacks."""
-        _post_cb = self.pop_post_delivery_callback(
-            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
-        if callable(_post_cb):
-            with contextlib.suppress(asyncio.TimeoutError, Exception):
-                _post_result = _post_cb()
-                if inspect.isawaitable(_post_result):
-                    await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+    async def _fire_post_delivery_callback(
+        self, session_key: str, generation: int | None, owner: object | None = None,
+    ) -> None:
+        """Consume only the confirmed terminal turn, retaining failed cleanup ownership."""
+        keys = [(session_key, generation, owner)]
+        if owner is not None:
+            keys.append((session_key, generation, None))
+        for key in keys:
+            cb = self._post_delivery_callbacks.get(key)
+            if not callable(cb):
+                continue
+            try:
+                result = cb()
+                if inspect.isawaitable(result):
+                    result = await asyncio.wait_for(result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+            except Exception:
+                logger.warning("Post-delivery callback unconfirmed for %s", session_key, exc_info=True)
+                continue
+            if result is not False and self._post_delivery_callbacks.get(key) is cb:
+                self._post_delivery_callbacks.pop(key, None)
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -4438,6 +4458,9 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        owner_token = self._post_delivery_owner.set(None)
+        delivery_generation = None
+        delivery_owner = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4457,6 +4480,12 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            # Capture before any delivery await or successor handoff can rebind the Event.
+            ownership = self._post_delivery_owner.get()
+            if ownership is not None:
+                delivery_generation, delivery_owner = ownership
+            else:
+                delivery_generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented.
             with self._media_delivery_scope(event.source):
                 if diagnostic_wake_muted(event):
@@ -4526,16 +4555,10 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
-            # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
-            # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
+            # Force-flush an unfired debounce timer while this task still owns the guard.
             await self._flush_text_debounce_now(session_key)
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
-                logger.debug("[%s] Processing queued follow-up message", self.name)
-                self._clear_session_guard(session_key)
-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-                self._spawn_drain_task(pending_event, session_key)
-                return  # Drain task owns the session now.
+            # The finally block completes confirmed delivery cleanup before handing
+            # pending work to _finish_session_task. Keep the guard throughout.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
             await self._run_processing_hook(
@@ -4558,12 +4581,13 @@ class BasePlatformAdapter(ABC):
             # Post-delivery callbacks may delete temporary progress. Preserve the breadcrumb unless
             # at least one final payload was confirmed delivered by the adapter.
             if delivery_succeeded:
-                await self._fire_post_delivery_callback(session_key, interrupt_event)
+                await self._fire_post_delivery_callback(session_key, delivery_generation, delivery_owner)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
+            self._post_delivery_owner.reset(owner_token)
             self._finish_session_task(session_key, interrupt_event)
 
     def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:

@@ -101,9 +101,36 @@ normal per-platform overrides) can hide execution and pre-agent compression
 progress, including hold-expiry notices, without hiding actionable failures or
 material final results. Close the owned compositor before deletion; do not reuse
 closed pre-agent messages across queued successors, even within one generation.
-Refused queued delivery must not fire delivery callbacks. Final delivery, queue
-admission/grouping, model inputs, history/cache and compression policy stay native;
-progress metadata is nonconversational. Other transports retain native rendering.
+Refused queued delivery must not fire delivery callbacks. Exact-turn presentation
+owners coexist within one run generation; refused/interrupted/cancelled/incomplete
+predecessors retain their own obligations and never lend UI to a successor.
+Register ownership before every terminal return, including the interrupt recursion
+cap. Capture immutable terminal ownership before adapter delivery; finish bounded
+confirmed predecessor cleanup before spawning a drain successor. Remove an owned
+ID only after transport-confirmed deletion. Two attempts per ID within the existing
+25-second budget are terminal: exhaustion retains ownership, not a success claim;
+no sweeper, retry service or automatic replay is added.
+Final delivery, queue admission/grouping, model inputs, history/cache and compression
+policy stay native; progress metadata is nonconversational. Other transports retain
+native rendering.
+
+Authorization: exact input/cleanup ownership override, preserving fixed-window
+grouping and seal-time edit cutoff:
+https://discord.com/channels/1517646536505557132/1558581315274805291/1558648435417284670.
+Residual protected risk: callback/guard timing changes turn lifecycle; deterministic
+checks cannot prove every concurrent transport/model behavior. Rollback reverts the
+scoped source/tests/contract commit; no historical user rows are rewritten.
+Touchpoints: platforms/base.py callback ownership and delivery-finally handoff;
+run_turn.py progress registration, retained ownership and bounded deletion.
+Offline verification: 190 passed, zero failed across 13 named gateway files with
+scripts/run_tests.sh -j1 and isolated profile/temp/venv; Python compile and diff
+whitespace checks passed. Exact-turn orchestration covers recursion-cap delivery,
+interrupted/refused/successful/cancelled chains, generation mutation during blocked
+cleanup, drain ordering, false/exception deletion and exhausted retry ownership.
+Adjacent streaming, final delivery, agent-cache/history coherence and resume suites
+pass. Fake agent/transport only; no paid calls or live Discord validation. No
+production staging, activation or gateway restart. This is fork-specific progress
+behavior, not an asserted stock-upstream defect.
 
 ## HERMES-FORK-018: Fixed Discord composition window
 
