@@ -359,7 +359,7 @@ def test_compression_savings_require_a_new_completed_compression(succeeded):
 
 
 @pytest.mark.parametrize("tool,args", [
-    ("terminal", {"command": "git status && python -m pytest --verbose"}),
+    ("terminal", {"command": "git status\r\npython -m pytest --verbose\n"}),
     ("execute_code", {"code": "from hermes_tools import read_file\nprint(read_file('gateway/run_turn.py'))"}),
     ("web", {"search_query": [{"q": "Hermes progress lifecycle"}]}),
 ])
@@ -371,7 +371,11 @@ def test_previews_preserve_commands_code_and_unknown_tool_arguments(tool, args):
     assert tool + ":" in text
     assert "shortened upstream preview" not in text
     expected = next(iter(args.values())) if tool != "web" else "Hermes progress lifecycle"
+    expected = " ".join(expected.splitlines())
     assert isinstance(text, str) and expected in text
+    assert "\n" not in text and "\r" not in text
+    if tool == "terminal":
+        assert "\r\n" in args["command"]  # Executable bytes were not rewritten.
 
 
 @pytest.mark.asyncio

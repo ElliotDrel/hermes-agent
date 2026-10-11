@@ -88,8 +88,11 @@ Canonical activity is append-only: repeated
 tools, interim output, compression start/completion/recovery, and accepted steering
 stay chronological. Fitting is pure: render the newest contiguous tail, report
 hidden tool/message counts, and clip oversized entries without rewriting history.
-Tool previews retain command/code arguments and file/URL targets; only explicit
-tool_preview_length settings impose a per-preview cap. Shared Discord limits,
+Tool previews retain command/code arguments and file/URL targets. Embedded
+preview line breaks are replaced with spaces before the display length limit,
+so each tool event occupies one logical line without changing executable input.
+Discord client soft wrapping remains native. This is presentation-only.
+Only explicit tool_preview_length settings impose a per-preview cap. Shared Discord limits,
 secret redaction, bounded transport, backoff and one-message ownership remain.
 
 Single-message progress is temporary regardless of the legacy cleanup flag.
@@ -250,7 +253,7 @@ Never fetch moving live
 at activation. Prepare-only `/update` does not arm install/watch markers or grant
 restart permission; `/update stable` alone selects stable rebase preparation.
 
-Authorization: specific protected routing override (original staging ID 027,
+Authorization: specific *** routing override (original staging ID 027,
 renumbered 028 to preserve the concurrently published compaction intent):
 https://discord.com/channels/1517646536505557132/1558297938780885114/1558582253687406788.
 Protected scope is explicit command rendering/admission, not ordinary history,
@@ -280,7 +283,7 @@ candidate-token activation from a terminal outside both trees. Subsequent loaded
 handlers offer `/restart` activation. Staged/published is not installed or running.
 Rollback reverts this intent and retains candidate/previous data; lifecycle is user-owned.
 
-## HERMES-FORK-029: Truthful delegated process completion ownership
+## HERMES-FORK-030: Truthful delegated process completion ownership
 
 Build on upstream PR #132827 pinned at
 `c0f3831463acdd5c4b27c19e899f2a008382c8b8`, cherry-picking only its six
@@ -304,7 +307,7 @@ https://discord.com/channels/1517646536505557132/1558630048498454599/15586526308
 Risk: legitimate cross-boundary completions are conservatively dropped rather than
 rewriting an already-affected route; durable delegation records remain readable.
 Deterministic offline evidence cannot prove all model behavior or live transport.
-Rollback: revert 029's adaptation and its six attributed prerequisite commits as one
+Rollback: revert 030's adaptation and its six attributed prerequisite commits as one
 intent; no database rollback/repair. No runtime activation performed.
 
 Touchpoints: gateway/run_notifications.py, tools/process_registry.py,
@@ -323,3 +326,152 @@ requests with prefix/persistence/resume/compaction invariants. Syntax and scoped
 pass. Use serial workers when explicitly forwarding one shared pytest basetemp:
 parallel subprocesses otherwise collide on Windows open SQLite fixture directories.
 Upstream remains a pinned unmerged salvage; #131597 was not imported.
+
+## HERMES-FORK-029: Preserve root-union tool fields
+
+Before removing unsupported root `anyOf`/`oneOf`, project inline branch fields
+into model-facing arguments. Normalize fragments using the existing model pass
+before comparing alternatives, while preserving wire keys. Keep identical fields
+once, preserve conflicting schemas as nested `anyOf`, and expose a native type
+only when every normalized alternative explicitly agrees. Root properties retain ownership and constraints; only shared
+branch requirements become global. Raw MCP/server validation schemas are unchanged.
+
+Touchpoints: `tools/schema_sanitizer.py` and `tools/arg_coercion.py`. Coercion uses
+projected wire properties; reversal respects enclosing and supplied keys and each
+branch's actual exposed rename map. Native types, const/enum, required keys and
+closed objects can disambiguate a rename. Agreed siblings still reverse when
+another key is ambiguous; unknown, unmatched, ambiguous or colliding keys remain
+unchanged for server validation. Bare-string schema fragments use existing
+normalization; boolean/non-dict fragments pass through without crashing.
+Projection, model exposure and branch-reversal evidence share bare-string,
+type-array, nullable-union and ref-sibling normalization. Agreed types retain
+nullable hints; a null discriminator keeps all nullable rename candidates possible.
+Root requirements and legacy flags are collected before normalization can prune them.
+For native lists, select compatible inline union arms before item descent. Their
+item schemas use the existing per-key agreement logic; enclosing items keep
+ownership, opaque viable arms block guesses, and supplied wire keys never get
+overwritten. No general resolver or new validation layer is introduced.
+Unambiguous JSON-container decoding precedes the single key-reversal pass,
+using projected model-spelled properties. String-compatible and opaque arms retain
+the original string. The later raw type-array pass cannot override that decision;
+recursive dispatch normalization uses the same guard. Existing standalone walker
+and unrelated scalar coercion remain native; restored wire names are not fed
+through a second reverse map.
+
+Authorization: Elliot *** 1558586766108135495, "Your plan sounds good. Execute
+on it.", approved the specific raw MCP schema -> sanitizer -> model definitions ->
+tool_describe loss assessment and scoped source fix instead of a WHOOP workaround.
+Protected impact: model tool-schema bytes and cached definitions change. Projection
+is permissive and drops branch correlations; original handlers enforce alternatives.
+Deterministic checks cannot prove every model behavior safe.
+
+Verification: exactly two end-to-end invariant tests in
+`tests/tools/test_root_union_schema_visibility.py`, without parametrization or a
+case-matrix loop. The schema-only WHOOP fixture passes through real MCP conversion,
+registry, cached/uncached model definitions and actual `tool_describe` dispatch:
+all five fields retain their server constraints, and raw server validation still
+accepts each valid alternative while rejecting incomplete or mixed arguments.
+A small representative raw-registry schema exercises model definitions -> actual
+dispatch, unanimous boolean coercion across bare-string/dict and nullable
+type-array/dict alternatives, enclosing wire ownership, nullable-const nested
+rename evidence, and ambiguous names left unguessed while agreed siblings reverse.
+One array-or-string payload contract now verifies sanitized required item fields
+reverse through actual dispatch and validate against the original server schema.
+The same invariant decodes container-only JSON-encoded objects and arrays back to
+validated wire arguments, while mixed array/string, object/string, type-array,
+opaque-ref and nested mixed fields retain their accepted strings. No tests,
+parametrization or matrices were added.
+It bypasses MCP pre-normalization deliberately so nullable-discriminator mismatches
+remain observable. Server validation spells out the nonstandard bare-string
+boolean solely in its validation copy; the registered schema stays untouched.
+
+Review findings [4239463297](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239463297)
+and [4239463299](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239463299)
+were fetched and reproduced before source edits on `46c6396ed070f3a5be82e9af29b74f62f1cbecef`:
+both boolean forms left `"true"` as strings, and nullable-const selection left
+`a_b` instead of chosen wire key `a@b`. The same isolated probes now report both
+booleans coerced and the selected wire name reversed. Exactly the original two
+test functions remain; no parametrization, extra tests or case-matrix loop.
+
+The earlier two-invariant fixture failed on an isolated unchanged git archive of
+`eaca181c20a641d27d9132195d7e55fd6632449b` (WHOOP properties empty; projected
+confirm_flag absent). Both current invariant tests pass on this branch. The archive received only the
+new test file and WHOOP schema fixture; production source was not changed.
+Canonical `scripts/run_tests.sh -j 1` acceptance: **259 passed, 0 failed, exit 0**
+across `tests/tools/test_root_union_schema_visibility.py`,
+`tests/tools/test_schema_sanitizer.py`, `tests/tools/test_schema_boolean_required.py`,
+`tests/tools/test_model_tools.py`, `tests/tools/test_mcp_tool.py`,
+`tests/tools/test_tool_search.py`, `tests/tools/test_registry.py`, and
+`tests/agent/test_tool_arg_coercion.py`. Only the established unchanged-base Windows
+exclusions remain: `test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime`
+and `test_windows_location_vars_passed_without_secrets`. No other suite was edited.
+Retries off; worktree-local `.venv`, test home and TMPDIR/TEMP/TMP;
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/normalization-acceptance-final`
+and `--tb=short`. Python syntax and scoped whitespace checks passed.
+
+Review finding [4239505862](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239505862)
+was fetched and reproduced on `1722d9383d04552a3a96619184a602a93d7bc5c2`:
+the extended existing dispatch invariant failed because `payload[0].bad_key`
+remained exposed instead of restoring required `bad key` (1 passed, 1 failed,
+exit 1). The list path previously read outer `items` before inspecting union arms.
+After the scoped repair, the same eight canonical isolated suites passed:
+**259 passed, 0 failed, exit 0**, 66.4s; exactly two invariant tests remain.
+Same two exclusions, retries off, worktree-local `.venv`/home/TMPDIR/TEMP/TMP,
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/array-union-acceptance`
+and `--tb=short`. An isolated actual-dispatch probe also verified supplied-key
+collisions/unknown keys, string payloads, conflicting array item maps and an
+opaque viable arm remain unchanged. Python syntax/scoped whitespace checks passed.
+Parent independently reran the combined acceptance: 259 passed, no failures;
+syntax and scoped whitespace checks pass. No install/live/lifecycle operations.
+
+Latest finding [4239517814](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239517814)
+was also fetched and reproduced before its repair: with the array-arm fix present,
+encoded objects retained nested exposed keys and encoded array-or-string payloads
+remained strings (1 passed, 1 failed, exit 1). The mixed array/string decoding
+expectation is superseded below: its string arm legitimately accepts that input.
+Decoding unambiguous containers before reversal repairs the operation ordering
+without double-renaming. That combined acceptance on the
+same eight files: **259 passed, 0 failed, exit 0**, 70.2s; same two exclusions and
+isolation, retries off, `--tb=short`, and
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/container-order-acceptance`.
+Exactly the original two invariant functions remain.
+
+Review finding [4239544570](https://github.com/ElliotDrel/hermes-agent/pull/1#discussion_r4239544570)
+was fetched and reproduced on `9eae5c59743681265d7b9db1f00845f5fbd562a5` before
+production edits: actual dispatch decoded valid JSON-looking mixed/opaque strings
+into containers (1 passed, 1 failed, exit 1). The extended representative invariant
+now preserves those strings, including nested fields through the later coercion
+walk, while native union lists still reverse and container-only encoded object/array
+arms decode before reversal and validate against the original schema. The raw
+object/string type-array guard also prevents later scalar decoding. Exactly two
+invariant functions remain; no general validator or ref resolution was introduced.
+Current eight-suite isolated canonical acceptance: **259 passed, 0 failed, exit 0**,
+76.0s, same two exclusions, retries off, local `.venv` and test home/TMPDIR/TEMP/TMP,
+`--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/string-union-acceptance-final`.
+Python syntax, scoped whitespace and AST checks passed (two tests, no decorators).
+Parent independently reran all 259 acceptance tests, syntax and whitespace checks;
+no live, installation or lifecycle operations were performed.
+
+Limits: no ref resolution/relocation, branch-local definition hoisting, allOf field
+extraction or general schema validator. Rename evidence does not evaluate patterns,
+ranges or branch correlations and uses native values, not speculative coercion.
+Schema-guided JSON-container parsing precedes reversal. Ambiguous renames may fail
+server validation rather than guess; mixed/opaque projected types stay uncoerced.
+Array-arm selection uses native container type evidence only; it does not evaluate
+whole-array constraints/correlations, resolve refs or add tuple/prefixItems support.
+An existing item combinator is retained rather than overwritten by an arm combinator.
+Container decoding reuses the existing schema walker; no combinator resolver for
+deeper JSON-encoded elements/subfields is added. JSON-looking scalar strings are
+only decoded in dispatch where the model schema permits the corresponding container
+kind and explicit type evidence rules out a string interpretation. Opaque arms
+conservatively block decoding; full constraint satisfiability is not evaluated.
+Nullable-single-survivor handling and definition-cache policy remain native.
+
+Integration preserves live intent 027; this schema intent is 029; live staging retains 028.
+Upstream candidate correctness fix; retain until stable preserves root-union fields.
+Rollback: revert this intent-shaped change. Parent independently reproduced both
+normalization defects on the previous head, verified the repaired probes, and reran
+all 259 acceptance tests. No runtime/profile writes, installation or gateway restart.
+Published source is not installed/running behavior; native installation remains
+Elliot's action.
+
