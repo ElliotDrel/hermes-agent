@@ -327,6 +327,15 @@ pass. Use serial workers when explicitly forwarding one shared pytest basetemp:
 parallel subprocesses otherwise collide on Windows open SQLite fixture directories.
 Upstream remains a pinned unmerged salvage; #131597 was not imported.
 
+Parent integrated concurrent live schema/progress fixes (intent 029 remains schema;
+this intent is 030), then independently verified 356 passing tests across those 12
+files plus root_union_schema_visibility and composed_progress_lifecycle (exit 0,
+294.8s). Independent review found foreground timeout promotion still promised a
+notification while child policy suppressed delivery. The effective registered
+terminal dispatch now verifies both explicit-background and foreground-promotion
+receipts. Fixed the existing promotion-note consumer, then reran three terminal/
+handoff suites: 12 passed, 0 failed, exit 0, 22.6s. No live transport evidence claimed.
+
 ## HERMES-FORK-029: Preserve root-union tool fields
 
 Before removing unsupported root `anyOf`/`oneOf`, project inline branch fields

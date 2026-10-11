@@ -1057,15 +1057,23 @@ _PROMOTED_NOTE_POLL_ONLY = (
 
 def _with_promoted_note(result_json: str, requested_timeout: int) -> str:
     """Attach the foreground->background promotion note to a spawn result (unchanged on error). The
-    note only promises a notification when the spawn actually kept notify_on_complete (finite sessions
-    such as one-shot runners cannot route one back; the spawn already said so and cleared the flag)."""
+    note only promises a notification when intent is armed and current child policy allows delivery.
+    Finite sessions clear the flag; suppressed children retain intent for explicit handoff."""
     try:
         data = json.loads(result_json)
     except (TypeError, ValueError):
         return result_json
     if not isinstance(data, dict) or data.get("error"):
         return result_json
-    template = _PROMOTED_NOTE if data.get("notify_on_complete") else _PROMOTED_NOTE_POLL_ONLY
+    if data.get("notification_suppressed"):
+        template = (
+            "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started "
+            "as a tracked background process. Do NOT re-run it. Child-owned notifications are currently "
+            "suppressed; wait for the result with process_manage or explicitly hand the process to your "
+            "parent before finishing. Notification intent remains armed for handoff."
+        )
+    else:
+        template = _PROMOTED_NOTE if data.get("notify_on_complete") else _PROMOTED_NOTE_POLL_ONLY
     data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=FOREGROUND_MAX_TIMEOUT)
     return json.dumps(data, ensure_ascii=False)
 
