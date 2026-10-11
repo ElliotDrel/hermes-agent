@@ -5544,87 +5544,50 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         The trade-off fails toward noisier user-facing errors on exactly the
         one path where the user asked for the rename and is waiting on it.
         """
+        from .thread_rename import rename_once
         if not self._client or not DISCORD_AVAILABLE:
             if raise_on_error:
                 raise RuntimeError("The Discord adapter is not connected.")
             return False
-
+        pending = self.__dict__.setdefault("_thread_renames_pending", {})
+        self.__dict__.setdefault("_thread_rename_cooldowns", {})
         try:
-            thread_id_int = int(str(thread_id))
-        except (TypeError, ValueError):
-            if raise_on_error:
-                raise ValueError(f"Invalid Discord thread id: {thread_id!r}")
-            return False
-
-        cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
-        if not cleaned:
-            if raise_on_error:
-                raise ValueError("The requested thread name is empty.")
-            return False
-        # Discord thread names are budgeted in UTF-16 code units (emoji count
-        # double) — truncate with the UTF-16 helpers, not code-point slices.
-        from gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
-        if utf16_len(cleaned) > 80:
-            cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
-
-        try:
-            # A guarded semantic rename must compare against fresh Discord state. Channel cache
-            # entries can lag a human rename and would defeat the no-clobber contract. Discord has
-            # no atomic compare-and-edit API, so a narrow race remains between this fetch and edit.
-            thread = (
-                await self._client.fetch_channel(thread_id_int)
-                if only_if_current_name is not None
-                else self._client.get_channel(thread_id_int)
-            )
-            if thread is None:
-                thread = await self._client.fetch_channel(thread_id_int)
-        except Exception:
-            # WARNING, not DEBUG: a swallowed rename failure was previously
-            # invisible at the default log level, which made a live /rename
-            # failure impossible to diagnose from the logs alone.
-            logger.warning(
-                "[%s] Failed to resolve Discord thread %s for rename",
-                self.name, thread_id, exc_info=True,
-            )
+            key = int(thread_id)
+            if key in pending and pending[key] is not asyncio.current_task():
+                raise RuntimeError("A rename is already pending for this thread; retry after it completes.")
+        except (ValueError, RuntimeError):
             if raise_on_error:
                 raise
             return False
-
-        current_name = getattr(thread, "name", None)
-        if only_if_current_name is not None and current_name != only_if_current_name:
-            logger.info(
-                "[%s] Discord semantic thread rename skipped for %s: current name %r != expected %r",
-                self.name, thread_id, current_name, only_if_current_name,
-            )
-            if raise_on_error:
-                raise RuntimeError(
-                    f"The thread is currently named {current_name!r}, not "
-                    f"{only_if_current_name!r}; skipping the rename."
-                )
-            return False
-        if current_name == cleaned:
-            return True
-
-        edit = getattr(thread, "edit", None)
-        if edit is None:
-            if raise_on_error:
-                raise RuntimeError(f"Discord channel {thread_id} cannot be renamed.")
-            return False
+        owned = key not in pending
+        pending[key] = asyncio.current_task()
         try:
-            await edit(name=cleaned, reason="Hermes semantic session title")
-            logger.info(
-                "[%s] Renamed Discord thread %s from %r to %r",
-                self.name, thread_id, current_name, cleaned,
-            )
-            return True
+            return await rename_once(self, key, name, only_if_current_name)
         except Exception:
-            logger.warning(
-                "[%s] Failed to rename Discord thread %s to %r",
-                self.name, thread_id, cleaned, exc_info=True,
-            )
             if raise_on_error:
                 raise
+            logger.warning("Discord semantic rename failed for thread %s", thread_id, exc_info=True)
             return False
+        finally:
+            if owned:
+                pending.pop(key, None)
+
+    def claim_thread_rename(self, thread_id: str) -> bool:
+        pending = self.__dict__.setdefault("_thread_renames_pending", {})
+        key = int(thread_id)
+        if key in pending:
+            return False
+        pending[key] = asyncio.current_task()
+        return True
+
+    def release_thread_rename(self, thread_id: str) -> None:
+        self._thread_renames_pending.pop(int(thread_id), None)
+
+    async def get_thread_name(self, thread_id: str) -> str:
+        from .thread_rename import read_thread_name
+        if not self._client or not DISCORD_AVAILABLE:
+            raise RuntimeError("The Discord adapter is not connected.")
+        return await read_thread_name(self, int(thread_id))
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Create a handoff thread under a text channel; returns the thread id or ``None``.
