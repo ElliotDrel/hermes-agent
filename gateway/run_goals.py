@@ -247,7 +247,13 @@ class GatewayGoalsMixin:
             try:
                 active = getattr(adapter, "_active_sessions", {}).get(session_key)
                 generation = getattr(active, "_hermes_run_generation", None) if active is not None else None
-                adapter.register_post_delivery_callback(session_key, _deliver, generation=generation)
+                owner_context = getattr(adapter, "_post_delivery_owner", None)
+                ownership = owner_context.get() if owner_context is not None else None
+                if ownership is not None:
+                    generation, owner = ownership
+                    adapter.register_post_delivery_callback(session_key, _deliver, generation=generation, owner=owner)
+                else:
+                    adapter.register_post_delivery_callback(session_key, _deliver, generation=generation)
                 return
             except Exception as exc:
                 logger.debug("goal continuation: post-delivery callback registration failed: %s", exc)

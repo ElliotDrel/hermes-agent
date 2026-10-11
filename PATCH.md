@@ -120,17 +120,29 @@ https://discord.com/channels/1517646536505557132/1558581315274805291/15586484354
 Residual protected risk: callback/guard timing changes turn lifecycle; deterministic
 checks cannot prove every concurrent transport/model behavior. Rollback reverts the
 scoped source/tests/contract commit; no historical user rows are rewritten.
-Touchpoints: platforms/base.py callback ownership and delivery-finally handoff;
-run_turn.py progress registration, retained ownership and bounded deletion.
-Offline verification: 190 passed, zero failed across 13 named gateway files with
-scripts/run_tests.sh -j1 and isolated profile/temp/venv; Python compile and diff
-whitespace checks passed. Exact-turn orchestration covers recursion-cap delivery,
-interrupted/refused/successful/cancelled chains, generation mutation during blocked
-cleanup, drain ordering, false/exception deletion and exhausted retry ownership.
-Adjacent streaming, final delivery, agent-cache/history coherence and resume suites
-pass. Fake agent/transport only; no paid calls or live Discord validation. No
-production staging, activation or gateway restart. This is fork-specific progress
-behavior, not an asserted stock-upstream defect.
+Touchpoints: platforms/base.py exact callback ownership and delivery-finally handoff;
+run_turn.py producer quiescence, progress registration, retained ownership and
+bounded deletion; run_turn_runner.py background-review ownership and pending
+status sends; run_goals.py terminal-owned deferred notices.
+Combined review repair: exact delivery never fires an ownerless same-generation
+slot; review release and deferred goals capture the immutable terminal owner.
+Chained callbacks retain only unsuccessful siblings, never replay successful ones.
+Before cleanup snapshots, await progress cancellation/overflow, stream completion,
+long-running sends and already scheduled cleanup-bearing status futures, including
+queued predecessors. Freeze compositor sharing before successor admission.
+Combined offline verification supersedes the separate-branch totals: 372 passed,
+zero failed, exit 0 across 26 named gateway files (120.9s), retries disabled, using
+scripts/run_tests.sh -j 1 --tb=short and
+--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/discord-ownership-combined/scratch/test-temp/verified.
+Worktree-owned .venv, HERMES_HOME and TMPDIR/TEMP/TMP; exact commands and output
+retained in worktree scratch/verified-command.txt and scratch/verified-output.txt.
+Coverage includes actual recursive turn orchestration, cancel-time late physical
+IDs and pending status, ownerless isolation, terminal goals/background release,
+bounded failure retention, model-boundary inputs/history prefixes, agent cache,
+stream/final/ledger invariants and native restart accepted FIFO. Python compile
+and path-scoped whitespace checks pass. Fake agents/transports only, no paid calls
+or live Discord validation; no push, staging, activation or gateway restart.
+This remains fork-specific progress behavior, not a stock-upstream defect.
 
 ## HERMES-FORK-018: Fixed Discord composition window
 
@@ -167,19 +179,20 @@ provider payload rewrite or history migration is introduced.
 Touchpoints: run_busy.py, run_agent_cache.py, run_turn.py, run_inbound.py,
 run_shutdown.py, platforms/base.py, discord_composition.py, Discord adapter
 processing/admission; composition, input-ownership and restart-pending regressions.
-Verification: the 19-file scripts/run_tests.sh -j 1 run passed 149 tests (87.6s,
-exit 0). After the final pre-worker timeout guard, the same run passed 148 and
-failed one external-drain watcher assertion on Windows file sharing (89.3s);
-the unchanged watcher file then passed all 16 on an isolated rerun (5.1s, exit 0).
-All runs used this worktree's own .venv. Coverage includes real native
-restart after-turn/drain orchestration around the queued-followup model-boundary
-seam, unsealed composition waits and edits, all physical members' SQLite accounting,
-FIFO restoration on timeout/cancellation, explicit stop, refused ingress, fresh
-Discord recovery through history/live allowlist gates, final delivery/ledger,
-cache/history/role ordering, dedup, notifications and shutdown flush. Python
-compilation and path-scoped git diff --check pass. A broader shutdown test has one
-Windows zombie/psutil assertion failure, reproduced unchanged at b4a4a48f7094f2d731e208dbfd7d18c7d4f2b8c2
-in an isolated archived baseline; no unrelated fix is included.
+Combined review preserves the first physical message ID/raw object for ledger
+accounting while reply_anchor_override at seal targets the last physical member
+(native reply behavior). Inline busy/control admission and real debounce storage
+now stamp acceptance; failed dispatch, denied admission, pause/drain and full FIFO
+remain refusals. A debounce path that cannot store the event returns False.
+The combined 26-file verification in 017 passes all 372 tests. The unchanged
+external-drain watcher additionally passed 16 tests (3.8s) on an isolated rerun;
+a broader run hit its known Windows WinError 32 marker-removal race (387 passed,
+1 failed). No watcher source or assertions changed. The /update busy-bypass
+expectation in test_session_race_guard.py fails identically on unchanged captured
+ac297a4c4c (8 passed, 1 failed): maintained 001 deliberately rejects mid-turn update;
+no unrelated behavior/test rewrite is included. Prior independent-branch evidence
+is superseded by the combined checks above. No production lifecycle commands,
+live traffic, remote integration or publishing were performed.
 Rollback the intent-scoped source/test/doc commits; do not rewrite old history.
 Fork-specific; no upstream report, push, staging or live activation in this task.
 

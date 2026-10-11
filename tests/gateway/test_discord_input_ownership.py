@@ -73,7 +73,8 @@ async def test_actual_queued_followup_payload_order_and_history_prefix():
     runner._run_agent_deliver_first_response = AsyncMock()
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(side_effect=lambda **kw: kw['event'].text)
     runner._session_key_for_source = lambda source: 's'
-    runner._reply_anchor_for_event = lambda event: event.message_id
+    from gateway.platforms.base import _reply_anchor_for_event
+    runner._reply_anchor_for_event = _reply_anchor_for_event
     runner._intake_adapter_for = lambda source: None
     runner._refresh_agent_cache_message_count = AsyncMock()
 
@@ -84,6 +85,7 @@ async def test_actual_queued_followup_payload_order_and_history_prefix():
 
     runner._run_agent = model_boundary
     ctx = SimpleNamespace(source=a.source, session_id='id', session_key='s', run_generation=1,
+                          progress_compositor=None,
                           _interrupt_depth=0, history=history, _status_thread_metadata=None,
                           result_holder=[{'final_response': 'answer'}], context_prompt='stable cached system')
     result = {'final_response': 'answer', 'messages': history, 'interrupted': False}
@@ -95,6 +97,8 @@ async def test_actual_queued_followup_payload_order_and_history_prefix():
             {'role': 'user', 'content': text}, {'role': 'assistant', 'content': 'done'}]
     assert [p['message'] for p in payloads] == ['edited first\nsecond', 'other sender']
     assert [p['inbound_message_id'] for p in payloads] == ['1', '3']
+    assert [p['event_message_id'] for p in payloads] == ['2', '3']
+    assert a.message_id == '1' and a.raw_message.id == 1
     assert all(p['context_prompt'] == 'stable cached system' for p in payloads)
     assert history == original
     assert payloads[1]['history'][:len(original)] == original

@@ -48,6 +48,16 @@ async def test_actual_turn_chain_owns_progress_and_preserves_input(monkeypatch, 
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="second input")
     runner._session_key_for_source = lambda source: key
     runner._refresh_agent_cache_message_count = AsyncMock()
+    callbacks = []
+    releases = []
+    from gateway.run_turn_runner import TurnRunner
+    def review_callbacks(turn):
+        owner = turn._ctx._delivery_owner
+        return lambda message: None, lambda: releases.append(owner)
+    monkeypatch.setattr(TurnRunner, "_make_bg_review_callbacks", review_callbacks)
+    adapter.register_post_delivery_callback(key, lambda: callbacks.append("ownerless"), generation=7)
+    runner._goal_notice_adapter = lambda source: adapter
+    runner._send_goal_status_notice = AsyncMock()
 
     async def handler(event):
         result = await runner._run_agent(
@@ -58,14 +68,22 @@ async def test_actual_turn_chain_owns_progress_and_preserves_input(monkeypatch, 
         if first_state == "cap":
             # Do not run the restaged event: this assertion targets terminal cap delivery.
             adapter._pending_messages.clear()
+        await runner._defer_goal_status_notice_after_delivery(source, "terminal goal")
         return None if result.get("already_sent") else result["final_response"]
 
     adapter._message_handler = handler
     await adapter._process_message_background(MessageEvent(text="first input", source=source, message_id="first"), key)
     assert history == original
     assert inputs[0] == ("first input", original)
+    assert callbacks == []
+    if first_state != "cancelled":
+        runner._send_goal_status_notice.assert_awaited_once_with(source, "terminal goal")
     assert all(item[1] == original for item in inputs)
     progress = [s["message_id"] for s in adapter.sent if (s["metadata"] or {}).get("non_conversational")]
+    retained_owners = [k[2] for k in adapter._post_delivery_callbacks if k[2] is not None]
+    if first_state in {"interrupted", "refused"}:
+        assert not any(owner in releases for owner in retained_owners)
+    assert len(releases) == (2 if first_state in {"success", "cancelled"} else 1)
     deleted = [d["message_id"] for d in adapter.deleted]
     if first_state in {"success", "cap"}:
         assert progress and set(progress) == set(deleted)

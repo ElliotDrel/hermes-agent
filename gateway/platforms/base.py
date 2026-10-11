@@ -3408,18 +3408,18 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _chain_callbacks(*callbacks: Callable) -> Callable:
+        pending = list(callbacks)
         async def _chained():
-            confirmed = True
-            for cb in callbacks:
+            for cb in list(pending):
                 try:
                     result = cb()
                     if inspect.isawaitable(result):
                         result = await result
-                    confirmed = confirmed and result is not False
+                    if result is not False:
+                        pending.remove(cb)
                 except Exception:
-                    confirmed = False
                     logger.debug("Post-delivery callback failed", exc_info=True)
-            return confirmed
+            return not pending
         return _chained
 
     def pop_post_delivery_callback(
@@ -3439,7 +3439,7 @@ class BasePlatformAdapter(ABC):
             callbacks = [self._post_delivery_callbacks.pop(key) for key in matching]
             return callbacks[0] if len(callbacks) == 1 else self._chain_callbacks(*callbacks)
         entry = self._post_delivery_callbacks.get(session_key)
-        if entry is not None:
+        if owner is None and entry is not None:
             entry_generation, callback = _split_post_delivery_entry(entry)
             if generation is None or entry_generation == generation:
                 self._post_delivery_callbacks.pop(session_key, None)
@@ -3529,6 +3529,10 @@ class BasePlatformAdapter(ABC):
         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
         thread_meta = _thread_metadata_for_event(event)
         response = await self._message_handler(event)
+        # The runner stamps rejection at its admission gate. Handlers predating
+        # receipts still count as accepted when they return normally.
+        if not getattr(event, "_gateway_rejected", False):
+            event._gateway_accepted = True
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
             return
@@ -3774,7 +3778,7 @@ class BasePlatformAdapter(ABC):
                        state.first_ts + self._busy_text_hard_cap_seconds)
         return max(0.0, deadline - time.monotonic())
 
-    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
+    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> bool:
         """Buffer normal queue-mode busy text and schedule a bounded flush."""
         store = self._text_debounce_store()
         state = store.get(session_key)
@@ -3787,7 +3791,8 @@ class BasePlatformAdapter(ABC):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
+                    return True
+                return False
         now = time.monotonic()
         if state is None:
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
@@ -3805,6 +3810,7 @@ class BasePlatformAdapter(ABC):
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
+        return True
 
     async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
         """Timer task that flushes the debounced text buffer."""
@@ -4066,7 +4072,7 @@ class BasePlatformAdapter(ABC):
             logger.debug("[%s] New text message while session %s is active — "
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
                          session_key, self._busy_text_debounce_seconds)
-            await self._queue_text_debounce(session_key, event)
+            event._gateway_accepted = await self._queue_text_debounce(session_key, event)
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
@@ -4415,8 +4421,6 @@ class BasePlatformAdapter(ABC):
     ) -> None:
         """Consume only the confirmed terminal turn, retaining failed cleanup ownership."""
         keys = [(session_key, generation, owner)]
-        if owner is not None:
-            keys.append((session_key, generation, None))
         for key in keys:
             cb = self._post_delivery_callbacks.get(key)
             if not callable(cb):

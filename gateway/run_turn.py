@@ -4150,6 +4150,36 @@ class GatewayTurnMixin:
             }
         return merged
 
+    async def _run_agent_quiesce_presentation(self, turn_ctx, progress_task, notify_task, stream_task):
+        """Finish producers before freezing IDs, including cancel-time overflow sends."""
+        if getattr(turn_ctx, "_presentation_quiesce_done", False):
+            return
+        turn_ctx._presentation_quiesced = True
+        for task in (progress_task, notify_task):
+            if task:
+                task.cancel()
+        for task in (progress_task, notify_task):
+            if task:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.debug("presentation producer failed during cleanup", exc_info=True)
+        if stream_task:
+            if not turn_ctx.stream_consumer_holder[0]:
+                stream_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await stream_task
+            else:
+                await self._await_stream_task(stream_task)
+        futures = getattr(turn_ctx, "_cleanup_status_futures", [])
+        if futures:
+            await asyncio.gather(*(asyncio.wrap_future(fut) for fut in futures), return_exceptions=True)
+        if turn_ctx.progress_compositor is not None:
+            turn_ctx.progress_compositor.closed = True
+        turn_ctx._presentation_quiesce_done = True
+
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: "asyncio.Task",
         _notify_task: "asyncio.Task", tracking_task: "asyncio.Task", stream_task: Any,
@@ -4610,6 +4640,7 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
+            await self._run_agent_quiesce_presentation(turn_ctx, progress_task, _notify_task, stream_task)
             if not scheduled_heartbeat:
                 self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
@@ -4618,6 +4649,7 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
+            await self._run_agent_quiesce_presentation(turn_ctx, progress_task, _notify_task, stream_task)
             if not scheduled_heartbeat and not getattr(turn_ctx, "_cleanup_registered", False):
                 self._run_agent_schedule_bubble_cleanup(
                     {"cancelled": True, "completed": False}, _cleanup_adapter, turn_ctx,

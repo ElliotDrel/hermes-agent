@@ -351,6 +351,7 @@ async def test_current_answer_is_delivered_before_queued_window_closes():
     runner._is_goal_continuation_event = lambda event: True
     runner._goal_still_active_for_session = lambda session_id: False
     ctx = SimpleNamespace(source=a.source, session_id="id", session_key="s",
+                          progress_compositor=None,
                           run_generation=1, _interrupt_depth=0, history=[],
                           _status_thread_metadata=None, result_holder=[{"final_response": "answer"}])
     job = asyncio.create_task(runner._run_agent_queued_followup(

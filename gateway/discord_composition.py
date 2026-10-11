@@ -81,6 +81,7 @@ async def seal_composition(state, adapter, is_waiting=None):
                                  else state.event.text)
             state.event.text = "\n".join(parts)
             last = state.messages[-1]
+            state.event.reply_anchor_override = str(last.id)
             # The FIFO owner keeps its physical identity. The last member owns only
             # the waiting marker; recovery hooks account for every member separately.
             if not state.cancelled and not state.begun and (is_waiting is None or is_waiting()):

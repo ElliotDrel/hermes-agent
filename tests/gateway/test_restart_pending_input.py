@@ -58,6 +58,7 @@ async def test_restart_wait_drains_real_composition_fifo_and_recovery_accounting
             {'role': 'user', 'content': kw['message']}, {'role': 'assistant', 'content': 'done'}]}
     runner._run_agent = model_boundary
     ctx = SimpleNamespace(source=head.source, session_id='id', session_key='s', run_generation=1,
+                          progress_compositor=None,
                           _interrupt_depth=0, history=history, _status_thread_metadata=None,
                           result_holder=[result], context_prompt='stable cached system')
 
@@ -120,6 +121,7 @@ async def test_expired_drain_preserves_residual_owner_but_stop_revokes_it(interr
         delivered = asyncio.Event()
         runner._run_agent_deliver_first_response = AsyncMock(side_effect=lambda *a: delivered.set())
         ctx = SimpleNamespace(source=head.source, session_id='id', session_key='s', run_generation=1,
+                          progress_compositor=None,
                               _interrupt_depth=0, history=[], _status_thread_metadata=None)
         job = asyncio.create_task(runner._run_agent_queued_followup(ctx, adapter, text, selected, result, result, None))
         await asyncio.wait_for(delivered.wait(), 2)
