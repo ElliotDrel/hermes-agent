@@ -141,6 +141,40 @@ The current answer is delivered before waiting for the next composition window.
 Media, other senders, explicit commands and other transports stay separate.
 Only the final queued message receives the waiting reaction, removed on admission.
 
+Accepted-input ownership repair (approved specifically in
+https://discord.com/channels/1517646536505557132/1558581315274805291/1558648435417284670):
+joins require the FIFO owner or its explicitly selected drain capability, cannot
+cross an already queued boundary, and stop/reset revokes that capability before
+any asynchronous teardown. Capacity refuses admission with a resend notice; the
+Discord ingress receipt reports actual acceptance instead of unconditional success.
+Sealing retains the owner's original physical ID/raw message; existing Discord
+recovery processing hooks account for every member. Waiting-marker removal commits
+success only after transport success, serializes concurrent drains and retains one
+bounded retry at completion. Preserve fixed deadlines, seal-time edits, sender,
+command/media/security boundaries and prior history/system/cache prefixes.
+
+Touchpoints: run_busy.py, run_agent_cache.py, run_turn.py (selected drain marker
+only), discord_composition.py, Discord adapter processing/admission; composition
+and accepted-input regressions. Verification: 77 tests passed across nine explicit
+files via scripts/run_tests.sh -j 1 in this worktree's locked-uv .venv (33.3s,
+exit 0), covering real queued-followup model-boundary payload/history/cache order,
+Discord ingress capacity refusal, stop/boundary ownership and every member's real
+recovery SQLite state; adjacent composition, backfill, FIFO, cache, interrupted-ID
+persistence and shutdown-flush suites. Python compilation and git diff --check pass.
+Rollback this intent-scoped source/test/doc commit;
+do not rewrite old history. Fork-specific; no upstream report or live activation.
+
+Remaining blocker: restart drain still discards pending input in run_turn.py.
+The existing shutdown_flush recovery appends text to transcript, not an executable
+FIFO event; it lacks physical IDs/security/routing fields and recovers files by
+random filename, not FIFO sequence. Re-parking a selected event in the adapter slot
+immediately redrains it. Neither is a safe restart execution handoff; no new queue
+subsystem or speculative replay was introduced. Parent must resolve this gap before
+claiming the entire approved input-loss repair complete. Existing recovery DB is
+optional and cannot prove all-member crash dedup when disabled. Two failed marker
+removals retain reaction ownership but exhaust retries; no sweeper is added.
+Deterministic fake-transport/model-boundary tests do not prove live/model behavior.
+
 ## HERMES-FORK-021: Scoped Discord session messages
 
 An owned Discord turn can send_session_message to an existing conversation of

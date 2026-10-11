@@ -2611,6 +2611,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
         if not self._missed_message_backfill_enabled():
             return
+        state = getattr(event, "_discord_composition", None)
+        if state is not None:
+            from dataclasses import replace
+            for message in state.messages:
+                member = replace(event, raw_message=message, message_id=str(message.id))
+                self._record_discord_processing_start(member, emoji_ack=emoji_ack)
+            return
         message = event.raw_message
         self._record_discord_message_seen(message, status="processing")
         message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
@@ -2627,6 +2634,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if not self._missed_message_backfill_enabled():
+            return
+        state = getattr(event, "_discord_composition", None)
+        if state is not None:
+            from dataclasses import replace
+            for message in state.messages:
+                member = replace(event, raw_message=message, message_id=str(message.id))
+                self._record_discord_processing_complete(member, outcome)
             return
         message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
         if not message_id:
@@ -2967,7 +2981,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
         # Buffered composition has one waiting marker only; ordinary completion emoji
         # would mark a multi-message turn as multiple independent acknowledgements.
-        if getattr(event, "_discord_composition", None) or not self._reactions_enabled():
+        if getattr(event, "_discord_composition", None):
+            from gateway.discord_composition import remove_composition_reaction
+            await remove_composition_reaction(event)
+            return
+        if not self._reactions_enabled():
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
@@ -6373,9 +6391,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if (not recovered and msg_type == MessageType.TEXT
                 and self._text_batch_delay_seconds > 0 and not busy_queue_text):
             self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
-        return True
+            return True  # The adapter's batch owns the event until its normal flush.
+        await self.handle_message(event)
+        return getattr(event, "_gateway_accepted", False) is True
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a
