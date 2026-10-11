@@ -230,13 +230,23 @@ profile configuration or gateway lifecycle. Reuse native managed uv, locked sync
 profile update lock, receipts, holder classification and rename retry. Install
 locked dependencies with `--no-install-project --no-editable`; Hermes forbids
 non-Nix wheels. The existing relative checkout binding and native module launcher
-survive whole-tree promotion. Restore declared enabled plugin/lazy/tool dependencies
+survive whole-tree promotion. Rebuild the three declared Hermes console entrypoints
+from CPython's bundled installer stub, bound to the final install path;
+ACP/editor paths and installer checks remain present without building a project wheel.
+Restore declared enabled plugin/lazy/tool dependencies
 in the candidate only; conflicts refuse preparation.
 
 Explicit user `/restart` captures the validated pin and uses native drain/Windows
 watcher. Activation refuses changed/dirty revisions or live holders, retains the
 previous installation, rolls back promotion/import failures and starts the fresh
-native gateway with readiness/exact code_sha verification. Never fetch moving live
+native gateway. All post-promotion readiness/import work runs in the fresh promoted
+interpreter, polling exact live PID/code_sha rather than trusting native CLI exit
+status or stale status. Receipt dependencies load before relocation; stage/activate
+steps name previous_sha/target_sha explicitly. Promotion/probe failures roll back;
+after any launch attempt never rename or blindly retry a possibly booting generation.
+Remove the consumed marker before launch; a failed start retains both generations,
+writes a failed receipt and requires manual native-start/recovery inspection.
+Never fetch moving live
 at activation. Prepare-only `/update` does not arm install/watch markers or grant
 restart permission; `/update stable` alone selects stable rebase preparation.
 
@@ -250,12 +260,15 @@ regressions remain; deterministic tests cannot prove every model behavior.
 Touchpoints: update_stage.py, native update parser/main/windows holder scan,
 fork_update_entry.py/commands.py, slash_commands.py/run_shutdown.py and staged
 update/route tests. Documentation: website/docs/user-guide/staged-fork-updates.md.
-169 tests passed across 12 named files on the integrated live target (including
-compaction_recovery_anchors): exit 0, no failures, 108.4s. Clean committed full
-source at 7ab45c7083f9db9d611e37c4f738800733b8b3ae successfully prepared with
-real locked uv, fresh candidate imports and CLI help in an isolated profile.
-Wheel-refusing fixture verifies module launch after relocation and executing-
-candidate activation. Prior aggregate/fixture-only readiness claims are superseded.
+172 tests passed across the same 12 named files after adversarial relocation review:
+exit 0, no failures, 216.3s. The executing-candidate regression now uses a whole
+clean Hermes checkout with candidate-owned imports (no development prepend), real
+Windows promotion, fresh post-swap verification, delayed SHA publication, receipt
+persistence, all three native console launcher help commands and ACP --check.
+Only gateway transport boundaries are stubbed; failed-start coverage verifies no
+post-spawn rename/retry. Prior tiny-fixture executing-candidate evidence is superseded.
+Original inert full-source locked-uv preparation evidence remains; no production
+activation or live readiness is claimed by offline checks.
 
 Windows standalone single-profile detached owner only; unsupported ownership fails.
 No UI builds, fleets, undeclared dependency preservation, runtime Python replacement
