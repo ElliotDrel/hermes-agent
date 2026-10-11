@@ -284,6 +284,8 @@ class TurnRunner:
             detail = detail or (json.dumps(safe_args, ensure_ascii=False, default=str) if safe_args else preview or "")
             if ctx.progress_mode == "verbose" and args:
                 detail = json.dumps(safe_args, ensure_ascii=False, default=str)
+            # One logical line per tool event; never modify executable arguments.
+            detail = " ".join(detail.splitlines())
             if limit and len(detail) > limit:
                 detail = detail[:limit] + "…"
             return _redact_gateway_user_facing_secrets(f"{emoji} {tool_name}: {detail}".rstrip())

@@ -88,8 +88,11 @@ Canonical activity is append-only: repeated
 tools, interim output, compression start/completion/recovery, and accepted steering
 stay chronological. Fitting is pure: render the newest contiguous tail, report
 hidden tool/message counts, and clip oversized entries without rewriting history.
-Tool previews retain command/code arguments and file/URL targets; only explicit
-tool_preview_length settings impose a per-preview cap. Shared Discord limits,
+Tool previews retain command/code arguments and file/URL targets. Embedded
+preview line breaks are replaced with spaces before the display length limit,
+so each tool event occupies one logical line without changing executable input.
+Discord client soft wrapping remains native. This is presentation-only.
+Only explicit tool_preview_length settings impose a per-preview cap. Shared Discord limits,
 secret redaction, bounded transport, backoff and one-message ownership remain.
 
 Single-message progress is temporary regardless of the legacy cleanup flag.
