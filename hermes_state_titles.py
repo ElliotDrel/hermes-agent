@@ -65,7 +65,8 @@ class SessionTitlesMixin:
             SELECT 1 FROM ancestors WHERE id = ? AND id != ? LIMIT 1
             """, (descendant_id, ancestor_id, descendant_id)).fetchone() is not None
 
-    def _set_session_title(self, session_id: str, title: str, *, source: str) -> bool:
+    def _set_session_title(self, session_id: str, title: str, *, source: str,
+                           expected_state: Optional[tuple] = None, validate_only: bool = False) -> bool:
         """Write a title, enforcing provenance precedence. A ``user`` write always lands;
         ``derived``/``llm`` land only when the row is untitled or holds strictly lower
         authority (derived upgrades to llm exactly once, nothing overwrites a user name,
@@ -78,9 +79,12 @@ class SessionTitlesMixin:
 
         def _do(conn):
             current = conn.execute(
-                "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
+                "SELECT title, title_source, hidden, ended_at FROM sessions WHERE id = ?", (session_id,),
             ).fetchone()
             if current is None:
+                return 0
+            if expected_state is not None and (current["ended_at"] is not None
+                    or (current["title"], current["title_source"]) != expected_state):
                 return 0
             # The canonical Bot Chat's NAME is its identity (Bot Mode resolves it by
             # exact-title lookup on every open), so a rename orphans the conversation. Hidden
@@ -104,19 +108,23 @@ class SessionTitlesMixin:
                     # A hidden compressed ancestor holding the title cannot be freed by the
                     # user, so transfer it onto the tip (uniqueness + lineage kept).
                     if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
-                        conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
+                        if not validate_only:
+                            conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
                     # A deliberately archived hidden Bot Chat is a retired registry
                     # entry, not a live identity. Retire its name in the same title
                     # transaction so a replacement can become the sole canonical row;
                     # the old session remains archived and otherwise untouched.
                     elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
                           and bool(conflict["hidden"])):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
+                        if not validate_only:
+                            conn.execute(
+                                "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                                (conflict_id,),
+                            )
                     else:
                         raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
+            if validate_only:
+                return 1
             # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
             # the SELECT and here loses instead of being overwritten.
             return conn.execute(
@@ -130,6 +138,15 @@ class SessionTitlesMixin:
         """Set a title on the user's behalf (``user`` provenance). Empty clears it. Raises
         ValueError on conflict or validation failure."""
         return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER)
+
+    def validate_session_title(self, session_id: str, title: str) -> bool:
+        """Check native title constraints without changing title or lineage state."""
+        return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER, validate_only=True)
+
+    def set_session_title_if_current(self, session_id: str, title: str, *, expected_title, expected_source) -> bool:
+        """Commit a confirmed visible rename without clobbering a newer decision."""
+        return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER,
+                                       expected_state=(expected_title, expected_source))
 
     def set_auto_title(self, session_id: str, title: str, *, source: str) -> bool:
         """Set an automatic title; False (untouched) when a higher-authority title holds the row."""

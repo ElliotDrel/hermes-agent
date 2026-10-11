@@ -144,6 +144,43 @@ Opt-in discord.rename_manual_threads also titles user-created threads; fresh
 Discord-name comparison preserves a human rename made during title generation.
 Main input/history, provider routing and cached system/tool inputs remain native.
 
+Rename transaction correction: native `/rename` owns a thread from admission through
+confirmation and conditional persistence; duplicates report pending, never DB-only
+"already titled". Automatic native renames share that admission. Explicit names
+are validated unchanged against Discord's documented 1–100 character limit before
+mutation (https://docs.discord.com/developers/resources/channel). Fresh GET/PATCH/GET
+confirms the visible name before title/provenance CAS; native uniqueness, Bot Chat,
+lineage and ended-session constraints stay enforced. A newer manual decision wins.
+
+Rename-local single-attempt HTTP uses connected native auth/proxy/user-agent and
+known native route/global cooldown state, with a 15-second transport budget. `429`
+returns retry-after immediately and retains a cooldown, never an edit retry; no
+shared max_ratelimit_timeout policy mutation. Cancellation closes transport and
+retains command ownership through settlement of any non-cancellable SQLite worker.
+Timeout/5xx/read-back failure after sending explicitly report an uncertain visible
+outcome, not a fabricated rollback. A confirmed visible change whose DB commit
+fails is reported separately. Unsupported relay adapters refuse `/rename` safely
+until they offer fresh-name confirmation; relay auto-title paths remain untouched.
+
+Protected override: Elliot's rename-only approval:
+https://discord.com/channels/1517646536505557132/1558651185500782623/1558652307569119293.
+Changes: slash_commands_session.py, hermes_state_titles.py, Discord adapter and
+thread_rename.py; tests cover actual native imports, synthetic HTTP, real SQLite,
+pending/manual/boundary/cancellation, exact punctuation and lengths, rate limits,
+rejections and uncertainty, plus adjacent title/cache/auxiliary-wire invariants.
+No schemas, stored model messages/system prompt, provider policy, session routing,
+or subagent ownership repair. No migration, production DB write, manufactured
+Discord traffic or gateway restart. Discord has no atomic name compare-and-edit;
+a human change between the final read and PATCH remains possible, as does external
+state movement after read-back. Atomic CAS preserves newer saved decisions but
+cannot prove nondeterministic model behavior. Rollback: scoped revert before deployment.
+Verification: 153 tests passed across 11 named files with isolated dev environment,
+canonical runner `-j 1` and retries disabled; syntax and scoped diff checks passed.
+Parallel files with an explicitly shared pytest basetemp collided on Windows;
+serial per-file verification avoids that harness collision without source changes.
+Upstream disposition: fork-only rename transaction correction; session-ownership
+issue is intentionally excluded.
+
 ## HERMES-FORK-013: Seven-day manual threads
 
 Manual /thread and Discord-tool creation default to `10080` minutes. Auto, update and

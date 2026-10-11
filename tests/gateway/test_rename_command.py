@@ -16,8 +16,10 @@ def _runner():
     runner.session_store.get_or_create_session.return_value = SimpleNamespace(session_id="session-1")
     runner._session_db = AsyncMock()
     runner._session_db.get_session_title.return_value = "Old Thread Title"
+    runner._session_db.get_session.return_value = {"title": "Old Thread Title", "title_source": "user"}
     runner._session_db.set_session_title.return_value = True
-    adapter = SimpleNamespace(rename_thread=AsyncMock(return_value=True))
+    adapter = SimpleNamespace(rename_thread=AsyncMock(return_value=True), get_thread_name=AsyncMock(return_value="Old Thread Title"))
+    runner._delivery_adapter_for = lambda source: adapter
     runner.adapters = {Platform.DISCORD: adapter}
     return runner, adapter
 
@@ -33,9 +35,9 @@ def _event(text="/rename Launch Plan"):
 async def test_rename_sets_visible_discord_thread_and_session_title():
     runner, adapter = _runner()
     result = await runner._handle_rename_command(_event())
-    assert result == "Renamed this thread from **Old Thread Title** to **Launch Plan**."
-    runner._session_db.set_session_title.assert_awaited_once_with("session-1", "Launch Plan")
-    adapter.rename_thread.assert_awaited_once_with("thread-1", "Launch Plan", raise_on_error=True)
+    assert "Launch Plan" in result and "confirmed" in result
+    runner._session_db.set_session_title_if_current.assert_awaited_once_with("session-1", "Launch Plan", expected_title="Old Thread Title", expected_source="user")
+    adapter.rename_thread.assert_awaited_once_with("thread-1", "Launch Plan", only_if_current_name="Old Thread Title", raise_on_error=True)
 
 
 @pytest.mark.asyncio
@@ -59,7 +61,7 @@ async def test_bare_rename_uses_conversation_aware_regeneration_api():
         result = await runner._handle_rename_command(_event("/rename"))
     assert "Repair Discord Command Publishing" in result
     generate.assert_called_once()
-    adapter.rename_thread.assert_awaited_once_with("thread-1", "Repair Discord Command Publishing", raise_on_error=True)
+    adapter.rename_thread.assert_awaited_once_with("thread-1", "Repair Discord Command Publishing", only_if_current_name="Old Thread Title", raise_on_error=True)
 
 
 @pytest.mark.asyncio

@@ -430,14 +430,15 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
 
 
 @pytest.mark.asyncio
-async def test_rename_thread_edits_only_when_current_name_matches(adapter):
+async def test_rename_thread_edits_only_when_current_name_matches(adapter, monkeypatch):
     thread = SimpleNamespace(
         id=999,
         name="raw user prompt",
         edit=AsyncMock(),
     )
-    adapter._client.get_channel = lambda _id: thread
-    adapter._client.fetch_channel = AsyncMock(return_value=thread)
+    from plugins.platforms.discord import thread_rename
+    transport = AsyncMock(return_value=True)
+    monkeypatch.setattr(thread_rename, "rename_once", transport)
 
     result = await adapter.rename_thread(
         "999",
@@ -446,19 +447,17 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     )
 
     assert result is True
-    thread.edit.assert_awaited_once_with(
-        name="Semantic Session Title",
-        reason="Hermes semantic session title",
-    )
+    transport.assert_awaited_once_with(adapter, 999, "Semantic Session Title", "raw user prompt")
 
 
 @pytest.mark.asyncio
-async def test_guarded_rename_fetches_fresh_name_before_edit(adapter):
+async def test_guarded_rename_fetches_fresh_name_before_edit(adapter, monkeypatch):
     """A stale cache entry must not let semantic titling overwrite a human rename."""
     cached = SimpleNamespace(id=999, name="raw user prompt", edit=AsyncMock())
     fresh = SimpleNamespace(id=999, name="Human title", edit=AsyncMock())
-    adapter._client.get_channel = lambda _id: cached
-    adapter._client.fetch_channel = AsyncMock(return_value=fresh)
+    from plugins.platforms.discord import thread_rename
+    transport = AsyncMock(return_value=False)
+    monkeypatch.setattr(thread_rename, "rename_once", transport)
 
     result = await adapter.rename_thread(
         "999",
@@ -467,7 +466,7 @@ async def test_guarded_rename_fetches_fresh_name_before_edit(adapter):
     )
 
     assert result is False
-    adapter._client.fetch_channel.assert_awaited_once_with(999)
+    transport.assert_awaited_once_with(adapter, 999, "Semantic Session Title", "raw user prompt")
     cached.edit.assert_not_awaited()
     fresh.edit.assert_not_awaited()
 
