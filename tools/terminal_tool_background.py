@@ -191,16 +191,27 @@ def spawn_background_process(
             result_data["notify_on_complete"] = True
             if completion_output_chars:
                 proc_session.completion_output_chars = int(completion_output_chars)
+            from agent.delegation_context import is_delegated_child_context
+            from tools.process_registry_notifications import should_surface_notification
+            surface = should_surface_notification({
+                "owner_task_id": proc_session.owner_task_id, "task_id": proc_session.task_id,
+            })
+            if is_delegated_child_context():
+                # Keep notification intent armed for explicit handoff, but report
+                # the same live-owner policy the consumers actually enforce.
+                result_data["notification_suppressed"] = not surface
+                result_data["subagent_note"] = (
+                    "Notifications are currently suppressed by the child-process policy. "
+                    if not surface else "Notifications are enabled by the child-process policy. "
+                ) + _SUBAGENT_NOTIFY_NOTE
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
-            from agent.delegation_context import is_delegated_child_context
-            if is_delegated_child_context():
-                result_data["notify_on_complete"] = False
-                result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
-            elif heartbeat_seconds:
+            if heartbeat_seconds and surface:
                 # Heartbeats ride the same delivery path as the completion notice, so they are
                 # only armed where that notice can actually reach the agent.
                 result_data["heartbeat_seconds"] = process_registry.arm_heartbeat(proc_session, heartbeat_seconds)
+            elif heartbeat_seconds:
+                result_data["heartbeat_ignored"] = "heartbeat suppressed by the child-process notification policy"
         elif heartbeat_seconds:
             result_data["heartbeat_ignored"] = "heartbeat needs notify=true delivery, which this session cannot receive"
         if watch_patterns:
@@ -215,8 +226,9 @@ def spawn_background_process(
 
 
 _SUBAGENT_NOTIFY_NOTE = (
-    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
-    "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
+    "You are a subagent: notification intent remains armed for an explicit handoff, but child-owned delivery follows "
+    "delegation.surface_child_process_notifications. The process is killed when you finish unless handed off. "
+    "Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
     "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
     "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
 )

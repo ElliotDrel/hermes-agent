@@ -279,3 +279,47 @@ module stages against the old root, then Elliot performs native gateway stop and
 candidate-token activation from a terminal outside both trees. Subsequent loaded
 handlers offer `/restart` activation. Staged/published is not installed or running.
 Rollback reverts this intent and retains candidate/previous data; lifecycle is user-owned.
+
+## HERMES-FORK-029: Truthful delegated process completion ownership
+
+Build on upstream PR #132827 pinned at
+`c0f3831463acdd5c4b27c19e899f2a008382c8b8`, cherry-picking only its six
+intent commits with original authors retained. Shared nonmutating delegate proof
+and compression ownership preflight distinguish terminal boundaries from transient
+lookup/rotation uncertainty. Suppress child-owned process noise before profile-scoped
+batching and watch admission; read live ownership so explicit handoff still delivers.
+Real delegation/closeout results are exempt. Preserve 026's active-parent steer
+buffer and native idle wake, claims, retries, user boundaries and generation/CAS gates.
+
+The terminal result now reports armed notification intent separately from current
+child-policy suppression; it no longer claims notification is disabled while a
+watcher is armed. Enabled child policy remains enabled. Child teardown and explicit
+handoff rules remain native. A current human route on a former worker is authoritative,
+even with malformed historical provenance: own/descendant completions stay there;
+parent/sibling completions cannot switch away and end that conversation. No rename,
+historical repair, prompt/schema/provider-policy change or production migration.
+
+Authorization (protected ownership/timing and future model-facing result):
+https://discord.com/channels/1517646536505557132/1558630048498454599/1558652630803288205.
+Risk: legitimate cross-boundary completions are conservatively dropped rather than
+rewriting an already-affected route; durable delegation records remain readable.
+Deterministic offline evidence cannot prove all model behavior or live transport.
+Rollback: revert 029's adaptation and its six attributed prerequisite commits as one
+intent; no database rollback/repair. No runtime activation performed.
+
+Touchpoints: gateway/run_notifications.py, tools/process_registry.py,
+process_registry_notifications.py, terminal_tool_background.py and gateway/tools tests.
+Import conflict adaptation retains the fork's local delivery-target helper.
+Additional adaptation protects current former-worker routes and truthful launch receipts.
+328 tests passed, zero failed/skipped, exit 0 in 310.0s across 12 named files via
+`scripts/run_tests.sh -j 1 --basetemp=<isolated-worktree-scratch>/pytest-final --tb=short`:
+async_delegation_session_binding, background_process_notifications, completion_owner_retry,
+completion_current_route_history, completion_admission, completion_delivery,
+completion_session_boundary, gateway/agent runtime_notification_bridge,
+terminal_child_notification_state, terminal_watcher_arming, subagent_process_handoff.
+Includes real SQLite route/history/durable dispositions, A/B/A profile policy/live
+handoff, registered terminal-result dispatch, and cached/uncached offline provider
+requests with prefix/persistence/resume/compaction invariants. Syntax and scoped diff checks
+pass. Use serial workers when explicitly forwarding one shared pytest basetemp:
+parallel subprocesses otherwise collide on Windows open SQLite fixture directories.
+Upstream remains a pinned unmerged salvage; #131597 was not imported.
