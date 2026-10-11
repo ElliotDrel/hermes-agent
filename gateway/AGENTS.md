@@ -71,8 +71,9 @@ The watcher is armed on the gateway loop at registration time (`terminal_tool_ba
 _register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
 is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
 while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
-receipt (the agent's next turn is the report) unless the launching turn is still running at exit
-— then the injection only queues a follow-up, so the concise receipt goes out immediately.
+receipt (the agent reports the result) unless the launching turn is still running at exit
+— then a concise receipt goes out immediately alongside active-boundary notification delivery.
+Startup/finalization refusals retain the existing pending wake for admission when ready.
 
 The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
 required. Notify-off drains these without waking. Transport failures are retried; unavailable

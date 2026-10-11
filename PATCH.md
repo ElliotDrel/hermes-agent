@@ -385,35 +385,12 @@ Never fetch moving live
 at activation. Prepare-only `/update` does not arm install/watch markers or grant
 restart permission; `/update stable` alone selects stable rebase preparation.
 
-Authorization: specific *** routing override (original staging ID 027,
-renumbered 028 to preserve the concurrently published compaction intent):
-https://discord.com/channels/1517646536505557132/1558297938780885114/1558582253687406788.
-Protected scope is explicit command rendering/admission, not ordinary history,
-system inputs, schemas or provider policy. Cached/uncached provider-wire/resume
-regressions remain; deterministic tests cannot prove every model behavior.
-
-Touchpoints: update_stage.py, native update parser/main/windows holder scan,
-fork_update_entry.py/commands.py, slash_commands.py/run_shutdown.py and staged
-update/route tests. Documentation: website/docs/user-guide/staged-fork-updates.md.
-172 tests passed across the same 12 named files after adversarial relocation review:
-exit 0, no failures, 216.3s. The executing-candidate regression now uses a whole
-clean Hermes checkout with candidate-owned imports (no development prepend), real
-Windows promotion, fresh post-swap verification, delayed SHA publication, receipt
-persistence, all three native console launcher help commands and ACP --check.
-Only gateway transport boundaries are stubbed; failed-start coverage verifies no
-post-spawn rename/retry. Prior tiny-fixture executing-candidate evidence is superseded.
-Original inert full-source locked-uv preparation evidence remains; no production
-activation or live readiness is claimed by offline checks.
 
 Windows standalone single-profile detached owner only; unsupported ownership fails.
 No UI builds, fleets, undeclared dependency preservation, runtime Python replacement
 or state migrations. Keep failed candidates and previous installations. A host crash
 between tree renames still needs retained-tree recovery, not a new journal.
-Old installed 62c55abdee handlers cannot activate the first candidate: reviewed
-module stages against the old root, then Elliot performs native gateway stop and
-candidate-token activation from a terminal outside both trees. Subsequent loaded
-handlers offer `/restart` activation. Staged/published is not installed or running.
-Rollback reverts this intent and retains candidate/previous data; lifecycle is user-owned.
+Staged/published is not installed or running; activation is user-owned.
 
 ## HERMES-FORK-030: Truthful delegated process completion ownership
 
@@ -615,4 +592,3 @@ normalization defects on the previous head, verified the repaired probes, and re
 all 259 acceptance tests. No runtime/profile writes, installation or gateway restart.
 Published source is not installed/running behavior; native installation remains
 Elliot's action.
-
