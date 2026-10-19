@@ -32,6 +32,7 @@ class _Burst:
     timer: asyncio.Task | None = None
     commit: asyncio.Task | None = None
     absorbed: list = field(default_factory=list)
+    composition: object = None
 
 
 def _kind(adapter, event):
@@ -82,8 +83,9 @@ async def dispatch_busy_burst(adapter, event, session_key):
     kind, bursts = _kind(adapter, event), _state(adapter, '_shared_bursts')
     while (burst := bursts.get(session_key)) is not None:
         if kind is not None and kind == _kind(adapter, burst.head) and adapter._can_merge_text_debounce_events(
-                burst.head, event):
-            merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind == 'text')
+                burst.head, event) and (burst.composition is None or burst.composition.add(event)):
+            if burst.composition is None:
+                merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind == 'text')
             burst.absorbed.append(event)
             burst.last_ts = time.monotonic()
             _arm(adapter, session_key, burst)
@@ -99,6 +101,9 @@ async def dispatch_busy_burst(adapter, event, session_key):
         return await dispatch_shared_busy(adapter, event, session_key)
     now = time.monotonic()
     burst = bursts[session_key] = _Burst(event, asyncio.get_running_loop().create_future(), now, now)
+    begin = getattr(adapter, 'begin_busy_text_composition', None)
+    if kind == 'text' and callable(begin):
+        burst.composition = begin(event)
     _arm(adapter, session_key, burst)
     return await _accepted(adapter, burst, event)
 
@@ -122,6 +127,9 @@ def _arm(adapter, session_key, burst):
     delay = max(0.0, min(burst.last_ts + adapter._busy_text_debounce_seconds,
                          burst.first_ts + adapter._busy_text_hard_cap_seconds) - time.monotonic())
 
+    if burst.composition is not None:
+        delay = max(0.0, burst.composition.deadline - time.monotonic())
+
     async def fire():
         await asyncio.sleep(delay)
         await asyncio.shield(_flush(adapter, session_key, burst))
@@ -131,6 +139,8 @@ def _arm(adapter, session_key, burst):
 def _flush(adapter, session_key, burst):
     """Start committing ``burst`` (once), after any earlier commit for the route."""
     if burst.commit is None:
+        if burst.composition is not None:
+            burst.composition.seal()
         bursts, tails = _state(adapter, '_shared_bursts'), _state(adapter, '_shared_burst_commits')
         if bursts.get(session_key) is burst:
             del bursts[session_key]

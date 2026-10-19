@@ -1001,3 +1001,18 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+
+### Compose text while Hermes is busy
+
+Set `discord.busy_composition_window_seconds` to a positive number (maximum 30 seconds)
+to hold ordinary same-sender text in queue mode for one fixed window. The default 0
+preserves native debounce behavior. Edits before the deadline replace that physical
+message's text; joining/editing does not extend the deadline. The first message owns
+the queued input and the last message supplies the reply anchor. A sender, media,
+profile or queue boundary seals the previous group. Groups are bounded to 32 messages
+and 32768 characters and still pass native authorization/capacity checks before ACK.
+Bot mentions are normalized before command detection. Edited commands are ignored;
+an empty, deleted, attachment-bearing or private draft edit discards the whole held
+group without acceptance. After seal, platform edits cannot change the durable input.
+`/stop`, `/new` and reset keep their native revocation behavior.

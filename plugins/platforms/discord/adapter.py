@@ -1862,6 +1862,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             guild_id=str(getattr(guild, "id", "")) if guild else None,
         )
 
+    def begin_busy_text_composition(self, event):
+        from .composition import Composition, window
+        seconds = window(self)
+        if seconds and event.message_id and not event.media_urls:
+            return Composition(event, seconds)
+        return None
+
     async def _on_platform_message_edit(self, before, after) -> None:
         """Normalize ``on_message_edit`` into event_type ``message_edited``."""
         def _extra(message, author):
@@ -1876,11 +1883,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 ),
             }
         message = after if after is not None else before
+        from .composition import edit_held
+        edit_held(self, message)
         await self._emit_platform_event("message_edited", lambda: self._message_event_parts(message, _extra))
 
     async def _on_platform_message_delete(self, message) -> None:
         """Normalize ``on_message_delete`` into ``message_deleted``. Discord omits the
         deleter, so the author (the only cached identity) is the source; uncached deletions never fire."""
+        from .composition import edit_held
+        edit_held(self, message, deleted=True)
         def _extra(message, author):
             return {"author_id": str(getattr(author, "id", "") or "")[:128] or None}
         await self._emit_platform_event("message_deleted", lambda: self._message_event_parts(message, _extra))
@@ -6307,7 +6318,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if thread_id:
             await self._threads.mark_async(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
+        from .composition import window as composition_window
+        from gateway.session_ingress_burst import holds_busy_burst
+        composition_key = self._event_session_key(event)
+        composing = bool(composition_window(self) and self._is_queue_text_debounce_candidate(event)
+                         and (composition_key in self._active_sessions or holds_busy_burst(self, composition_key)))
+        if (not recovered and not composing and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
@@ -7281,7 +7297,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
-    seeded_extra = {}
+    seeded_extra = {"busy_composition_window_seconds": discord_cfg.get("busy_composition_window_seconds", 0)}
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools

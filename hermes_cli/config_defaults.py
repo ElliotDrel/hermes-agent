@@ -1552,7 +1552,6 @@ DEFAULT_CONFIG = {
         "thread_require_mention": False,  # require @mention in thread replies too
         "channel_prompts": {},  # per-channel ephemeral system prompts
     },
-
     "discord": {
         "require_mention": True,  # require @mention to respond in server channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
@@ -1561,6 +1560,7 @@ DEFAULT_CONFIG = {
         # Free-response channels reply inline by default; true also gives each top-level
         # message in them its own thread (still mention-free). Env: DISCORD_FREE_RESPONSE_AUTO_THREAD.
         "free_response_auto_thread": False,
+        "busy_composition_window_seconds": 0,
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
         # Bot authors must type @thisbot to trigger a reply; Discord reply pings alone do not count.
         # Set False only for trusted legacy relays. Humans are unaffected.
