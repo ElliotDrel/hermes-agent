@@ -1012,7 +1012,7 @@ message's text; joining/editing does not extend the deadline. The first message 
 the queued input and the last message supplies the reply anchor. A sender, media,
 profile or queue boundary seals the previous group. Groups are bounded to 32 messages
 and 32768 characters and still pass native authorization/capacity checks before ACK.
-Bot mentions are normalized before command detection. Edited commands are ignored;
-an empty, deleted, attachment-bearing or private draft edit discards the whole held
+Bot mentions are normalized before command detection. An edited command,
+empty, deleted, attachment-bearing or private draft edit discards the whole held
 group without acceptance. After seal, platform edits cannot change the durable input.
 `/stop`, `/new` and reset keep their native revocation behavior.

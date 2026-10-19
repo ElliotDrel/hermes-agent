@@ -69,7 +69,7 @@ async def composition_lane(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['edited', 'mention', 'disabled', 'cutoff', 'revoked', 'empty', 'deleted', 'private', 'media', 'capacity', 'unauthorized'])
+@pytest.mark.parametrize('mode', ['edited', 'mention', 'disabled', 'cutoff', 'revoked', 'empty', 'deleted', 'private', 'media', 'capacity', 'unauthorized', 'command', 'mention-command'])
 async def test_physical_edits_seal_once_with_first_owner_and_last_anchor(monkeypatch, composition_lane, mode):
     from gateway.session_ingress_burst import _flush, discard_busy_burst, holds_busy_burst
     from hermes_state_runtime import list_session_admissions
@@ -92,9 +92,7 @@ async def test_physical_edits_seal_once_with_first_owner_and_last_anchor(monkeyp
                                channel=SimpleNamespace(id='room'), attachments=[], edited_at=None)
     if mode == 'cutoff':
         now[0] += 21
-    await adapter._on_platform_message_edit(None, edit('/stop'))
     await adapter._on_platform_message_edit(None, edit('forged', sender='43'))
-    await adapter._on_platform_message_edit(None, edit('<@99> /stop'))
     await adapter._on_platform_message_edit(None, edit('<@99> corrected' if mode=='mention' else 'corrected'))
     adapter.config.extra['draft_markers']=['Draft']
     if not callable(getattr(adapter,'_is_draft_message',None)):
@@ -102,6 +100,8 @@ async def test_physical_edits_seal_once_with_first_owner_and_last_anchor(monkeyp
         adapter._is_draft_message=lambda text:text.strip().startswith('Draft')
     media_edit=edit('new attachment');media_edit.attachments=[object()]
     actions={
+        'command':lambda:adapter._on_platform_message_edit(None,edit('/stop')),
+        'mention-command':lambda:adapter._on_platform_message_edit(None,edit('<@99> /stop')),
         'empty':lambda:adapter._on_platform_message_edit(None,edit(' ')),
         'deleted':lambda:adapter._on_platform_message_delete(edit('corrected')),
         'private':lambda:adapter._on_platform_message_edit(None,edit('<@99> Draft private')),
@@ -117,12 +117,12 @@ async def test_physical_edits_seal_once_with_first_owner_and_last_anchor(monkeyp
     assert getattr(burst.composition, 'deadline', None) == deadline
     if mode == 'revoked':
         discard_busy_burst(adapter, key)
-    elif mode not in ('empty','deleted','private','media'):
+    elif mode not in ('empty','deleted','private','media','command','mention-command'):
         await _flush(adapter, key, burst)
     await asyncio.gather(*tasks)
     owner = runner.session_store.peek_session_id(runner.session_store._generate_session_key(first.source))
     rows = list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    if mode in ('revoked','empty','deleted','private','media','capacity','unauthorized'):
+    if mode in ('revoked','empty','deleted','private','media','capacity','unauthorized','command','mention-command'):
         assert len(rows) == 1 and not first._gateway_accepted and not second._gateway_accepted
         return
     expected = 'corrected\nsecond' if mode in ('edited','mention') else 'first\nsecond'

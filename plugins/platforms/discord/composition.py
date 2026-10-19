@@ -57,7 +57,8 @@ class Composition:
             self.discarded = True
             return True
         if MessageEvent(text=text).is_command():
-            return False
+            self.discarded = True
+            return True
         if sum(map(len,self.parts.values())) - len(self.parts[message_id]) + len(text) + len(self.parts) - 1 > 32768:
             self.discarded = True
             return True
