@@ -75,6 +75,7 @@ def _wait_for_windows_update_gateway_exit(pids: list[int], *, timeout: float) ->
     if not pids:
         return set()
     from gateway.status import _pid_exists
+    started = last_report = _time.monotonic()
 
     def _alive(pid: int) -> bool:
         try:
@@ -85,8 +86,12 @@ def _wait_for_windows_update_gateway_exit(pids: list[int], *, timeout: float) ->
     remaining = set(pids)
 
     def _all_gone() -> bool:
-        nonlocal remaining
+        nonlocal remaining, last_report
         remaining = {pid for pid in remaining if _alive(pid)}
+        now = _time.monotonic()
+        if remaining and now - last_report >= 30:
+            print(f"  → Still draining {len(remaining)} gateway(s); {max(timeout - (now - started), 0):.0f}s left")
+            last_report = now
         return not remaining
 
     _poll_until(_all_gone, max(timeout, 0.0), 0.25)
@@ -888,12 +893,11 @@ def _discover_windows_gateways():
 
 
 def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids, on_request=None):
-    """Marker + socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
+    """Socket-owned graceful pause, with a marker only for gateways that cannot ACK.
 
-    Socket ACK = the gateway drains and exits by its own graceful path. No answer (older
-    gateway) -> the marker poll / force-kill ladder in the caller. ``on_request(pid)`` runs once the
-    request is issued (marker on disk, else a positive socket ACK) and before the socket call: from
-    then on a crash leaves that gateway owed while it drains, never before."""
+    The gateway persists acceptance before scheduling its restart, so updater death
+    during the socket exchange cannot erase restart debt.
+    """
     profiles: dict[str, int] = {}
     mapped_pids = []
     socket_acks: list[dict] = []
@@ -903,23 +907,19 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
-        requested = _write_update_planned_stop_marker(Path(proc.path), int(pid))
-        if requested and on_request is not None:
-            on_request(int(pid))
+        requested = False
         try:
-            # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
-            # relying on the marker poll + force-kill ladder. A positive ACK means the gateway is running
-            # its own graceful restart path (same drain as SIGUSR1/service restarts) and will release its
-            # venv handles on the way out. No answer (older gateway, no socket) → the marker watcher /
-            # force-kill fallback below behaves exactly as before this verb existed.
             from gateway.control_socket import pause_gateway_for_update
-            ack = pause_gateway_for_update(Path(proc.path))
+            ack = pause_gateway_for_update(Path(proc.path), timeout=6.0, stopper_pid=os.getpid())
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
-                if not requested and on_request is not None:
-                    on_request(int(pid))
+                requested = True
         except Exception as exc:
-            logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc)
+            logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc, exc_info=True)
+        if not requested:
+            requested = _write_update_planned_stop_marker(Path(proc.path), int(pid))
+        if requested and on_request is not None:
+            on_request(int(pid))
     return profiles, mapped_pids, socket_acks
 
 
@@ -935,7 +935,7 @@ def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
         with suppress(Exception):
             declared = max(float(a.get("drain_timeout") or 0.0) for a in socket_acks)
             drain_timeout = max(drain_timeout, declared + 10.0)
-        print(f"  → {len(socket_acks)} gateway(s) ACKed socket pause; waiting up to {int(drain_timeout)}s for graceful exit")
+        print(f"  → {len(socket_acks)} gateway(s) ACKed socket pause; waiting up to {drain_timeout:.0f}s for graceful exit")
     return drain_timeout
 
 

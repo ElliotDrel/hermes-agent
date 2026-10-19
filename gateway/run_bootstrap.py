@@ -297,12 +297,14 @@ async def _start_gateway_start_control_socket(runner):
         # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
-        def _pause_for_update_handler() -> dict:
-            try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
-            except Exception:
-                _drain = 30.0
+        def _pause_for_update_handler(params=None) -> dict:
+            from gateway.restart import resolve_restart_exit_wait_budget
+            from hermes_cli.update_pause_record import accept_socket_stop
+
+            if params and params.get("stopper_pid") is not None:
+                accept_socket_stop(params["stopper_pid"])
+            _drain = resolve_restart_exit_wait_budget(
+                runner._restart_drain_timeout, runner._restart_after_turn_timeout, runner._cron_drain_timeout)
             accepted_box: list[bool] = []
             _done = threading.Event()
 
@@ -313,8 +315,10 @@ async def _start_gateway_start_control_socket(runner):
                     _done.set()
 
             _main_loop.call_soon_threadsafe(_request)
-            _done.wait(timeout=5.0)
-            accepted = bool(accepted_box and accepted_box[0])
+            completed = _done.wait(timeout=5.0)
+            # A queued request still owns the pause. A busy loop must not cause
+            # the updater to race its marker watcher against this callback.
+            accepted = not completed or bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
                 "pid": os.getpid(), "drain_timeout": _drain}

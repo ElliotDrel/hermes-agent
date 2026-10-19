@@ -485,14 +485,15 @@ def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) ->
     return query_gateway_control(home, "identify", timeout=timeout)
 
 
-def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT, stopper_pid: int | None = None) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to drain and exit for an update. Returns the ACK ``{"pausing",
     "already_stopping", "pid", "drain_timeout"}`` or None when no gateway answers (old gateway without
     the verb, no/dead socket) — the caller then uses the legacy signal/tree-kill pause path.
 
     Step 2 of the socket migration (#92091).
     """
-    return query_gateway_control(home, "pause-for-update", timeout=timeout)
+    return query_gateway_control(home, "pause-for-update", timeout=timeout,
+                                 params={"stopper_pid": stopper_pid} if stopper_pid is not None else None)
 
 
 def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dict[str, Any]]:

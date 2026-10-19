@@ -193,3 +193,12 @@ operations are HOME-anchored (`_get_profiles_root()` returns
 `hermes -p coder profile list` sees all profiles regardless of which one is active — intentional.
 Profile-safe coding rules are in the root `AGENTS.md`; multiplex secret-scope rules in
 `gateway/AGENTS.md`.
+
+### Windows update pause ownership
+
+The updater asks the gateway control pipe to pause before publishing a planned-stop
+marker. A current gateway writes the existing accepted-stop receipt in its own home
+before scheduling the restart, preserving restart debt if the updater dies before
+its ACK checkpoint. Only an unavailable socket uses the marker fallback. The ACK
+reports the gateway's configured after-turn plus stop envelope through
+`resolve_restart_exit_wait_budget`; the updater displays progress while awaiting exit.

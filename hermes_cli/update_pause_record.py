@@ -494,6 +494,24 @@ def _accepted_path(marker_path: Path) -> Path:
     return marker_path.with_name(marker_path.name + ".accepted")
 
 
+def accept_socket_stop(stopper_pid: int) -> None:
+    """Persist the socket request before scheduling drain, without arming the stop watcher.
+
+    This is the same acceptance receipt recovery reads for marker-driven stops.
+    Refuse the socket request if it cannot be made durable; the updater can then
+    use the legacy marker path, whose consumer owns its own checkpoint.
+    """
+    from datetime import datetime, UTC
+    from gateway.status import _get_process_hermes_home, get_process_start_time
+
+    if isinstance(stopper_pid, bool) or not isinstance(stopper_pid, int) or stopper_pid <= 0:
+        raise ValueError("invalid update stopper PID")
+    marker = {"target_pid": os.getpid(), "target_start_time": get_process_start_time(os.getpid()),
+              "stopper_pid": stopper_pid, "written_at": datetime.now(UTC).isoformat()}
+    path = _get_process_hermes_home() / ".gateway-planned-stop.json"
+    _atomic_write(_accepted_path(path), marker)
+
+
 def mark_stop_accepted(path: Path, marker: dict) -> None:
     """The consumer's receipt when it cannot checkpoint into the record (busy mutex, refused
     replace): this incarnation accepted the request and drains until it exits, however long past
