@@ -320,4 +320,3 @@ def schedule_progress_completion(response: Any, _cleanup_adapter: Any, turn_ctx:
         return not ids
 
     adapter.register_confirmed_delivery_callback(turn_ctx.progress_delivery_owner, complete)
-
