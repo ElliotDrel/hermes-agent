@@ -144,8 +144,8 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
 
 def _thread_metadata_for_event(event) -> dict | None:
-    """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    from gateway.runtime_footer import footer_delivery_metadata
+    return footer_delivery_metadata(event, _thread_metadata_for_source(event.source, _reply_anchor_for_event(event)))
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
@@ -4566,7 +4566,7 @@ class BasePlatformAdapter(ABC):
                     response, event, session_key, is_ephemeral_response=is_ephemeral_response)
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _final_thread_metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):

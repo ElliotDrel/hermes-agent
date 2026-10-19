@@ -727,7 +727,7 @@ def _format_money(value: Decimal, currency: str) -> str:
 def _is_deepseek_base_url(base_url: Optional[str]) -> bool:
     try:
         host = urlparse(str(base_url or "")).hostname or ""
-    except Exception:
+    except (TypeError, ValueError):
         return False
     host = host.lower().strip(".")
     return host == "deepseek.com" or host.endswith(".deepseek.com")

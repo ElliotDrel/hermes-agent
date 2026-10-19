@@ -222,6 +222,14 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
     if not force and not getattr(turn, "compacted", False):
         return False
     thread_id, turn_id = getattr(turn, "thread_id", None) or "", getattr(turn, "turn_id", None) or ""
+    # A remote boundary is identified by the provider's stable thread/turn receipt. Never
+    # invent an id when the provider did not supply one: that observation remains unknown.
+    db = getattr(agent, "_session_db", None)
+    recorder = getattr(db, "record_provider_compaction", None)
+    if callable(recorder):
+        with suppress(Exception):
+            boundary = "codex:" + str(thread_id) + ":" + str(turn_id) if thread_id and turn_id else None
+            recorder(agent.session_id, boundary)
     logger.info("codex app-server compaction observed: session=%s thread=%s turn=%s force=%s",
                 getattr(agent, "session_id", None) or "none", thread_id, turn_id, force)
     if not force:

@@ -953,6 +953,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():
                 raise SessionCompressionInProgressError(
                     f"Compression lease for {session_id!r} lost before commit; refusing to publish a stale compaction")
+        if model_config_patch and model_config_patch.get("_record_compaction") is True:
+            from hermes_state_compaction_counts import increment
+            increment(self, conn, session_id)
+            model_config_patch = {k: v for k, v in model_config_patch.items() if k != "_record_compaction"}
         patch = model_config_patch is not None
         # on_missing="raise": never commit against a vanished session row (caller keeps the original).
         patched_model_config = self._merge_model_config_json(

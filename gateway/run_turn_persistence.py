@@ -231,6 +231,8 @@ class GatewayTurnPersistenceMixin:
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                compaction_trigger_tokens=agent_result.get("compaction_trigger_tokens"),
+                compaction_count=agent_result.get("compaction_count"),
                 provider=agent_result.get("provider"),
                 account_label=_account_label,
                 account_usage=_account_usage,
@@ -559,6 +561,7 @@ class GatewayTurnPersistenceMixin:
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
+            _footer_line = ""
 
         adapter = self._delivery_adapter_for(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
@@ -580,7 +583,12 @@ class GatewayTurnPersistenceMixin:
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
                 try:
-                    await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
+                    metadata = dict(self._event_thread_metadata(event, source) or {})
+                    if source.platform == Platform.DISCORD:
+                        metadata.update(runtime_footer=_footer_line, non_conversational=True)
+                        await adapter.send(source.chat_id, "", metadata=metadata)
+                    else:
+                        await adapter.send(source.chat_id, _footer_line, metadata=metadata)
                 except Exception as _e:
                     logger.debug("trailing footer send failed: %s", _e)
             # Return None so the body isn't sent twice; stash the delivered text on the event for the
@@ -589,6 +597,11 @@ class GatewayTurnPersistenceMixin:
                 event._streamed_final_response = str(response or "")
             return None
 
+        if _footer_line and response:
+            if source.platform == Platform.DISCORD:
+                event._runtime_footer_line = _footer_line
+            else:
+                return f"{response}\n\n{_footer_line}"
         return response
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own

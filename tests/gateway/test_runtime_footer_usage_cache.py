@@ -53,7 +53,7 @@ def test_footer_account_usage_cache_key_accepts_captured_profile_home(monkeypatc
         hermes_home=Path("/profiles/alice"),
     )
 
-    assert key[0] == "/profiles/alice"
+    assert key[0] == str(Path("/profiles/alice"))
 
 
 def test_cold_cache_schedules_once_and_returns_immediately(monkeypatch):

@@ -192,7 +192,22 @@ def _resolve_runtime_footer_metadata(agent, user_config: dict | None, platform_k
             api_key=api_key,
             hermes_home=str(get_hermes_home()),
         )
+    compressor = getattr(agent, "context_compressor", None)
+    comp_state = vars(compressor) if compressor is not None and hasattr(compressor, "__dict__") else {}
+    threshold = comp_state.get("_threshold_tokens", comp_state.get("threshold_tokens"))
+    if getattr(agent, "_codex_session", None) is not None:
+        threshold = None  # The provider owns its automatic trigger.
+    count = None
+    db = getattr(agent, "_session_db", None)
+    if db is not None and getattr(agent, "session_id", None):
+        try:
+            value = db.get_session_model_config_value(agent.session_id, "_completed_compactions", 0)
+            count = value if type(value) is int and value >= 0 else None
+        except Exception:
+            logger.debug("Runtime footer count lookup failed", exc_info=True)
     return {
+        "compaction_trigger_tokens": threshold,
+        "compaction_count": count,
         "provider": provider,
         "base_url": base_url,
         "account_usage": account_usage,

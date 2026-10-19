@@ -8,6 +8,8 @@ single daemon thread refreshes stale entries in the background.
 from __future__ import annotations
 
 import hashlib
+import logging
+from agent.memory_provider import spawn_context_thread
 import threading
 import time
 from pathlib import Path
@@ -15,6 +17,8 @@ from typing import Any
 
 from agent.account_usage import fetch_account_usage
 from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 _CACHE: dict[tuple[str, str, str, str], tuple[float, Any]] = {}
 _REFRESHING: set[tuple[str, str, str, str]] = set()
@@ -40,6 +44,7 @@ def _refresh(key, provider, base_url, api_key) -> None:
     try:
         snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
     except Exception:
+        logger.debug("Runtime footer usage refresh failed", exc_info=True)
         snapshot = None
     with _LOCK:
         previous = _CACHE.get(key)
@@ -55,13 +60,14 @@ def _refresh(key, provider, base_url, api_key) -> None:
 
 def _start_refresh(key, provider, base_url, api_key) -> None:
     try:
-        threading.Thread(
+        spawn_context_thread(
             target=_refresh,
             args=(key, provider, base_url, api_key),
             name=f"runtime-footer-usage-{key[1] or 'unknown'}",
             daemon=True,
         ).start()
     except Exception:
+        logger.debug("Runtime footer refresh thread failed", exc_info=True)
         with _LOCK:
             _REFRESHING.discard(key)
 

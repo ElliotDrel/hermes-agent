@@ -275,7 +275,9 @@ def worker_archive(db, conn, sid, payload):
     if payload['lock_holder'] is not None:
         _text(payload['lock_holder'])
     patch = payload['model_config_patch']
-    if patch is not None and (not isinstance(patch, dict) or set(patch) - SIDECAR_KEYS):
+    if patch is not None and (not isinstance(patch, dict) or set(patch) - (SIDECAR_KEYS | {"_record_compaction"})):
+        raise RuntimeStoreError('invalid_params')
+    if patch and '_record_compaction' in patch and patch['_record_compaction'] is not True:
         raise RuntimeStoreError('invalid_params')
     if type(payload['tail_count']) is not int or payload['tail_count'] < 0:
         raise RuntimeStoreError('invalid_params')
@@ -453,7 +455,17 @@ def worker_turn_cleanup(db, conn, sid, payload):
     return {'released': True}
 
 
+def worker_provider_boundary(db, conn, sid, payload):
+    _fields(payload, ('boundary_id',))
+    boundary_id = payload['boundary_id']
+    if boundary_id is not None and (not isinstance(boundary_id, str) or not 1 <= len(boundary_id) <= 512):
+        raise RuntimeStoreError('invalid_params')
+    from hermes_state_compaction_counts import provider_boundary
+    return {'value': provider_boundary(db, conn, sid, boundary_id)}
+
+
 WORKER_COMPRESSION_HANDLERS = {
+    'compression.provider_boundary': worker_provider_boundary,
     'turn.cleanup': worker_turn_cleanup,
     'compression.append': worker_compression_append,
     'compression.reopen': worker_reopen,

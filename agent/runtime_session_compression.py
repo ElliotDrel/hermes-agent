@@ -64,6 +64,10 @@ class RuntimeSessionCompressionMixin:
         self._session(session_id)
         return self._apply('compression.watermark', {})['value']
 
+    def record_provider_compaction(self, session_id, boundary_id):
+        self._session(session_id)
+        return self._apply('compression.provider_boundary', {'boundary_id': boundary_id})['value']
+
     def archive_and_compact(self, session_id, compacted_messages, model_config_patch=None,
                             watermark=None, lock_holder=None, tail_count=0, carried_messages=None,
                             covered_ids=None, unresolved_held=None, held_for_cas=None):

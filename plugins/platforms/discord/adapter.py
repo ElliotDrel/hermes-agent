@@ -3243,6 +3243,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             kept.append(notice)
         return kept
 
+    @staticmethod
+    def _runtime_footer_embed(metadata):
+        footer = (metadata or {}).get("runtime_footer")
+        if not isinstance(footer, str) or not footer:
+            return None
+        embed = discord.Embed()
+        embed.set_footer(text=footer[:2048])
+        return embed
+
     async def send(
         self,
         chat_id: str,
@@ -3256,7 +3265,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # Dead transport: classify as send_path_degraded so the delivery ledger's reconnect
             # sweep can replay this; a generic "Not connected" error would strand the output.
             return SendResult(success=False, error="send_path_degraded", retryable=True)
-        if not (content or "").strip():
+        if not (content or "").strip() and not (metadata or {}).get("runtime_footer"):
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s", self.name,
                 chat_id, "".join(traceback.format_stack(limit=12)[:-1]),
@@ -3286,6 +3295,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
+            footer = self._runtime_footer_embed(metadata)
+            if not chunks and footer is not None:
+                chunks = [None]
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
@@ -3294,7 +3306,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    kwargs = {"embed": footer} if footer is not None and i == len(chunks) - 1 else {}
+                    msg = await channel.send(content=chunk, reference=chunk_reference, **kwargs)
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -3302,7 +3315,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(content=chunk, reference=None, **kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -3461,7 +3474,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
                 self._last_overflow_preview.pop(_preview_key, None)
             try:
-                await msg.edit(content=formatted)
+                footer = self._runtime_footer_embed(metadata) if finalize else None
+                extra = {}
+                if footer is not None:
+                    existing = await msg.fetch()
+                    extra["embeds"] = [*existing.embeds, footer][:10]
+                await msg.edit(content=formatted, **extra)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:

@@ -83,7 +83,7 @@ _CHAIN_CAP = 1000
 
 # model_config keys that belong to the whole conversation, not one compression segment: a rotation
 # carries them onto the child (per-segment keys such as usage anchors stay behind).
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run",)
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "_completed_compactions")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:
@@ -244,6 +244,8 @@ class SessionCompressionMixin:
         from hermes_state_sessions import _parse_model_config
         carried = {key: value for key, value in _parse_model_config(parent["model_config"]).items()
                    if key in _CONVERSATION_MODEL_CONFIG_KEYS}
+        if any(k in (model_config or {}) for k in ("_branched_from", "_reset_from")):
+            carried.pop("_completed_compactions", None)
         model_config = {**carried, **(model_config or {})}
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
         # Pin/archive are compression-lineage flags; canonical branch/reset verbs also publish through
@@ -352,6 +354,9 @@ class SessionCompressionMixin:
             conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
             source=source, model=model, model_config=model_config, system_prompt=system_prompt,
             cwd=cwd, profile_name=profile_name)
+        if not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from")):
+            from hermes_state_compaction_counts import increment
+            increment(self, conn, child_session_id)
         # Carried handoff tail rows arrive without a timestamp and would otherwise be stamped
         # `now`, breaking their _display_dedupe_key identity with the parent's durable originals
         # and duplicating them in the lineage display read (#59661).
@@ -470,6 +475,13 @@ class SessionCompressionMixin:
 
     def _write_session_column(self, column: str, session_id: str, value: Any) -> None:
         self._write_sql(f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id))
+
+    def record_provider_compaction(self, session_id: str, boundary_id: str):
+        """Persist a provider boundary once; exact receipt retry leaves the count unchanged."""
+        from hermes_state_compaction_counts import provider_boundary
+        if boundary_id is not None and (not isinstance(boundary_id, str) or not 1 <= len(boundary_id) <= 512):
+            raise ValueError("invalid provider compaction boundary")
+        return self._execute_write(lambda conn: provider_boundary(self, conn, session_id, boundary_id))
 
     def get_compression_fallback_streak(self, session_id: str) -> int:
         """Return the persisted deterministic-fallback streak."""

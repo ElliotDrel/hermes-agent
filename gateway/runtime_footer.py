@@ -136,7 +136,7 @@ def _format_latency(seconds: float) -> str:
 def _compact_number(value: float) -> str:
     try:
         n = float(value)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return str(value)
     if abs(n) >= 1_000_000:
         text = f"{n / 1_000_000:.1f}M"
@@ -153,7 +153,7 @@ def _compact_reset(dt: Any) -> str:
     if isinstance(dt, str):
         try:
             dt = datetime.fromisoformat(dt.strip())
-        except Exception:
+        except (TypeError, ValueError):
             return ""
     if not isinstance(dt, datetime):
         return ""
@@ -246,7 +246,7 @@ def _format_quota(account_usage: Any, *, provider: Optional[str] = None, model: 
             continue
         try:
             remaining = max(0, round(100 - float(used)))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             continue
         label = _quota_label(window, provider=provider, model=model)
         text = f"{label} {remaining}%"
@@ -280,6 +280,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           turn_seconds: Optional[float] = None,
                           requested_model: Optional[str] = None, served_model: Optional[str] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS,
+                          compaction_trigger_tokens: Optional[int] = None, compaction_count: Optional[int] = None,
                           provider: Optional[str] = None,
                           account_label: Optional[str] = None,
                           account_usage: Any = None,
@@ -311,6 +312,11 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         return _account_short(str(label), provider) if label else ""
 
     renderers = {
+        "compaction_trigger": lambda: (
+            f"compact {round(context_tokens / compaction_trigger_tokens * 100)}%"
+            if type(compaction_trigger_tokens) is int and compaction_trigger_tokens > 0
+            and type(context_tokens) is int and context_tokens >= 0 else ""),
+        "compactions": lambda: f"compactions {compaction_count}" if type(compaction_count) is int and compaction_count >= 0 else "",
         "model": lambda: _model_short(model),
         "served_model": served,
         "reasoning": lambda: _reasoning_short(reasoning_effort),
@@ -349,6 +355,7 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
                       requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                      compaction_trigger_tokens: Optional[int] = None, compaction_count: Optional[int] = None,
                       provider: Optional[str] = None, account_label: Optional[str] = None,
                       account_usage: Any = None, reasoning_effort: Optional[str] = None,
                       resolved_config: Optional[dict[str, Any]] = None) -> str:
@@ -368,7 +375,16 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  requested_model=requested_model, served_model=served_model,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS,
+                                 compaction_trigger_tokens=compaction_trigger_tokens, compaction_count=compaction_count,
                                  provider=provider, account_label=account_label,
                                  account_usage=account_usage,
                                  reasoning_effort=reasoning_effort,
                                  underline=bool(cfg.get("underline")))
+
+
+def footer_delivery_metadata(event, metadata):
+    """Attach this turn's generated Discord presentation sidecar to a copied metadata map."""
+    footer = getattr(event, "_runtime_footer_line", None)
+    if isinstance(footer, str) and footer and getattr(event.source.platform, "value", None) == "discord":
+        return {**(metadata or {}), "runtime_footer": footer}
+    return metadata
