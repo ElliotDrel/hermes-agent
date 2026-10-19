@@ -1,11 +1,47 @@
 """Discord physical edits seal through the real native admission FIFO."""
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from tests.waiting import async_wait_until
+
+
+@pytest.mark.parametrize("shape", ["top-level", "nested-with-root", "nested-and-root-conflict"])
+def test_authored_profile_window_controls_real_composition_deadline(tmp_path, monkeypatch, shape):
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platforms.event import MessageEvent
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from plugins.platforms.discord import composition
+
+    monkeypatch.setattr(composition, "_now", lambda: 100.0)
+    homes = [tmp_path/"a", tmp_path/"b"]
+    for home, seconds in zip(homes, [20, 0]):
+        home.mkdir()
+        config = {"platforms": {"discord": {"enabled": True}},
+                  "discord": {"busy_composition_window_seconds": seconds}}
+        if shape != "top-level":
+            config["platforms"]["discord"]["extra"] = {"busy_composition_window_seconds": seconds}
+            config["discord"] = {"require_mention": False}
+            if shape == "nested-and-root-conflict":
+                config["discord"]["busy_composition_window_seconds"] = 3
+        (home/"config.yaml").write_text(json.dumps(config), encoding="utf-8")
+    for home, seconds in [(homes[0], 20), (homes[1], 0), (homes[0], 20)]:
+        scope = set_hermes_home_override(home)
+        try:
+            adapter = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+            event = MessageEvent(text="compose", message_id="physical", source=adapter.build_source(
+                chat_id="room", chat_type="group", user_id="42"))
+            draft = adapter.begin_busy_text_composition(event)
+            if seconds:
+                assert draft is not None and draft.deadline == 100.0 + seconds
+            else:
+                assert draft is None
+        finally:
+            reset_hermes_home_override(scope)
 
 
 @pytest_asyncio.fixture
