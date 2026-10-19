@@ -102,6 +102,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
+    CommandDef("rename", "Rename the Discord thread; omit name to regenerate", "Session", args_hint="[name]",
+               gateway_only=True, busy_policy="dispatch"),
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),

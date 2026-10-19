@@ -1001,3 +1001,19 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+### Rename a thread
+
+Use `/rename exact name` inside a native Discord thread, including while an agent is
+working. `/rename` alone generates a title from bounded conversation text using the
+current profile's `auxiliary.title_generation` route and session model override.
+Hermes acknowledges before generating or validating the name. Explicit names accept
+1–100 Unicode code points and are rejected rather than silently shortened.
+
+The adapter reads the current remote name, changes it once, and reads it again.
+Only an exact confirmation updates the saved session title, provided the same session
+and captured title still own it. A newer saved human title wins. Discord has no atomic
+name precondition: a moderator's edit between the final preflight read and PATCH can
+still race. A timeout, cancellation, server failure or mismatched readback leaves the
+saved title unchanged and reports uncertainty. A 429 retains its retry deadline.
+Other platforms continue to use `/title` with their existing behavior.

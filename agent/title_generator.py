@@ -560,6 +560,31 @@ def generate_title(
         return None
 
 
+def generate_conversation_title(messages: list[dict], *, main_runtime: dict,
+                                runtime_validator: Optional[RuntimeValidator] = None) -> Optional[str]:
+    """Name bounded human conversation through the native title task, without changing history."""
+    parts, remaining = [], MAX_TITLE_INPUT_CHARS
+    for message in reversed(messages):
+        role = message.get("role")
+        if role not in ("user", "assistant") or message.get("tool_calls"):
+            continue
+        text = flatten_message_text(message.get("content")).strip()
+        if not is_titleable_user_message(text):
+            continue
+        text = _summarize_user_message(text)
+        part = f"{role}: {text}"
+        part = part[:min(remaining, MAX_TITLE_INPUT_CHARS // 2)]
+        if part:
+            parts.append(part)
+            remaining -= len(part) + 2
+        if remaining <= 0:
+            break
+    if not parts:
+        return None
+    return generate_title("\n\n".join(reversed(parts)), main_runtime=main_runtime,
+                          runtime_validator=runtime_validator)
+
+
 def _has_upgraded_title(session_db, session_id: str) -> bool:
     """True when the session already carries an ``llm``/``user`` title (or the check fails)."""
     try:

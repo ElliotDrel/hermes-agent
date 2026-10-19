@@ -167,6 +167,18 @@ class SessionTitlesMixin:
         ValueError on conflict or validation failure."""
         return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER)
 
+    def set_session_title_if_current(self, session_id: str, title: str, *, expected_title: Optional[str],
+                                     expected_source: Optional[str], expected_revision: int) -> bool:
+        """Explicit rename settlement: one transaction checks the captured title and active lineage."""
+        def settle(conn):
+            row = conn.execute("SELECT title, title_source, title_revision, ended_at FROM sessions WHERE id = ?",
+                               (session_id,)).fetchone()
+            if (row is None or row["ended_at"] is not None
+                    or (row["title"], row["title_source"], row["title_revision"]) != (expected_title, expected_source, expected_revision)):
+                return []
+            return self._set_session_title_in_transaction(conn, session_id, title, source=self.TITLE_SOURCE_USER)
+        return bool(self._execute_write(settle))
+
     def set_auto_title(self, session_id: str, title: str, *, source: str) -> bool:
         """Set an automatic title; False (untouched) when a higher-authority title holds the row."""
         if source not in (self.TITLE_SOURCE_DERIVED, self.TITLE_SOURCE_LLM):

@@ -485,6 +485,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     title_source TEXT,
+    title_revision INTEGER NOT NULL DEFAULT 0,
     last_activity_at REAL,
     last_activity_description TEXT,
     last_activity_provenance TEXT,
@@ -511,6 +512,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
+
+CREATE TRIGGER IF NOT EXISTS sessions_title_revision
+AFTER UPDATE OF title, title_source ON sessions
+BEGIN
+    UPDATE sessions SET title_revision = title_revision + 1 WHERE id = NEW.id;
+END;
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

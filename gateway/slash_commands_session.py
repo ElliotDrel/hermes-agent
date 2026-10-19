@@ -952,6 +952,94 @@ class GatewaySessionCommandsMixin:
                 os.remove(temp_path)
                 os.rmdir(temp_dir)
 
+    async def _handle_rename_command(self, event: MessageEvent) -> str:
+        """Explicit confirmed Discord rename, including while an agent turn is active."""
+        source = event.source
+        adapter = self._delivery_adapter_for(source)
+        if source.platform != Platform.DISCORD or not source.thread_id or not callable(getattr(adapter, "rename_thread_confirmed", None)):
+            return t("gateway.rename.native_only")
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+        entry = await self.async_session_store.get_or_create_session(source)
+        pending = getattr(self, "_pending_thread_renames", None)
+        if pending is None:
+            pending = self._pending_thread_renames = set()
+        key = entry.session_key
+        if key in pending:
+            return t("gateway.rename.pending")
+        pending.add(key)
+        try:
+            return await self._rename_confirmed_session(event, adapter, entry)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(adapter.send(str(source.chat_id),
+                    t("gateway.rename.cancelled"),
+                    metadata=self._thread_metadata_for_source(source)))
+            raise
+        except Exception:
+            logger.debug("Explicit Discord rename failed", exc_info=True)
+            return t("gateway.rename.failed")
+        finally:
+            pending.discard(key)
+
+    async def _rename_title_candidate(self, event: MessageEvent, entry) -> Optional[str]:
+        explicit = event.get_command_args().strip()
+        if explicit:
+            return explicit
+        from agent.title_generator import generate_conversation_title
+        from gateway.run import _load_gateway_config
+        snapshot = dict(self._session_model_override(entry.session_key) or {})
+        config = await asyncio.to_thread(_load_gateway_config)
+        model, runtime = await asyncio.to_thread(self._resolve_session_agent_runtime,
+            source=event.source, session_key=entry.session_key, user_config=config)
+        main_runtime = {**runtime, "model": model, "session_id": entry.session_id}
+        history = await self._session_db.get_messages(entry.session_id)
+        # A /model switch during the request invalidates this candidate; no stale route is re-used.
+        candidate = await asyncio.to_thread(generate_conversation_title, history, main_runtime=main_runtime,
+            runtime_validator=lambda: dict(self._session_model_override(entry.session_key) or {}) == snapshot)
+        return candidate if dict(self._session_model_override(entry.session_key) or {}) == snapshot else None
+
+    async def _rename_confirmed_session(self, event: MessageEvent, adapter, entry) -> str:
+        from hermes_state import SessionDB
+        source, session_id = event.source, entry.session_id
+        snapshot = await self._session_db.get_session(session_id)
+        saved_title = (snapshot or {}).get("title")
+        ack = await adapter.send(str(source.chat_id), t("gateway.rename.ack", title=saved_title or "—"),
+                                 metadata=self._thread_metadata_for_source(source))
+        if not getattr(ack, "success", False):
+            return t("gateway.rename.ack_failed")
+        current = await adapter.read_thread_name(str(source.thread_id))
+        if current is None or snapshot is None or snapshot.get("ended_at") is not None:
+            return t("gateway.rename.unavailable")
+        candidate = await self._rename_title_candidate(event, entry)
+        if not candidate:
+            return t("gateway.rename.generation_failed")
+        if not 1 <= len(candidate) <= 100 or SessionDB.sanitize_title(candidate) != candidate:
+            return t("gateway.rename.invalid")
+        active = await self.async_session_store.get_or_create_session(source)
+        if active.session_id != session_id:
+            return t("gateway.rename.session_changed")
+        result = await adapter.rename_thread_confirmed(str(source.thread_id), name=candidate, expected_name=current)
+        if result.get("status") != "confirmed" or result.get("name") != candidate:
+            return t("gateway.rename.transport_status", status=result.get("status", "uncertain"))
+        active = await self.async_session_store.get_or_create_session(source)
+        if active.session_id != session_id or not await self._settle_renamed_title(session_id, candidate, snapshot):
+            return t("gateway.rename.saved_kept")
+        return t("gateway.rename.success", title=candidate)
+
+    async def _settle_renamed_title(self, session_id: str, title: str, snapshot: dict) -> bool:
+        task = asyncio.create_task(self._session_db.set_session_title_if_current(session_id, title,
+            expected_title=snapshot.get("title"), expected_source=snapshot.get("title_source"),
+            expected_revision=snapshot["title_revision"]))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(ValueError):
+                await task  # SQLite may have committed; never abandon its outcome.
+            raise
+        except ValueError:  # another session legitimately owns the candidate title
+            return False
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source

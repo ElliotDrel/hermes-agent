@@ -128,6 +128,9 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
      (("task", str, "", "platform.discord.command.plan.arg_task", None),),
      "/plan {task}", None),
     ("compress", "platform.discord.command.compress.description", (), "/compress", None),
+    ("rename", "platform.discord.command.rename.description",
+     (("name", str, "", "platform.discord.command.rename.arg_name", None),),
+     "/rename {name}", None),
     ("title", "platform.discord.command.title.description",
      (("name", str, "", "platform.discord.command.title.arg_name", None),),
      "/title {name}", None),
@@ -5506,6 +5509,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             self.name, last_direct_error, last_fallback_error,
         )
         return None
+
+    async def read_thread_name(self, thread_id: str) -> Optional[str]:
+        from .thread_rename import read_thread_name
+        return await read_thread_name(self, thread_id)
+
+    async def rename_thread_confirmed(self, thread_id: str, *, name: str, expected_name: str) -> dict[str, Any]:
+        from .thread_rename import rename_thread_confirmed
+        return await rename_thread_confirmed(self, thread_id, name=name, expected_name=expected_name)
 
     async def rename_thread(
         self, thread_id: str, name: str, *, only_if_current_name: Optional[str] = None,
