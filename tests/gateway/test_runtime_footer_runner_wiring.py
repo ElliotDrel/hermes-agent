@@ -89,3 +89,34 @@ async def test_footer_is_after_actual_hooks_and_sqlite_persistence(monkeypatch,t
     assert all("\n\nmodel" not in str(row.get("content")) for row in db.get_messages(SESSION_ID))
     assert captures[0]["message"] and captures[0]["history"]==[]
     db.close()
+
+
+@pytest.mark.asyncio
+async def test_interleaved_snapshot_uses_effective_agent_reasoning_and_unknown_never_borrows(monkeypatch):
+    import asyncio
+    import gateway.run as gateway_run
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+    cfg={"display":{"runtime_footer":{"enabled":True,"fields":["model","reasoning"]}}}
+    monkeypatch.setattr(gateway_run,"_load_gateway_config",lambda:cfg)
+    shared=SimpleNamespace(_reasoning_config={"effort":"high"})
+    waiting=asyncio.Event();release=asyncio.Event()
+    agent_a=SimpleNamespace(reasoning_config={"enabled":True,"effort":"high"})
+    agent_b=SimpleNamespace(reasoning_config={"enabled":False,"effort":"low"})
+    async def a():
+        waiting.set();await release.wait()
+        return _resolve_runtime_footer_metadata(agent_a,cfg,"discord")
+    task=asyncio.create_task(a())
+    await waiting.wait()
+    shared._reasoning_config={"effort":"xhigh"}
+    b=_resolve_runtime_footer_metadata(agent_b,cfg,"discord")
+    release.set();a=await task
+    assert a["reasoning_effort"]=="high" and b["reasoning_effort"]=="none"
+    source=SessionSource(platform=Platform.DISCORD,chat_id="123")
+    unknown={**a,"model":"model-a","reasoning_effort":None}
+    line=GatewayTurnPersistenceMixin._hmwa_runtime_footer_line(shared,unknown,source,1)
+    assert line=="model-a"
+    # Changing the shared runner after the snapshot cannot change either captured result.
+    shared._reasoning_config={"effort":"low"}
+    assert a["reasoning_effort"]=="high" and b["reasoning_effort"]=="none"

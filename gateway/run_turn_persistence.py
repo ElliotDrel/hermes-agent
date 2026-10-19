@@ -216,13 +216,6 @@ class GatewayTurnPersistenceMixin:
                 )
             _footer_cfg = agent_result.get("footer_config") or _rfc(_user_config, _platform_key)
             _reasoning_effort = agent_result.get("reasoning_effort")
-            if _reasoning_effort is None:
-                _reasoning_cfg = getattr(self, "_reasoning_config", None)
-                if isinstance(_reasoning_cfg, dict):
-                    _reasoning_effort = (
-                        "none" if _reasoning_cfg.get("enabled") is False
-                        else _reasoning_cfg.get("effort")
-                    )
             return _bfl(
                 user_config=_user_config,
                 platform_key=_platform_key, model=agent_result.get("model"),

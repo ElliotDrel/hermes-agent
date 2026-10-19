@@ -205,7 +205,10 @@ def _resolve_runtime_footer_metadata(agent, user_config: dict | None, platform_k
             count = value if type(value) is int and value >= 0 else None
         except Exception:
             logger.debug("Runtime footer count lookup failed", exc_info=True)
+    reasoning = getattr(agent, "reasoning_config", None)
+    effort = ("none" if reasoning.get("enabled") is False else reasoning.get("effort")) if isinstance(reasoning, dict) else None
     return {
+        "reasoning_effort": effort,
         "compaction_trigger_tokens": threshold,
         "compaction_count": count,
         "provider": provider,
@@ -1374,9 +1377,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             ctx.user_config,
             platform_key,
         )
-        footer_metadata["reasoning_effort"] = (
-            getattr(runner, "_reasoning_config", {}) or {}
-        ).get("effort")
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
         # persistence). compression_deferred (soft lock-contention defer) is distinct from
