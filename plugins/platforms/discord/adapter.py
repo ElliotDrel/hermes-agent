@@ -5537,10 +5537,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _auto_create_thread_attempt(self, message: DiscordMessage) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
-        Primary path and seed-message fallback each retry once after a short backoff (transient errors).
+        Only authoritative permission refusals permit seed fallback and a bounded retry.
 
-        ``Cannot connect to host discord.com:443``) don't immediately burn through to the caller's failure
-        path (#20243).
+        Uncertain transport outcomes stop here: a surfaced error can follow an SDK-internal retry.
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -5581,8 +5580,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         raise _AutoThreadRateLimited(retry_after) from fallback_error
                     if not self._thread_creation_definitely_refused(fallback_error):
                         raise _AutoThreadCreationUncertain from fallback_error
+                    if seed_msg is not None:
+                        with suppress(Exception):
+                            await seed_msg.delete()
                     if attempt == 0:
-                        # Brief backoff: most failures here are transient connect errors.
+                        # Retry only after both creation paths definitively refused.
                         await asyncio.sleep(0.75)
                         continue
         logger.warning(

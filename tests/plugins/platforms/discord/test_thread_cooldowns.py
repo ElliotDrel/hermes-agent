@@ -96,3 +96,11 @@ async def test_fallback_429_removes_its_seed_and_retains_authoritative_deadline(
     seed.create_thread.assert_awaited_once()
     seed.delete.assert_not_awaited()
     parent.send.assert_awaited_once()
+
+    # Known refusals have no committed thread, so every failed fallback starter is removed.
+    fresh=DiscordAdapter(PlatformConfig(enabled=True,token="test-token"))
+    message.create_thread=AsyncMock(side_effect=refusal)
+    seed.create_thread=AsyncMock(side_effect=refusal)
+    seed.delete.reset_mock()
+    assert await fresh._auto_create_thread(message) is None
+    assert seed.delete.await_count==2
