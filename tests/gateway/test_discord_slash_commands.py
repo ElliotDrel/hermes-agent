@@ -417,7 +417,7 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     message = SimpleNamespace(
         content="<@&1490963422786093149> <@555> please help <#123>",
         create_thread=AsyncMock(return_value=thread),
-        channel=SimpleNamespace(send=AsyncMock()),
+        channel=SimpleNamespace(id=123, send=AsyncMock()),
         author=SimpleNamespace(display_name="Jezza"),
     )
 
