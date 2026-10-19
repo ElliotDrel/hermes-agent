@@ -4203,7 +4203,7 @@ def compress_context(
             attempt=attempt, verbatim_tail=verbatim_tail,
             # Select pruning carries at the final archive seam, after any anti-growth salvage.
             # Only the native resolver classifies exact durable originals as superseded.
-            carry_unchanged=_compression_feasibility_skip,
+            carry_unchanged=bool(getattr(agent.context_compressor, "_last_compress_pruning_only", False)),
             carried_messages=[reinserted_reply] if reinserted_reply is not None else None,
         )
         if commit.refused_prompt is not None:

@@ -217,3 +217,37 @@ def test_repeated_pruning_carries_only_durable_unchanged_rows(tmp_path):
             row["content"] for row in second]
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("skip", ["fallback_streak", "feasibility"])
+def test_pruning_carry_does_not_leak_into_deterministic_summary_skips(skip):
+    """A real pruning boundary followed by either pre-LLM skip must retain normal carry policy."""
+    import agent.conversation_compression as compression
+
+    compressor = ContextCompressor(model="test/model", config_context_length=65_536,
+                                   threshold_tokens_cap=32_768, quiet_mode=True)
+    agent = _Agent(compressor)
+    agent.log_prefix = ""
+    agent._emit_diagnostic_status = agent._emit_status
+    with patch.object(compression, "_commit_compaction", wraps=compression._commit_compaction) as commits:
+        with patch.object(compressor, "_generate_summary", side_effect=AssertionError("Unexpected model call")):
+            compress_context(agent, _messages(), "system", approx_tokens=74_000)
+        assert commits.call_count == 1
+        assert commits.call_args.kwargs["carry_unchanged"] is True
+        compressor.update_from_response({"prompt_tokens": 1_000})
+        messages = _messages()
+        messages[0] = {"role": "user", "content": "Earlier request without a previous summary."}
+        if skip == "fallback_streak":
+            compressor._fallback_compression_streak = 2
+        else:
+            compressor._ineffective_compression_count = 1
+            for message in messages:
+                if message.get("role") == "tool":
+                    message["content"] = "Short verification."
+        with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=len(messages) - 8), \
+             patch.object(compressor, "_generate_summary", side_effect=AssertionError("Skip must be deterministic")):
+            compress_context(agent, messages, "system", approx_tokens=74_000)
+        assert compressor._last_feasibility_skip is True
+        assert compressor._last_summary_fallback_used is True
+        assert commits.call_count == 2
+        assert commits.call_args.kwargs["carry_unchanged"] is False
