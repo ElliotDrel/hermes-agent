@@ -29,3 +29,9 @@ def finish_pruned_or_defer(
         return compressor._finalize_compressed(pruned, original, len(original), spare_pending_images, pruned_count)
     compressor._structural_no_op_result(telemetry, failure_class, reason, n_messages)
     return original
+
+
+def carried_for_commit(final_messages: list[dict], carried_messages: list[dict] | None,
+                       summary_neutral: bool) -> list[dict] | None:
+    """Let native identity resolution classify only rows retained in the final pruning candidate."""
+    return final_messages if summary_neutral else carried_messages

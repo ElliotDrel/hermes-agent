@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
+from agent.context_compressor_pruned import carried_for_commit
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_deadline import resolve_context_compression_timeouts
@@ -3578,7 +3579,7 @@ def _commit_compaction(
     agent: Any, messages: list, compressed: list, *, in_place: bool, lease: _CompressionLease,
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
-    verbatim_tail: Optional[list] = None, carried_messages: Optional[list] = None,
+    verbatim_tail: Optional[list] = None, carried_messages: Optional[list] = None, carry_unchanged: bool = False,
 ) -> _CommitOutcome:
     """Persist the compacted transcript: anti-growth guard, memory extraction, then the
     in-place archive or the parent->child rotation.
@@ -3606,9 +3607,7 @@ def _commit_compaction(
                 return _CommitOutcome(
                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
                 )
-            # Publish memory only after every refusal gate, from the immutable pre-compression snapshot.
-            # The engine's session-end reset nulls the in-flight attempt telemetry the success emit
-            # still needs (#118580), so hold it across the call.
+            # Publish memory after refusal gates; hold telemetry across its session-end reset (#118580).
             with _hold_attempt_telemetry(agent.context_compressor):
                 agent.commit_memory_session(original_messages)
             from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
@@ -3657,7 +3656,8 @@ def _commit_compaction(
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
-                    lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
+                    lock_holder=lease.holder, tail_count=tail_count,
+                    carried_messages=carried_for_commit(persisted, carried_messages, carry_unchanged),
                     covered_ids=covered_ids, unresolved_held=unresolved_held,
                 )
                 compressed = persisted
@@ -4201,10 +4201,9 @@ def compress_context(
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
             attempt=attempt, verbatim_tail=verbatim_tail,
-            # The reinserted copy keeps the original's _row_id/timestamp (production flush stamps
-            # both); carry exactly that one row so the commit rewinds the durable original instead
-            # of archiving it compacted=1 next to a fresh twin (display would show it twice). The
-            # todo fold / user-anchor rows above keep their own class and are not carried.
+            # Select pruning carries at the final archive seam, after any anti-growth salvage.
+            # Only the native resolver classifies exact durable originals as superseded.
+            carry_unchanged=_compression_feasibility_skip,
             carried_messages=[reinserted_reply] if reinserted_reply is not None else None,
         )
         if commit.refused_prompt is not None:

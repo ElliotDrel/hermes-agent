@@ -382,3 +382,9 @@ A structural no-op backoff describes the current transcript shape. Rebinding the
 same session preserves it; a compression child inherits it only when the database
 confirms its parent is the currently bound session. An unrelated session starts
 without that structural timer. Completed useful compaction still clears the timer.
+
+Pruning-only in-place commits preserve exact carried-row identity through the native
+archive resolver. Unchanged messages remain searchable once, including noncontiguous
+rows between pruned tool results; the original content of changed tool results stays
+searchable as compacted history. Fresh messages without a durable original cannot
+supersede an unrelated row, and later pruning boundaries preserve those distinctions.
