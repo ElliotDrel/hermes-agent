@@ -1342,7 +1342,8 @@ def _run_foreground(
         return json.dumps({
             "output": result.get("output", ""), "exit_code": None, "error": None,
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
-            "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
+            "pid": result.get("pid"), "note": _YIELDED_NOTE,
+            **result.get("notification_receipt", {"notify_on_complete": False}),
         }, ensure_ascii=False)
     if metered:
         record_terminal_outcome(command, env_type, result)
