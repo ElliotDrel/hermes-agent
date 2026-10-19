@@ -2371,10 +2371,9 @@ def cmd_update(args):
     # _old_updater.in_historical_update(); historical on-disk updaters do not
     # declare this local, so only they hand off through retired shims.
     _hermes_current_updater_frame = True
-    from hermes_cli.update_owning_install import retarget_to_owning_install
+    from hermes_cli.staged_update import handle_if_requested
 
-    retarget_to_owning_install(PROJECT_ROOT)
-    if _update_preflight_handled(args):
+    if handle_if_requested(args, PROJECT_ROOT) or _update_preflight_handled(args):
         return
     gateway_mode = getattr(args, "gateway", False)
 

@@ -73,7 +73,7 @@ def _read_or_none(path: Path) -> Optional[bytes]:
         return None
 
 
-def arm_commit_obligations(root: Path, expected_sha: str) -> None:
+def arm_commit_obligations(root: Path, expected_sha: str, *, runtimes: list[dict] | None = None) -> None:
     """Owe the completion tail and the fleet restart for ``expected_sha`` BEFORE the tree moves.
 
     Idempotent within a run (the first call snapshots what to restore on a no-op failure). An
@@ -95,7 +95,8 @@ def arm_commit_obligations(root: Path, expected_sha: str) -> None:
         _owner = f"{root}|{os.getpid()}|{uuid.uuid4().hex}"
     try:
         arm_completion(root)
-        owed = _write_fleet_restart_pending_marker(expected_sha=expected_sha or "", owner=_owner)
+        inventory = {} if runtimes is None else {"runtimes": runtimes}
+        owed = _write_fleet_restart_pending_marker(expected_sha=expected_sha or "", owner=_owner, **inventory)
     finally:  # even a half-done arm: disarm must still recognise what this run wrote
         _armed_bytes.update({path: _read_or_none(path) for path in _armed_snapshot})
     if not owed:
@@ -176,7 +177,7 @@ def debt_sha_for_move(pre: str, target: str) -> str:
     return pre if start and pre != start else target
 
 
-def arm_commit_point(git_cmd, root: Path, expected_sha: str, **move) -> str | None:
+def arm_commit_point(git_cmd, root: Path, expected_sha: str, *, runtimes: list[dict] | None = None, **move) -> str | None:
     """Arm the obligations, then the tree-move marker (``arm_tree_move(**move)``): no marker, no move.
 
     ``None`` when both are durable; otherwise why not, with the obligations handed back
@@ -187,7 +188,10 @@ def arm_commit_point(git_cmd, root: Path, expected_sha: str, **move) -> str | No
     if refused := pause_at_commit_point():
         return refused
     try:
-        arm_commit_obligations(root, expected_sha)
+        if runtimes is None:
+            arm_commit_obligations(root, expected_sha)
+        else:
+            arm_commit_obligations(root, expected_sha, runtimes=runtimes)
         arm_tree_move(git_cmd, root, **move)
     except OSError as exc:
         disarm_commit_obligations()

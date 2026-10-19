@@ -43,6 +43,54 @@ hermes update --set-channel stable   # back to releases only
 hermes update --channel main         # one run against main; nothing is saved
 ```
 
+### Prepare a pinned source update without activating it
+
+A Git-backed, PM-managed source installation can build an update while its current
+checkout and dependency selection stay active:
+
+```bash
+hermes update --prepare <40-character-published-commit-sha>
+hermes update --activate "<receipt-path-printed-by-prepare>"
+```
+
+Preparation accepts an exact commit currently advertised by the configured
+`upstream` remote (or `origin` when there is no `upstream`). It must fast-forward
+this clean checkout. PM builds a private generation with the recorded extras and
+immutable copies of enabled plugin inputs. A fresh interpreter imports the CLI
+and gateway in a disposable home/runtime; it does not query the running gateway.
+Existing configuration, profiles, launchers and the active environment remain
+unchanged. The printed receipt binds the candidate to this install, its original
+HEAD, dependency selection and remote.
+
+Activation is a separate terminal command through this install's own launcher.
+It rechecks the receipt, published SHA, clean HEAD, plugin selection/content and
+fresh interpreter before stopping anything, then rechecks after the preflight and
+drain. It uses the ordinary update lock, backups, gateway drain, durable recovery
+records, source completion and restart/readiness checks. The checkout fast-forwards
+to exactly the prepared commit. Native completion starts a fresh bootstrap from
+that checkout, promotes the already-built generation without syncing it again,
+and runs source completion and fleet readiness in its selected interpreter.
+No target application code runs in the old updater process. The target must
+declare compatible native pinned-candidate continuation support; older or
+incompatible targets are refused before building or draining.
+
+A changed checkout, dependency selection, plugin graph or candidate requires fresh
+preparation. Plugin inputs containing symlinks or Windows junctions are refused: a
+frozen candidate cannot depend on mutable files outside its snapshot. Package/image-owned installs, frozen bundles, foreign interpreters,
+downgrades and PM toolchain-lock changes use their ordinary updater instead. These
+flags run alone; they cannot be combined with channel, branch, force, check/plan,
+backup-policy or gateway-mode flags. Windows source installs support both the
+checkout launcher and its PM-selected generation interpreter with a verified
+`inputs/.project-root` owner record.
+
+Before source mutation, refusal leaves the old checkout and dependency selection
+intact. A failure after source mutation reports an incomplete activation and keeps
+native completion/restart obligations and previous generations. As with ordinary
+updates, post-commit follow-ups return exit status `0` with a partial receipt;
+pre-commit refusals return a nonzero status. It never renames a
+launched tree back into place. Run `hermes update` to finish retained obligations;
+a previous generation is recovery evidence, not an automatic rollback.
+
 The choice is stored per install under `update.installs` in `config.yaml`. An
 install that never chose a channel only moves forward: a checkout already newer
 than the latest release (for example one that tracked `main` before this default)

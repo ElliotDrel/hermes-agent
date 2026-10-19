@@ -602,3 +602,50 @@ without upload times, it stops with `has no publish time`; use
 - **Interrupted dependency install:** startup requests the same PM repair before dependency activation. Automatic attempts are bounded; `pm repair` retries explicitly. A failed repair preserves the previous selection and its retry marker.
 - **Damaged Python executable or application source:** repair or reinstall through the package owner. PM cannot run without those files. Signed payload files are never modified by dependency repair.
 - **Unknown package or extra:** use the declared name. `pm install` takes package names, not Python extra names or pip specifications.
+
+
+### Prepared source-update generations
+
+The source updater uses PM's native candidate APIs:
+
+- `pm.prepare_candidate(owner, source_snapshot, exact_sha, extras, plugin_snapshot)`
+  builds a generation under the owner's install state from immutable source and
+  plugin inputs. The caller proves Git publication and holds the native update
+  lock. It does not publish a dependency selection or initialize profiles.
+- `pm.promote_candidate(owner, manifest)` validates the owner, target HEAD,
+  original selection, input stamps, generation/lock hashes and managed paths under
+  the dependency lock. It supplies the prebuilt result to the normal selection
+  commit, including its flush and atomic Facts write; it never rebuilds.
+
+Activation crosses the existing native `update_completion` process boundary.
+Its data-only candidate payload replaces dependency synchronization with native
+promotion in the fresh bootstrap; the selected fresh interpreter owns source
+completion, resume, fleet verification and retention release. Ordinary update
+requests keep their existing dependency synchronization behavior. A literal
+protocol declaration in the frozen target is inspected without executing it,
+so an unsupported target cannot fall back to rebuilding the candidate.
+
+The executing source tree does not own an explicitly supplied install's recovery:
+publication failure is recovered against the supplied owner. Dependency stamps
+canonicalize Git's LF and Windows checkout CRLF lock representations; the receipt
+still hashes the actual resolved lock and immutable generation bytes.
+
+The CLI preserves original plugin identities while freezing their content, and
+refuses a changed live member selection or stamp before activation. Consequently,
+native launch currency checks accept the selected candidate without rebuilding it.
+See [pinned preparation and activation](../getting-started/updating.md#prepare-a-pinned-source-update-without-activating-it).
+
+Prepared generations carry an owner-scoped `.update-retained` record, so native
+collection cannot discard them after the preparing process exits. Promotion also
+pins the previous selection. After complete source completion, gateway readiness
+and fleet verification, PM releases only this activation's pins: the new generation
+stays selected and the previous one returns to ordinary native collection. Pins
+belonging to another preparation remain intact. Prepared and incomplete activations
+retain their recovery generations. Run `hermes update` to finish native obligations
+after a partial activation; do not broadly remove retention records or generations.
+
+A failed preflight records its candidate path and releases only that preparation's
+unselected-generation pin, leaving the receipt/source evidence for inspection.
+Ordinary native collection can later reclaim that unused generation. A failed
+candidate receipt write after source mutation cannot erase the native partial
+receipt or completion/restart obligations.

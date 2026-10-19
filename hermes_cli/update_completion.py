@@ -15,6 +15,9 @@ import subprocess
 import sys
 import tempfile
 
+# Data-only admission contract for pinned source-update candidates.
+PINNED_CANDIDATE_PROTOCOL = 1
+
 
 def _write_json(path: Path, data: dict) -> None:
     temporary = path.with_suffix(".tmp")
@@ -28,9 +31,23 @@ def _exit_status(code: int) -> int:
 
 def _write_bootstrap_result(request: dict, result_path: Path, code: int, receipt: dict | None) -> int:
     """The bootstrap child's answer; windows_resume stays the parent's token (and its atexit net)."""
+    if request.get("prepared_candidate"):
+        from hermes_cli import update_receipt
+        from hermes_cli.update_cmd import _resume_windows_gateways_after_update
+        try:
+            _resume_windows_gateways_after_update(request.get("windows_resume"))
+            token = request.get("windows_resume") or {}
+            if token.get("resume_needed") or token.get("resume_deferred"):
+                update_receipt.owe_followup(request["receipt"]["update_id"], "windows_resume", "paused-fleet readiness remains incomplete")
+        except Exception as exc:  # health: allow BLE001 -- fresh recovery must not fail a committed update
+            update_receipt.owe_followup(request["receipt"]["update_id"], "windows_resume", str(exc))
+        receipt = _read_terminal_receipt(request)
+        _finish_candidate(request, receipt)
+        receipt = _read_terminal_receipt(request)
     _write_json(result_path, {
         "schema": 1, "update_id": request["receipt"]["update_id"], "exit_code": code,
-        "receipt": receipt, "windows_resume": None, "pm_receipt": request.get("pm_receipt"),
+        "receipt": receipt, "windows_resume": request.get("windows_resume") if request.get("prepared_candidate") else None,
+        "pm_receipt": request.get("pm_receipt"),
     })
     return code
 
@@ -294,11 +311,14 @@ def _settle_after_commit(request: dict, result_path: Path, step: str, reason: st
     from hermes_cli import update_receipt
     from hermes_cli.venv_sync import arm_completion
 
-    try:
-        arm_completion(Path(request["source"]))
-    except OSError as exc:  # the next launch still sees stale dependencies and syncs them
-        print(f"  ⚠ Could not record the owed source-update tail: {exc}")
-    receipt = _read_terminal_receipt(request)  # a prepared child that finalized, then died
+    receipt = _read_terminal_receipt(request)  # a completed child can lose only its result
+    verified = bool(request.get("resume_only") and receipt and receipt.get("outcome") == "success"
+                    and not receipt.get("followups"))
+    if not verified:
+        try:
+            arm_completion(Path(request["source"]))
+        except OSError as exc:  # the next launch still sees stale dependencies and syncs them
+            print(f"  ⚠ Could not record the owed source-update tail: {exc}")
     if receipt is None:
         # A prepared child that died mid-tail persisted stages the parent's snapshot lacks.
         record = _running_record(request) or request["receipt"]
@@ -348,9 +368,14 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
         try:
             # This file runs from the new tree, so its lockfile carries the new
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
-            ensure_tools_for_sync()
-            # An update never fails because of a plugin: misfits are disabled and reported.
-            pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            if candidate := request.get("prepared_candidate"):
+                # Prepared inputs have already passed a fresh-interpreter probe. This
+                # bootstrap owns target-code imports and publishes through PM's native CAS.
+                pm.promote_candidate(root, candidate["manifest"])
+            else:
+                ensure_tools_for_sync()
+                # An update never fails because of a plugin: misfits are disabled and reported.
+                pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
             collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
@@ -493,6 +518,40 @@ def _report_unbuilt_desktop(request: dict) -> None:
         _report_desktop_build_owed(request, current.data, "the source-update tail did not finish")
 
 
+def _finish_candidate(request: dict, terminal: dict | None) -> bool:
+    """Release this activation's pins only after the native child verified all work."""
+    candidate = request.get("prepared_candidate")
+    if candidate is None:
+        return False
+    from hermes_cli import update_receipt
+    from hermes_cli.staged_update import _write_receipt
+    from hermes_cli.update_cmd_fleet import _pending_fleet_restart_needed
+    from hermes_cli.venv_sync import completion_pending_path
+    from pm.candidates import finish_candidate
+
+    root = Path(request["source"])
+    token = request.get("windows_resume") or {}
+    complete = bool(terminal and terminal.get("outcome") == "success"
+                    and not terminal.get("followups") and not completion_pending_path(root).exists()
+                    and not _pending_fleet_restart_needed()
+                    and not token.get("resume_needed") and not token.get("resume_deferred"))
+    sidecar = candidate["receipt"]
+    sidecar["state"] = "activated" if complete else "incomplete"
+    try:
+        _write_receipt(Path(candidate["path"]), sidecar)
+        if complete:
+            finish_candidate(root, candidate["manifest"])
+    except (OSError, ValueError, RuntimeError) as exc:
+        update_receipt.owe_followup(request["receipt"]["update_id"], "pinned_activation", str(exc))
+        sidecar["state"] = "incomplete"
+        try:
+            _write_receipt(Path(candidate["path"]), sidecar)
+        except OSError as persistence:
+            update_receipt.owe_followup(request["receipt"]["update_id"], "candidate_receipt", str(persistence))
+        return False
+    return complete
+
+
 def _finish(request: dict, result_path: Path) -> int:
     from hermes_cli import update_receipt
     from pm.receipt import accept_worker_receipt
@@ -538,9 +597,12 @@ def _finish(request: dict, result_path: Path) -> int:
             _write_gateway_update_exit_code(False)
         if not terminal_receipt:
             code = code or 1  # the parent settles a lost result (settle_lost_completion)
+        activated = _finish_candidate(request, terminal_receipt) if request.get("prepared_candidate") else False
+        terminal_receipt = _read_terminal_receipt(request)
         _write_json(result_path, {
             "schema": 1, "update_id": request["receipt"]["update_id"], "exit_code": code,
             "receipt": terminal_receipt, "windows_resume": request["windows_resume"],
+            **({"candidate_activated": activated} if request.get("prepared_candidate") else {}),
         })
     return code
 
@@ -556,6 +618,8 @@ def main() -> int:
     # -I deliberately ignores inherited PYTHONPATH during PM preparation.
     sys.path.insert(0, str(root))
     sys.stdout = _ForwardedOutput(sys.stdout, request.get("stdout_isatty", False))
+    if request.get("prepared_candidate") and request.get("resume_only"):
+        return _settle_after_commit(request, result_path, "completion", "completion response lost; paused-fleet recovery only")
     if "--prepared" in sys.argv[3:]:
         # Claim the selected generation's lease and process its .pth files only
         # after PM selection, before importing any application dependencies.

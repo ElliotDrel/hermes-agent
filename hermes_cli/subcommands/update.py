@@ -11,6 +11,9 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies")
+    pinned = update_parser.add_mutually_exclusive_group()
+    pinned.add_argument("--prepare", metavar="SHA", help="Prepare an exact published source SHA without changing the active install")
+    pinned.add_argument("--activate", metavar="RECEIPT", help="Explicitly activate a previously prepared source candidate")
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",

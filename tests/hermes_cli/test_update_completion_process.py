@@ -12,6 +12,8 @@ import pytest
 
 from hermes_cli import update_completion
 
+pytest_plugins = ["tests.pm._pinned_fixtures"]
+
 
 @pytest.fixture
 def transition(tmp_path):
@@ -22,6 +24,11 @@ def transition(tmp_path):
     package = root / "hermes_cli"
     package.mkdir()
     (package / "__init__.py").write_text("")
+    for module in ("update_lock.py", "update_receipt.py", "_early_recovery.py"):
+        shutil.copy2(Path(update_completion.__file__).with_name(module), package / module)
+    (root / "hermes_constants.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def get_process_hermes_home(): return Path(os.environ['HERMES_HOME'])\n")
     pm_package = root / "pm"
     pm_package.mkdir()
     (pm_package / "__init__.py").write_text("OLD_API = True\n")
@@ -177,7 +184,8 @@ def transition(tmp_path):
         "    r.data.update(exit_code=code, outcome='success' if code == 0 else 'failed', finished_at='now')\n"
         "    path = pathlib.Path(os.environ['HERMES_HOME']) / 'logs/update_receipts'\n"
         "    path.mkdir(parents=True, exist_ok=True)\n"
-        "    path = path / ('update_test_' + r.correlation_id + '.json')\n"
+        "    found = read_run_record(r.correlation_id)\n"
+        "    path = found[0] if found else path / ('update_test_' + r.correlation_id + '.json')\n"
         "    path.write_text(json.dumps(r.data, ensure_ascii=False), encoding=r.data.get('encoding', 'utf-8'))\n"
         "    _current.set(None)\n"
         "    return path\n"
@@ -261,6 +269,14 @@ def _run_cmd_update(monkeypatch, request, capsys):
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
     monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    # The request names fixture-only gateway PIDs, not OS services. Model that
+    # service boundary in the old parent's lost-child recovery too; otherwise
+    # Windows attempts to launch those invented profiles and owes an unrelated
+    # windows_resume follow-up (the exact baseline reproduces this).
+    def resume_fixture_gateways(token):
+        if token:
+            token["resume_needed"] = False
+    monkeypatch.setattr(main, "_resume_windows_gateways_after_update", resume_fixture_gateways)
 
     def complete(args, gateway_mode):
         update_receipt.begin_update_receipt()
@@ -806,3 +822,230 @@ def test_only_correlated_terminal_receipt_can_acknowledge_success(transition, en
     response = run_completion(request)
     assert response["exit_code"] == (0 if correlated else 1)
     assert response["receipt"] == (receipt if correlated else None)
+
+
+@pytest.mark.parametrize("failure", [False, True, "resume-only"])
+@pytest.mark.parametrize("parent_origin", ["selected-generation", "store-launcher"])
+def test_prepared_candidate_handoff_never_imports_target_code_in_old_parent(transition, failure, parent_origin):
+    root, git, old, _new, request = transition
+    package = root / "hermes_cli"
+    shutil.copy2(update_completion.__file__, package / "update_completion.py")
+    with (root / "pm/__init__.py").open("a") as stream:
+        stream.write("def promote_candidate(root, manifest):\n    event('promote', origin=__file__)\n")
+        if failure is True:
+            stream.write("    raise RuntimeError('candidate promotion refused')\n")
+    (root / "pm/candidates.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "def finish_candidate(root, manifest): event('release', origin=__file__)\n")
+    (package / "staged_update.py").write_text(
+        "import json\n"
+        "def _write_receipt(path, data): path.write_text(json.dumps(data))\n")
+    (package / "update_cmd_fleet.py").write_text("_pending_fleet_restart_needed = lambda: False\n")
+    with (package / "venv_sync.py").open("a") as stream:
+        stream.write("def completion_pending_path(root):\n    return Path(os.environ['HERMES_HOME'])/'completion-pending'\n")
+    git("add", ".")
+    git("-c", "commit.gpgsign=false", "commit", "-m", "prepared promotion continuation")
+    target = git("rev-parse", "HEAD")
+    request["prepared_candidate"] = {"manifest": {}, "path": str(root.parent / "candidate.json"), "receipt": {}}
+    request["resume_only"] = failure == "resume-only"
+    git("checkout", old)
+    # Both real launch modes retarget application imports to the owner checkout.
+    # An older generation's interpreter does not make that source path immutable.
+    launcher_python = sys.executable
+    if parent_origin == "selected-generation":
+        parent_env = root.parent / "previous-python"
+        venv.EnvBuilder(with_pip=False).create(parent_env)
+        launcher_python = str(parent_env / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+    driver = (
+        "import importlib.util,json,os,subprocess,sys\n"
+        "from hermes_cli import update_lock,update_receipt,_early_recovery\n"
+        "assert os.path.dirname(update_lock.__file__)==os.path.join(os.getcwd(),'hermes_cli')\n"
+        "from pathlib import Path\n"
+        "lock=update_lock.UpdateLock(install_root=Path.cwd());assert lock.acquire()\n"
+        "import pm;assert pm.OLD_API\n"
+        "spec=importlib.util.spec_from_file_location('old_transport',sys.argv[1])\n"
+        "transport=importlib.util.module_from_spec(spec);spec.loader.exec_module(transport)\n"
+        "subprocess.run(['git','checkout',sys.argv[2]],check=True)\n"
+        "owner=os.path.normcase(os.path.abspath(os.getcwd()))+os.sep\n"
+        "violations=[]\n"
+        "def audit(event,args):\n"
+        "    if event=='exec' and os.path.normcase(os.path.abspath(args[0].co_filename)).startswith(owner):\n"
+        "        violations.append(args[0].co_filename)\n"
+        "        raise AssertionError('target code executed in old parent: '+args[0].co_filename)\n"
+        "sys.addaudithook(audit)\n"
+        "result=transport.run_completion(json.loads(sys.argv[3]))\n"
+        "assert pm.OLD_API\n"
+        "assert not violations,violations\n"
+        "lock.release()\n"
+        "print('RESULT='+json.dumps(dict(result,parent_pid=os.getpid())))\n"
+    )
+    result = subprocess.run([launcher_python, "-c", driver, update_completion.__file__, target,
+                             json.dumps(request), str(Path(update_completion.__file__).parents[1])],
+                            cwd=root, env={**os.environ, "PYTHONPATH": str(root), "HERMES_HOME": request["home"]},
+                            capture_output=True, text=True, timeout=45, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    response = json.loads(result.stdout.split("RESULT=")[1])
+    assert (root / "events.jsonl").exists(), result.stdout + result.stderr
+    events = [json.loads(row) for row in (root / "events.jsonl").read_text().splitlines()]
+    names = [row["name"] for row in events]
+    assert "prepare" not in names and "tools" not in names
+    if failure == "resume-only":
+        assert names == ["emergency_resume"]
+        assert not response["windows_resume"]["resume_needed"]
+        return
+    assert "promote" in names
+    assert all(row["pid"] != response["parent_pid"] for row in events)
+    assert Path(next(row["origin"] for row in events if row["name"] == "promote")).is_relative_to(root)
+    assert response["exit_code"] == 0
+    if failure:
+        assert "release" not in names
+        assert response["receipt"]["followups"]
+    else:
+        assert response["candidate_activated"]
+        assert names.index("promote") < names.index("build") < names.index("verify") < names.index("release")
+
+
+@pytest.mark.parametrize("mode", ["normal", "lost-result", "promotion-failure"])
+@pytest.mark.parametrize("parent_origin", ["selected-generation", "store-launcher"])
+def test_whole_activation_uses_real_pm_and_never_executes_target_in_parent(transition, candidate_owner, monkeypatch, mode, parent_origin):
+    """Real owner/remote, PM generation and publication across the whole activation call."""
+    from hermes_cli import staged_update as staged
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+    from tests.pm._pinned_fixtures import git as owner_git
+
+    target_fixture, _git, _old, _new, _request = transition
+    owner, _source, _base, _pin, initial = candidate_owner
+    repository = Path(update_completion.__file__).parents[1]
+    ignored = shutil.ignore_patterns("__pycache__", "*.pyc")
+    # Ship the real PM/runtime/transport source closure. Only application product
+    # building and gateway services use the bounded fixture's implementations.
+    for package in ("pm", "hermes_platform", "hermes_cli"):
+        shutil.copytree(repository / package, owner / package, dirs_exist_ok=True, ignore=ignored)
+    shutil.copytree(target_fixture / "hermes_cli", owner / "hermes_cli", dirs_exist_ok=True, ignore=ignored)
+    for module in ("staged_update.py", "update_completion.py", "runtime_state.py", "_early_recovery.py"):
+        shutil.copy2(repository / "hermes_cli" / module, owner / "hermes_cli" / module)
+    for module in ("hermes_constants.py", "hermes_dir_acl.py"):
+        shutil.copy2(repository / module, owner / module)
+    with (owner / "hermes_cli/venv_sync.py").open("a") as stream:
+        stream.write("def completion_pending_path(root):\n    return Path(os.environ['HERMES_HOME'])/'completion-pending'\n")
+    (owner / "hermes_cli/update_cmd_fleet.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def _pending_fleet_restart_needed(): return (Path(os.environ['HERMES_HOME'])/'host-debt.json').exists()\n")
+    with (owner / "hermes_cli/update_cmd.py").open("a") as stream:
+        stream.write(
+            "\n_verify_native_fixture = _verify_fleet_after_update\n"
+            "def _verify_fleet_after_update(out, **kw):\n"
+            "    from hermes_cli import update_host_obligation as host\n"
+            "    import os\n    from pathlib import Path\n"
+            "    host.host_obligation_path=lambda:Path(os.environ['HERMES_HOME'])/'host-debt.json'\n"
+            "    host.release_host_obligation('fixture-activation')\n"
+            "    _verify_native_fixture(out, **kw)\n")
+    # Any accidental rebuild in the fresh bootstrap is a real regression.
+    with (owner / "pm/__init__.py").open("a") as stream:
+        stream.write("\ndef sync_venv(*args, **kwargs): raise AssertionError('prepared candidate rebuilt')\n")
+        if mode == "promotion-failure":
+            stream.write("def promote_candidate(*args, **kwargs): raise OSError('injected native promotion refusal')\n")
+    owner_git(owner, "add", ".")
+    (owner / ".gitignore").write_text("events.jsonl\n__pycache__/\n*.pyc\n")
+    owner_git(owner, "add", ".gitignore")
+    owner_git(owner, "commit", "-m", "complete old native source fixture")
+    base = owner_git(owner, "rev-parse", "HEAD")
+    owner_git(owner, "checkout", "-b", "activation-target")
+    (owner / "payload.py").write_text("VALUE = 'whole activation target'\n")
+    owner_git(owner, "add", ".")
+    owner_git(owner, "commit", "-m", "published complete target")
+    target = owner_git(owner, "rev-parse", "HEAD")
+    remote = owner.parent / "remote.git"
+    owner_git(remote, "fetch", str(owner), "activation-target:activation-target")
+    owner_git(owner, "checkout", "main")
+    monkeypatch.setattr(staged, "admit_owner", lambda root: (staged._clean(root), root)[1])
+    monkeypatch.setattr(staged, "_preflight", lambda *args: None)
+    path = staged.prepare(owner, target)
+    before = runtime_facts_path(owner).read_bytes()
+    driver = (
+        "import json,os,shutil,subprocess,sys\nfrom pathlib import Path\n"
+        "repository,owner,receipt=map(Path,sys.argv[1:4])\n"
+        "sys.path.insert(0,str(repository))\n"
+        "from hermes_cli import staged_update as stage,update_cmd_commit as commit,update_receipt as reporting\n"
+        "import hermes_cli,pm,hermes_platform\n"
+        "hermes_cli.__path__=[str(owner/'hermes_cli')];pm.__path__=[str(owner/'pm')];hermes_platform.__path__=[str(owner/'hermes_platform')]\n"
+        "sys.path.insert(0,str(owner))\n"
+        "assert hermes_cli.__path__==[str(owner/'hermes_cli')]\n"
+        "git=shutil.which('git');stage._git_command=lambda:[git]\n"
+        "stage.admit_owner=lambda root:(stage._selection(root),stage._clean(root),root)[2]\n"
+        "stage._preflight=lambda *args:None\n"
+        "stage._activation_snapshot=lambda:(None,{'runtimes':[]})\n"
+        "stage._drain=lambda:{'resume_needed':True}\n"
+        "from hermes_cli import update_host_obligation as host,update_cmd_posix_pause as pause\n"
+        "home=Path(os.environ['HERMES_HOME']);host.host_obligation_path=lambda:home/'host-debt.json'\n"
+        "pause.pause_at_commit_point=lambda:None\n"
+        "def obligations(root,sha,**kwargs):\n"
+        "    from hermes_cli.venv_sync import arm_completion\n"
+        "    arm_completion(root)\n"
+        "    assert host.arm_host_obligation(home/'fleet-pending',expected_sha=sha,runtimes=[],owner='fixture-activation')\n"
+        "commit.arm_commit_obligations=obligations\n"
+        "from hermes_cli import update_completion as transport\n"
+        "original=transport.run_completion\n"
+        "calls=[]\n"
+        "def run(request):\n"
+        "    calls.append(bool(request.get('resume_only')))\n"
+        "    response=original(request)\n"
+        "    if sys.argv[4]=='lost-result' and not request.get('resume_only'):\n"
+        "        return {'receipt':None,'exit_code':23,'error':'final response lost after verified child'}\n"
+        "    return response\n"
+        "transport.run_completion=run\n"
+        "base=stage._git(owner,'rev-parse','HEAD')\n"
+        "real_git=stage._git\n"
+        "advanced=False\n"
+        "def tracked_git(root,*args):\n"
+        "    global advanced\n"
+        "    result=real_git(root,*args)\n"
+        "    if args and args[0]=='merge':advanced=True\n"
+        "    return result\n"
+        "stage._git=tracked_git\n"
+        "prefix=os.path.normcase(str(owner.resolve()))+os.sep\n"
+        "violations=[]\n"
+        "def audit(event,args):\n"
+        "    if advanced and event=='exec' and os.path.normcase(os.path.abspath(args[0].co_filename)).startswith(prefix):\n"
+        "        violations.append(args[0].co_filename)\n"
+        "        (owner.parent/'old-parent-target-exec.json').write_text(json.dumps(violations))\n"
+        "        raise AssertionError('target app exec in old activation parent: '+args[0].co_filename)\n"
+        "sys.addaudithook(audit)\n"
+        "activated=stage.activate(owner,receipt)\n"
+        "assert not violations,violations\n"
+        "print('RESULT='+json.dumps({'activated':activated,'calls':calls,'pid':os.getpid()}))\n"
+    )
+    executable = sys.executable
+    if parent_origin == "selected-generation":
+        executable = str(Path(initial["environment"]) / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+    response = subprocess.run([executable, "-c", driver, str(repository), str(owner), str(path), mode],
+                              cwd=owner, env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]},
+                              capture_output=True, text=True, timeout=120, check=False)
+    assert response.returncode == 0, response.stdout + response.stderr
+    assert not (owner.parent / "old-parent-target-exec.json").exists(), response.stdout + response.stderr
+    result = json.loads(response.stdout.split("RESULT=")[1])
+    assert owner_git(owner, "rev-parse", "HEAD") == target
+    final = json.loads(path.read_text())
+    selected = Facts(runtime_facts_path(owner)).get("venv")
+    if mode == "promotion-failure":
+        assert selected["environment"] == initial["environment"], response.stdout + response.stderr
+        assert not result["activated"]
+        assert final["state"] == "incomplete"
+        assert (Path(final["manifest"]["environment"]).parent / ".update-retained").exists()
+        home = Path(os.environ["HERMES_HOME"])
+        assert json.loads((home / "host-debt.json").read_text())["expected_sha"] == target
+        assert (home / "completion-pending").exists()
+        return
+    assert selected["environment"] == final["manifest"]["environment"], response.stdout + response.stderr
+    assert runtime_facts_path(owner).read_bytes() != before
+    assert Path(initial["environment"]).is_dir()
+    events = [json.loads(row) for row in (owner / "events.jsonl").read_text().splitlines()]
+    assert all(row["pid"] != result["pid"] for row in events)
+    assert "build" in [row["name"] for row in events], response.stdout + response.stderr
+    assert result["calls"] == ([False, True] if mode == "lost-result" else [False])
+    assert final["state"] == "activated", response.stdout + response.stderr
+    assert not (Path(final["manifest"]["environment"]).parent / ".update-retained").exists()
+    if mode == "normal":
+        assert result["activated"], response.stdout + response.stderr
+    assert base != target
