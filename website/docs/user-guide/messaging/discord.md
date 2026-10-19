@@ -1013,3 +1013,9 @@ A seed whose thread creation is rate limited is removed when Discord permits it.
 The unprocessed request receives a wait hint; it is not silently run in the parent
 channel or queued. Normal SDK rate-limit waits and transient non-429 recovery keep
 their existing behavior. Missing retry hints do not invent a retry time.
+
+After a timeout, connection loss, server error or already-existing-thread response,
+Hermes reports uncertainty and does not add a seed or a second create at its own
+layer. The SDK may already have retried internally. An ambiguous fallback keeps
+its seed because it may be the committed thread starter. Only a clear permission
+refusal may use the alternate seed path; normal SDK retry policy is unchanged.

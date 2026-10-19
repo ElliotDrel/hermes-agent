@@ -81,6 +81,10 @@ class _Snowflake:
         self.id = id
 
 
+class _AutoThreadCreationUncertain(Exception):
+    """The SDK may have committed a thread before surfacing a transport/server error."""
+
+
 class _AutoThreadRateLimited(Exception):
     """Discord refused auto-thread creation and supplied a retry delay."""
 
@@ -5484,12 +5488,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     async def _try_auto_create_thread(self, message):
         try:
             return await self._auto_create_thread(message), None
-        except _AutoThreadRateLimited as error:
+        except (_AutoThreadRateLimited, _AutoThreadCreationUncertain) as error:
             return None, error
 
     def _auto_thread_failure_notice(self, error) -> str:
         if error is None:
             return t("platform.discord.thread.auto_create_failed")
+        if isinstance(error, _AutoThreadCreationUncertain):
+            return t("platform.discord.thread.creation_uncertain")
         delay = error.retry_after_seconds
         return t("platform.discord.thread.rate_limited", delay=_format_retry_delay(delay)) if delay is not None else t(
             "platform.discord.thread.rate_limited_unknown")
@@ -5522,6 +5528,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 logger.debug("[%s] Could not add requester to new public thread", self.name, exc_info=True)
         return self._stamp_auto_thread_name(thread, thread_name)
 
+    @staticmethod
+    def _thread_creation_definitely_refused(error) -> bool:
+        # The SDK may have retried before surfacing a connector failure. Only a clear
+        # permission refusal is eligible for our alternate creation path. "Thread already
+        # exists" is never permission to create another thread from a seed.
+        return getattr(error, "status", None) == 403 and getattr(error, "code", None) != 160004
+
     async def _auto_create_thread_attempt(self, message: DiscordMessage) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
@@ -5547,6 +5560,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         self.name, retry_after,
                     )
                     raise _AutoThreadRateLimited(retry_after) from direct_error
+                if not self._thread_creation_definitely_refused(direct_error):
+                    raise _AutoThreadCreationUncertain from direct_error
                 seed_msg = None
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
@@ -5564,6 +5579,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             self.name, retry_after,
                         )
                         raise _AutoThreadRateLimited(retry_after) from fallback_error
+                    if not self._thread_creation_definitely_refused(fallback_error):
+                        raise _AutoThreadCreationUncertain from fallback_error
                     if attempt == 0:
                         # Brief backoff: most failures here are transient connect errors.
                         await asyncio.sleep(0.75)

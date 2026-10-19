@@ -4039,3 +4039,5 @@ tips:
 
 platform.discord.thread.rate_limited: "Discord is temporarily rate-limiting Hermes from creating another thread. This message was not processed. Try again in {delay}, or continue in an existing thread."
 platform.discord.thread.rate_limited_unknown: "Discord is temporarily rate-limiting thread creation. This message was not processed. Continue in an existing thread; Discord did not provide a retry time."
+
+platform.discord.thread.creation_uncertain: "Discord thread creation could not be confirmed. The request was not processed. Check existing threads before retrying; Hermes did not create another fallback thread."

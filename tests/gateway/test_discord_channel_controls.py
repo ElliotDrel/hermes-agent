@@ -262,7 +262,7 @@ async def test_auto_thread_fallback_rate_limit_stops_retries_and_explains_delay(
     monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    direct_error = RuntimeError("temporary connection failure")
+    direct_error = type("PermissionRefused", (RuntimeError,), {"status": 403})("missing permission")
     rate_limit = RuntimeError("Too many requests")
     monkeypatch.setattr(adapter, "_is_discord_rate_limit", lambda error: error is rate_limit)
     monkeypatch.setattr(adapter, "_extract_discord_retry_after", lambda error: 60.0)
