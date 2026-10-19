@@ -124,3 +124,48 @@ def test_root_union_conflicts_keep_string_and_nested_wire_interpretations(regist
     name = register_server_tool(raw)
     assert "rows" in _catalog(name)["properties"]
     assert json.loads(model_tools.handle_function_call(name, {"rows": []})) == {"rows": []}
+
+
+def test_nested_allof_containers_retain_dispatch_coercion(register_server_tool):
+    from tools.arg_coercion import coerce_tool_args
+
+    for kind, encoded, decoded in (("array", "[]", []), ("object", "{}", {})):
+        for constraint in (
+            {"allOf": [{"type": kind}]},
+            {"allOf": [{}, {"anyOf": [{"type": kind}, {"type": "null"}]}]},
+        ):
+            schema = {"type": "object", "properties": {"payload": {
+                "type": "object", "properties": {"rows": constraint}, "required": ["rows"]}},
+                "required": ["payload"]}
+            original = copy.deepcopy(schema)
+            name = register_server_tool(schema)
+            args = {"payload": {"rows": encoded}}
+            fixed = coerce_tool_args(name, copy.deepcopy(args))
+            assert fixed == {"payload": {"rows": decoded}}
+            assert json.loads(model_tools.handle_function_call(name, args)) == fixed
+            assert schema == original
+
+    schema = {"type": "object", "properties": {"payload": {"type": "object", "properties": {
+        "rows": {"allOf": [{}, {"anyOf": [{"type": "array"}, {"type": "string"}]}]}}}}}
+    name = register_server_tool(schema)
+    args = {"payload": {"rows": "[]"}}
+    assert coerce_tool_args(name, copy.deepcopy(args)) == args
+    assert json.loads(model_tools.handle_function_call(name, args)) == args
+
+
+def test_root_owned_fields_skip_discarded_projection(monkeypatch):
+    from tools import schema_sanitizer as sanitizer
+
+    schema = {"type": "object", "properties": {"rows": {"type": "string"}}, "anyOf": [
+        {"properties": {"rows": {"type": "array", "items": {"type": "integer"}}}, "required": ["rows"]},
+        {"properties": {"rows": {"type": "array", "items": {"type": "string"}}}, "required": ["rows"]}]}
+    original = copy.deepcopy(schema)
+
+    def discarded_projection(choices):
+        pytest.fail("Root-owned fields must not transform discarded alternatives")
+
+    monkeypatch.setattr(sanitizer, "_project_choices", discarded_projection)
+    projected = sanitizer.preserve_root_union_properties(schema)
+    assert projected["properties"] == schema["properties"]
+    assert projected["required"] == ["rows"]
+    assert schema == original

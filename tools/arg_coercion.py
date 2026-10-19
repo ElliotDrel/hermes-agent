@@ -132,13 +132,14 @@ def _schema_may_accept_string(schema: Any, root: Any, seen: frozenset = frozense
     if "$ref" in schema:
         return True
     declared = schema.get("type")
-    if declared is not None:
-        return declared == "string" or isinstance(declared, list) and "string" in declared
+    if declared is not None and not (declared == "string" or isinstance(declared, list) and "string" in declared):
+        return False
     for key in ("anyOf", "oneOf"):
         branches = schema.get(key)
-        if isinstance(branches, list):
-            return any(_schema_may_accept_string(branch, root, seen) for branch in branches)
-    return True
+        if isinstance(branches, list) and not any(_schema_may_accept_string(branch, root, seen) for branch in branches):
+            return False
+    branches = schema.get("allOf")
+    return not isinstance(branches, list) or all(_schema_may_accept_string(branch, root, seen) for branch in branches)
 
 
 def _normalize_union_containers(value: Any, schema: dict, root: dict, seen: frozenset) -> Any:

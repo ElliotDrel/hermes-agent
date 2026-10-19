@@ -201,7 +201,8 @@ def preserve_root_union_properties(params: dict) -> dict:
             continue
         alternatives, common = _union_fields(branches)
         for name, choices in alternatives.items():
-            props.setdefault(name, _project_choices(choices))
+            if name not in props:
+                props[name] = _project_choices(choices)
         required.extend(name for name in props if name in common and name not in required)
     if props:
         out.update(properties=props, required=required)
