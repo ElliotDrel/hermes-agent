@@ -202,3 +202,5 @@ before scheduling the restart, preserving restart debt if the updater dies befor
 its ACK checkpoint. Only an unavailable socket uses the marker fallback. The ACK
 reports the gateway's configured after-turn plus stop envelope through
 `resolve_restart_exit_wait_budget`; the updater displays progress while awaiting exit.
+
+The identify response advertises `update_pause_receipt: 1` for gateways that persist socket acceptance. Older gateways keep the legacy marker-first checkpoint ordering; the new graceful ordering applies once the running gateway supports durable socket receipts.

@@ -908,8 +908,16 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
         requested = False
+        from gateway.control_socket import identify_gateway, pause_gateway_for_update
+        identity = identify_gateway(Path(proc.path)) or {}
+        if identity.get("update_pause_receipt") != 1:
+            # Older gateways cannot checkpoint acceptance. Preserve their marker-first
+            # ordering so a crash during the socket exchange cannot discard restart debt.
+            requested = _write_update_planned_stop_marker(Path(proc.path), int(pid))
+            if requested and on_request is not None:
+                on_request(int(pid))
+        checkpointed = requested
         try:
-            from gateway.control_socket import pause_gateway_for_update
             ack = pause_gateway_for_update(Path(proc.path), timeout=6.0, stopper_pid=os.getpid())
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
@@ -918,7 +926,7 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc, exc_info=True)
         if not requested:
             requested = _write_update_planned_stop_marker(Path(proc.path), int(pid))
-        if requested and on_request is not None:
+        if requested and not checkpointed and on_request is not None:
             on_request(int(pid))
     return profiles, mapped_pids, socket_acks
 

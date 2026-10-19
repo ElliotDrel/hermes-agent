@@ -288,6 +288,7 @@ async def _start_gateway_start_control_socket(runner):
                 payload['drain_reason'] = descriptor['drain_reason']
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
                 payload.get("supervisor"), payload.get("supervisor", "none"))
+            payload["update_pause_receipt"] = 1
             return payload
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
