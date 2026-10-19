@@ -4036,3 +4036,6 @@ tips:
     p09: "Explain this error and how to fix it"
     p10: "Set a reminder or schedule a recurring task"
     p11: "Type / to browse commands, or Ctrl+P for the palette"
+
+platform.discord.thread.rate_limited: "Discord is temporarily rate-limiting Hermes from creating another thread. This message was not processed. Try again in {delay}, or continue in an existing thread."
+platform.discord.thread.rate_limited_unknown: "Discord is temporarily rate-limiting thread creation. This message was not processed. Continue in an existing thread; Discord did not provide a retry time."

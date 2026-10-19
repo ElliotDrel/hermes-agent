@@ -234,7 +234,6 @@ async def test_auto_thread_rate_limit_notice_includes_retry_delay_without_fallba
     async def send(content):
         if content.startswith("🧵"):
             raise AssertionError("rate limits must not trigger fallback seed messages")
-        return None
 
     channel.send.side_effect = send
     message = make_message(channel=channel, content="hello")

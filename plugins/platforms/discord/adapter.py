@@ -84,8 +84,8 @@ class _Snowflake:
 class _AutoThreadRateLimited(Exception):
     """Discord refused auto-thread creation and supplied a retry delay."""
 
-    def __init__(self, retry_after: float) -> None:
-        self.retry_after_seconds = max(1, math.ceil(retry_after))
+    def __init__(self, retry_after: Optional[float]) -> None:
+        self.retry_after_seconds = max(1, math.ceil(retry_after)) if retry_after is not None else None
         super().__init__(f"Discord rate-limited thread creation for {self.retry_after_seconds}s")
 
 
@@ -2384,11 +2384,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
                 return
             self._record_command_sync_attempt(app_id, fingerprint)
-            http = getattr(self._client, "http", None)
-            has_ratelimit_timeout = http is not None and hasattr(http, "max_ratelimit_timeout")
-            previous_ratelimit_timeout = getattr(http, "max_ratelimit_timeout", None) if has_ratelimit_timeout else None
-            if has_ratelimit_timeout:
-                http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
             try:
                 # The command-management bucket is small and discord.py may sleep long on a 429: bound it.
                 summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
@@ -2405,9 +2400,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     retry_after,
                 )
                 return
-            finally:
-                if has_ratelimit_timeout:
-                    http.max_ratelimit_timeout = previous_ratelimit_timeout
             self._record_command_sync_success(app_id, fingerprint, summary)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
@@ -5489,7 +5481,48 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             pass
         return thread
 
+    async def _try_auto_create_thread(self, message):
+        try:
+            return await self._auto_create_thread(message), None
+        except _AutoThreadRateLimited as error:
+            return None, error
+
+    def _auto_thread_failure_notice(self, error) -> str:
+        if error is None:
+            return t("platform.discord.thread.auto_create_failed")
+        delay = error.retry_after_seconds
+        return t("platform.discord.thread.rate_limited", delay=_format_retry_delay(delay)) if delay is not None else t(
+            "platform.discord.thread.rate_limited_unknown")
+
     async def _auto_create_thread(self, message: DiscordMessage) -> Optional[Any]:
+        """Serialize a parent's creates and honor only confirmed server retry deadlines."""
+        parent_id = str(message.channel.id)
+        if not hasattr(self, "_auto_thread_create_locks"):
+            self._auto_thread_create_locks = {}
+            self._auto_thread_cooldowns = {}
+        lock = self._auto_thread_create_locks.setdefault(parent_id, asyncio.Lock())
+        async with lock:
+            remaining = self._auto_thread_cooldowns.get(parent_id, 0) - time.monotonic()
+            if remaining > 0:
+                raise _AutoThreadRateLimited(remaining)
+            self._auto_thread_cooldowns.pop(parent_id, None)
+            try:
+                return await self._auto_create_thread_attempt(message)
+            except _AutoThreadRateLimited as error:
+                if error.retry_after_seconds is not None:
+                    self._auto_thread_cooldowns[parent_id] = time.monotonic() + error.retry_after_seconds
+                raise
+
+    async def _auto_thread_created(self, thread, thread_name: str, author):
+        add = getattr(thread, "add_user", None)
+        if callable(add):
+            try:
+                await add(author)
+            except Exception:
+                logger.debug("[%s] Could not add requester to new public thread", self.name, exc_info=True)
+        return self._stamp_auto_thread_name(thread, thread_name)
+
+    async def _auto_create_thread_attempt(self, message: DiscordMessage) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
 
@@ -5504,26 +5537,30 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         for attempt in range(2):
             try:
                 thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
-                return self._stamp_auto_thread_name(thread, thread_name)
+                return await self._auto_thread_created(thread, thread_name, message.author)
             except Exception as direct_error:
                 last_direct_error = direct_error
                 if self._is_discord_rate_limit(direct_error):
-                    retry_after = self._extract_discord_retry_after(direct_error) or 60.0
+                    retry_after = self._extract_discord_retry_after(direct_error)
                     logger.warning(
-                        "[%s] Discord rate-limited auto-thread creation; retry after %.2fs",
+                        "[%s] Discord rate-limited auto-thread creation; retry after %ss",
                         self.name, retry_after,
                     )
                     raise _AutoThreadRateLimited(retry_after) from direct_error
+                seed_msg = None
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
                     thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
-                    return self._stamp_auto_thread_name(thread, thread_name)
+                    return await self._auto_thread_created(thread, thread_name, message.author)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
                     if self._is_discord_rate_limit(fallback_error):
-                        retry_after = self._extract_discord_retry_after(fallback_error) or 60.0
+                        if seed_msg is not None:
+                            with suppress(Exception):
+                                await seed_msg.delete()
+                        retry_after = self._extract_discord_retry_after(fallback_error)
                         logger.warning(
-                            "[%s] Discord rate-limited fallback auto-thread creation; retry after %.2fs",
+                            "[%s] Discord rate-limited fallback auto-thread creation; retry after %ss",
                             self.name, retry_after,
                         )
                         raise _AutoThreadRateLimited(retry_after) from fallback_error
@@ -6198,12 +6235,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                rate_limit_error = None
-                try:
-                    thread = await self._auto_create_thread(message)
-                except _AutoThreadRateLimited as error:
-                    thread = None
-                    rate_limit_error = error
+                thread, rate_limit_error = await self._try_auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
                     is_thread = True

@@ -1001,3 +1001,15 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+### Auto-thread rate limits
+
+Slash-command synchronization keeps its bounded startup timeout without changing
+the shared Discord HTTP client's rate-limit policy. When Discord surfaces a 429
+or `RateLimited` during automatic thread creation, Hermes stops creating fallback
+seeds or retrying that parent until the server-provided deadline. Other parents
+remain available. Concurrent creates under the same parent share that deadline.
+A seed whose thread creation is rate limited is removed when Discord permits it.
+The unprocessed request receives a wait hint; it is not silently run in the parent
+channel or queued. Normal SDK rate-limit waits and transient non-429 recovery keep
+their existing behavior. Missing retry hints do not invent a retry time.
