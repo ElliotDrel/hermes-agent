@@ -311,6 +311,11 @@ def activate(root: Path, receipt_path: Path) -> bool:
     from hermes_cli._early_recovery import interrupted_pull_marker
     from hermes_cli.update_completion import run_completion, settle_lost_completion
     from hermes_cli.update_lock import checkout_lock_fds
+    try:
+        from hermes_cli.process_identity import _process_create_time
+    except ImportError as exc:
+        raise ValueError("Updater reporting dependencies are unavailable; repair this install before activating") from exc
+    _process_create_time(os.getpid())  # receipt recovery must never cold-import target code
     from hermes_cli.venv_sync import arm_completion
     # Resolve recovery/transport entrypoints while the source is still old.
     recovery_arm = arm_completion

@@ -415,3 +415,23 @@ def test_failed_bootstrap_resumes_drained_token_once(prepared, monkeypatch, fail
     if recovery_fails:
         receipt = update_receipt.read_latest_receipt()
         assert any(row["step"] == "windows_resume" for row in receipt["followups"])
+
+
+def test_reporting_dependency_refusal_happens_before_drain_or_mutation(prepared, monkeypatch):
+    import builtins
+    from types import SimpleNamespace
+    owner, base, _target, _initial, path = prepared
+    before = runtime_facts_path(owner).read_bytes()
+    original = builtins.__import__
+    def missing_identity(name, *args, **kwargs):
+        if name == "hermes_cli.process_identity":
+            raise ImportError("missing reporting runtime dependency")
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", missing_identity)
+    monkeypatch.setattr(staged, "_drain", lambda: pytest.fail("Unavailable reporting must refuse before drain"))
+    with pytest.raises(SystemExit) as exc:
+        staged.command(SimpleNamespace(activate=str(path)), owner)
+    assert exc.value.code == 2
+    assert git(owner, "rev-parse", "HEAD") == base
+    assert runtime_facts_path(owner).read_bytes() == before
+    assert json.loads(path.read_text())["state"] == "prepared"
