@@ -110,6 +110,7 @@ async def _hand_over_turn_marker(authority, admission_id, event):
     no-waiter reply keeps it until ``deliver_settled``; any other turn releases it here."""
     adopter = _marker_adopters(authority).get(admission_id)
     if adopter is not None:
+        _copy_progress_delivery(event, adopter)
         _move_marker(event, adopter)
         return
     if admission_id in authority.pending_deliveries:
@@ -117,6 +118,18 @@ async def _hand_over_turn_marker(authority, admission_id, event):
         _held_markers(authority)[admission_id] = event
         return
     await _release_turn_marker(authority, event)
+
+
+_PROGRESS_DELIVERY_FIELDS = ('_progress_delivery_owner', '_streamed_final_response', '_progress_delivery_failed')
+
+
+def _copy_progress_delivery(source, target):
+    """Hand off only this completed turn's progress state, never an adapter's current owner."""
+    for name in _PROGRESS_DELIVERY_FIELDS:
+        if hasattr(source, name):
+            setattr(target, name, getattr(source, name))
+        elif hasattr(target, name):
+            delattr(target, name)
 
 
 def _move_marker(source, target):
@@ -310,7 +323,7 @@ async def execute_admission(authority, ref, row):
             authority.pending_results[row['admission_id']] = {
                 'result': result, 'usage': captured.get('usage', {}),
                 **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
-            if not is_api and response:
+            if not is_api and (response or getattr(event, '_streamed_final_response', None)):
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:
                     # A recovered turn with no live delivery waiter: the drain sends this only after
@@ -368,6 +381,8 @@ async def deliver_settled(authority, admission_id):
         authority.native_waiters.discard(admission_id)
         authority.pending_deliveries.pop(admission_id)
         adopter = _marker_adopters(authority).get(admission_id)
+        if adopter is not None:
+            _copy_progress_delivery(delivery[1], adopter)
         if held is not None and adopter is not None:
             _move_marker(held, adopter)
             held = None
@@ -392,17 +407,31 @@ async def deliver_settled(authority, admission_id):
 
 async def deliver_response(adapter, event, session_key, response):
     from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
+    # Capture the exact terminal owner before extraction or transport can yield to a successor.
+    owner = getattr(event, '_progress_delivery_owner', None)
+    streamed = bool(getattr(event, '_streamed_final_response', None))
+    failed = bool(getattr(event, '_progress_delivery_failed', False))
+    confirmed = False
+
+    def record(result):
+        nonlocal failed, confirmed
+        success = getattr(result, 'success', None) is True
+        failed = failed or not success  # None/unknown after another successful send is still partial.
+        confirmed = confirmed or success
+
     text, ttl = adapter._unwrap_ephemeral(response)
-    if not text:
-        return
-    extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
-    metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
-    results = []
-    if extracted.text_content:
-        await adapter._send_final_text(event, session_key, extracted.text_content,
-                                       metadata, ttl > 0, ttl, results.append)
-    await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
-                                       record_delivery=results.append)
+    if text:
+        extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
+        metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
+        if extracted.text_content:
+            await adapter._send_final_text(event, session_key, extracted.text_content,
+                                           metadata, ttl > 0, ttl, record)
+        await adapter._deliver_attachments(event, extracted, metadata, anything_sent=confirmed,
+                                           record_delivery=record)
+    # Exceptions/cancellation never reach this fence. Silence is settled only by the runner's
+    # explicit policy-authorized action; an empty/declined response is not delivery evidence.
+    if owner is not None and not failed and (confirmed or streamed):
+        await adapter.confirm_delivery(owner)
 
 
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
@@ -426,6 +455,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
         try:
             response = await adapter._message_handler(event)
             # The ledgered send releases the marker off the event it sends.
+            _copy_progress_delivery(event, delivery_event)
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
             await deliver_response(adapter, delivery_event, session_key, response)

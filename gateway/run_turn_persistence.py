@@ -557,7 +557,8 @@ class GatewayTurnPersistenceMixin:
             # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
             # would upload every file a second time.
             if response and adapter and not agent_result.get("media_already_delivered"):
-                event._progress_delivery_failed = not await self._deliver_media_from_response(response, event, adapter)
+                media_delivered = await self._deliver_media_from_response(response, event, adapter)
+                event._progress_delivery_failed = bool(getattr(event, "_progress_delivery_failed", False)) or not media_delivered
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
                 try:

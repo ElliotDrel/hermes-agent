@@ -499,7 +499,9 @@ every attachment, or an explicit native policy decision that a successful turn s
 No-response settlement is distinct from delivery confirmation: a silent queued predecessor completes
 its own activity without borrowing its successor's delivery. Empty unknown, failed, interrupted,
 declined or partially failed output stays pending. A later turn cannot complete or delete its
-predecessor's message. Failed cleanup remains attached to the exact turn; the adapter retains at
+predecessor's message. The same confirmation rule applies to busy FIFO replies and recovered
+queued turns, including a streamed answer followed by attachments. Failed cleanup remains attached
+to the exact turn; the adapter retains at
 most 128 turn obligations.
 
 ### `log` mode — audit file instead of chat messages

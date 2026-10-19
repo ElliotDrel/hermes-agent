@@ -283,6 +283,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 initial_progress_msg_id=prepared.progress_message_id,
             )
             event._progress_delivery_owner = agent_result.get("_progress_delivery_owner")
+            event._progress_delivery_failed = (any(agent_result.get(key) for key in ("failed", "error", "interrupted", "partial"))
+                                               or agent_result.get("completed") is False)
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
