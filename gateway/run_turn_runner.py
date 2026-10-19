@@ -195,7 +195,7 @@ def _resolve_runtime_footer_metadata(agent, user_config: dict | None, platform_k
     compressor = getattr(agent, "context_compressor", None)
     comp_state = vars(compressor) if compressor is not None and hasattr(compressor, "__dict__") else {}
     threshold = comp_state.get("_threshold_tokens", comp_state.get("threshold_tokens"))
-    if getattr(agent, "_codex_session", None) is not None:
+    if getattr(agent, "api_mode", None) == "codex_app_server" or getattr(agent, "_codex_session", None) is not None:
         threshold = None  # The provider owns its automatic trigger.
     count = None
     db = getattr(agent, "_session_db", None)

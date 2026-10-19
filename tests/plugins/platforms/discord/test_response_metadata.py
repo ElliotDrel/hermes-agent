@@ -37,6 +37,9 @@ async def test_native_metadata_send_edit_stream_and_profile_snapshots(tmp_path,m
             reset_hermes_home_override(profile_scope)
         footer=build_footer_line(user_config={},platform_key="discord",model=model,context_tokens=125,context_length=200,**{k:v for k,v in snapshot.items() if k in ("provider","compaction_trigger_tokens","compaction_count")},resolved_config=snapshot["footer_config"])
         assert "compact 125%" in footer and f"compactions {count}" in footer and model in footer
+    agent.api_mode="codex_app_server"
+    agent._codex_session=None
+    assert _resolve_runtime_footer_metadata(agent,cfg,"discord")["compaction_trigger_tokens"] is None
     unknown=build_footer_line(user_config=cfg,platform_key="discord",model=None,context_tokens=125,context_length=None)
     assert "compact" not in unknown
     adapter=DiscordAdapter(PlatformConfig(enabled=True))
