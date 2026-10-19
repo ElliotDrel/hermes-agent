@@ -36,6 +36,10 @@ class AccountUsageWindow:
     # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
     # never imply the account itself is out of quota.
     scope: str = "account"
+    # Provider field provenance; absent durations remain unknown, never inferred from position.
+    source_key: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    duration_source: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -397,7 +401,7 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 def _usage_windows(
     source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
     model_scoped: frozenset[str] | set[str] = frozenset(),
-    reset_after_key: Optional[str] = None,
+    reset_after_key: Optional[str] = None, duration_key: Optional[str] = None,
 ) -> list[AccountUsageWindow]:
     """Normalize provider windows, preserving account/model scope.
 
@@ -421,8 +425,12 @@ def _usage_windows(
                 except (OverflowError, ValueError):
                     # A malformed but finite duration must not discard the usage snapshot.
                     pass
+        duration = window.get(duration_key) if duration_key else None
+        duration = float(duration) if _is_finite_num(duration) and duration > 0 else None
         windows.append(AccountUsageWindow(
             label=label, used_percent=used, reset_at=reset_at,
+            source_key=key, duration_seconds=duration,
+            duration_source=duration_key if duration is not None else None,
             scope="model" if key in model_scoped else "account",
         ))
     return windows
@@ -430,7 +438,7 @@ def _usage_windows(
 
 # Published Codex quota windows by ``limit_window_seconds``: 5h session and 7-day weekly.
 _CODEX_WINDOW_LABELS_BY_SECONDS = {18000: "5-hour block", 604800: "Weekly"}
-_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "5-hour block"), ("secondary_window", "Weekly"))
+_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "Primary window"), ("secondary_window", "Secondary window"))
 
 
 def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
@@ -438,14 +446,14 @@ def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
 
     The usage API keys windows ``primary_window``/``secondary_window`` by position; when only the
     weekly limit is returned it occupies ``primary_window`` and the positional mapping mislabeled it
-    ``Session``. Windows whose ``limit_window_seconds`` is missing or unrecognized keep the legacy
-    positional label so duration-less payloads render exactly as before.
+    ``Session``. Missing or unrecognized durations retain neutral positional labels rather
+    than claiming a session or weekly limit that the provider did not report.
     """
     labels = []
     for key, fallback in _CODEX_WINDOW_POSITIONAL_LABELS:
         window = rate_limit.get(key) or {}
         seconds = window.get("limit_window_seconds") if isinstance(window, dict) else None
-        label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(int(seconds), fallback) if _is_num(seconds) else fallback
+        label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(seconds, fallback) if _is_finite_num(seconds) else fallback
         labels.append((key, label))
     return tuple(labels)
 
@@ -492,7 +500,7 @@ def _fetch_codex_account_usage_impl(
         )
     rate_limit = payload.get("rate_limit") or {}
     windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at",
-                             reset_after_key="reset_after_seconds")
+                             reset_after_key="reset_after_seconds", duration_key="limit_window_seconds")
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
