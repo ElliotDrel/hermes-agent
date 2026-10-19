@@ -60,5 +60,18 @@ async def test_profile_drafts_are_filtered_from_ingress_history_and_replies(tmp_
             assert (private.content in context) is not enabled
             if enabled:
                 assert not await adapter._should_backfill_discord_message(private)
+                adapter.handle_message.reset_mock()
+                forwarded = message("")
+                forwarded.message_snapshots = [private]
+                assert await adapter._handle_message(forwarded) is False
+                adapter.handle_message.assert_not_awaited()
+                forwarded.message_snapshots.append(SimpleNamespace(content="Public summary", attachments=[]))
+                await adapter._handle_message(forwarded)
+                assert adapter.handle_message.call_args.args[0].text == "Public summary"
+                assert adapter._collect_attachment_media.call_args.args[0] == []
+                forwarded.content = "My public request"
+                forwarded.message_snapshots = [private]
+                await adapter._handle_message(forwarded)
+                assert adapter.handle_message.call_args.args[0].text == "My public request"
         finally:
             reset_hermes_home_override(token)

@@ -6102,6 +6102,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 return _Snowflake(int(_ref_mid))
         return None
 
+    def _is_draft_only_forward(self, message: Any) -> bool:
+        if (getattr(message, "content", "") or "").strip() or getattr(message, "attachments", []):
+            return False
+        snapshots = getattr(message, "message_snapshots", []) or []
+        return bool(snapshots) and all(self._is_draft_message(getattr(item, "content", "")) for item in snapshots)
+
     def _draft_filtered_snapshots(self, message: Any) -> tuple[str, list]:
         parts, attachments = [], []
         for snapshot in getattr(message, "message_snapshots", []) or []:
@@ -6117,7 +6123,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
-        if self._is_draft_message(getattr(message, "content", "")):
+        if self._is_draft_message(getattr(message, "content", "")) or self._is_draft_only_forward(message):
             return False
         # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
         #
