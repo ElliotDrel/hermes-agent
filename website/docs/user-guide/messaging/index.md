@@ -494,10 +494,10 @@ compressor's effective trigger (including configured caps). Missing measurements
 `context unknown`; usage above the trigger remains above 100%. Existing
 `long_running_notifications: off` disables heartbeat activity. Rendering retains chronological
 activity and fits its visible tail to the transport limit without consuming the event buffer.
-`Completed` and optional progress deletion wait for confirmed final delivery. A refused final
-keeps its progress, and a later turn cannot complete or delete its predecessor's message.
-Failed cleanup remains attached to the exact turn; the adapter retains at most 128 turn obligations.
-
+`Completed` and optional progress deletion wait until the transport confirms the final text and
+every attachment. A refused, declined or partially failed final stays at `Finishing`, and a later
+turn cannot complete or delete its predecessor's message. Failed cleanup remains attached to the
+exact turn; the adapter retains at most 128 turn obligations.
 
 ### `log` mode — audit file instead of chat messages
 

@@ -1806,6 +1806,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                 session_key or "?",
             )
+            _queued_receipt = {}
             try:
                 _text_delivered = await self._deliver_queued_first_response(
                     first_response, source=turn_ctx.source, adapter=adapter,
@@ -1815,6 +1816,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     # The text send records a delivery-ledger obligation under this key, keyed on
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
+                    delivery_receipt=_queued_receipt,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -1825,7 +1827,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 # (follow-up text refused, stale goal continuation) otherwise re-sends the text the
                 # fallback just delivered — the #81052 duplicate. A REFUSED send reports False, and
                 # the completion send stays the fallback so the user is not left with nothing.
-                if _text_delivered:
+                if _queued_receipt.get("confirmed"):
                     await adapter.confirm_delivery(turn_ctx.progress_delivery_owner)
                 if _text_delivered and isinstance(result, dict):
                     result["already_sent"] = True

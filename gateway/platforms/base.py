@@ -4519,6 +4519,7 @@ class BasePlatformAdapter(DeliveryCallbacksMixin, ABC):
             # Capture it before delivery awaits; never borrow the shared interrupt generation.
             progress_owner = getattr(event, "_progress_delivery_owner", None)
             streamed_delivery_confirmed = bool(getattr(event, "_streamed_final_response", None))
+            delivery_failed = bool(getattr(event, "_progress_delivery_failed", False))
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):

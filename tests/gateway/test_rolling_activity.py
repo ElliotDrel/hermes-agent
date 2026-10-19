@@ -474,7 +474,7 @@ async def test_hygiene_activity_uses_prospective_thread_and_legacy_mode_preceden
 
 
 @pytest.mark.asyncio
-async def test_confirmed_progress_is_owned_by_exact_handler_turn(monkeypatch):
+async def test_confirmed_progress_is_owned_by_exact_handler_turn(monkeypatch, tmp_path):
     """A refused predecessor cannot borrow its successor's successful final send."""
     old_sending, release_old = asyncio.Event(), asyncio.Event()
     owners, fired = {}, []
@@ -550,6 +550,128 @@ async def test_confirmed_progress_is_owned_by_exact_handler_turn(monkeypatch):
             pass
         assert not partial_fired
 
+    # In-band predecessors use the same actual text/media helper; retry suppression is
+    # distinct from confirmation, including returned failures and raised cancellation.
+    attachment = tmp_path / "result.png"
+    attachment.write_bytes(b"image fixture")
+    for failure in (False, RuntimeError("image refused"), asyncio.CancelledError()):
+        queued = RollingCaptureAdapter()
+        async def send_images(**kwargs):
+            if isinstance(failure, BaseException):
+                raise failure
+            return SendResult(success=False, error="image refused")
+        monkeypatch.setattr(queued, 'send_multiple_images', send_images)
+        monkeypatch.setattr(queued, 'extract_media', lambda text: ([(str(attachment), False)], "answer"))
+        monkeypatch.setattr(BasePlatformAdapter, 'filter_media_delivery_paths', staticmethod(lambda media: media))
+        ctx, _ = _turn(queued)
+        ctx.session_key = None
+        fired_before = list(fired)
+        queued.register_confirmed_delivery_callback(ctx.progress_delivery_owner, lambda: fired.append("queued"))
+        runner = object.__new__(GatewayRunner)
+        result = {"final_response": "answer", "completed": True}
+        try:
+            await runner._run_agent_deliver_first_response(ctx, queued, result, result, None)
+        except asyncio.CancelledError:
+            pass
+        assert queued.sent and fired == fired_before
+
+
+def _media_adapter(monkeypatch, tmp_path, image_result):
+    attachment = tmp_path / "result.png"
+    attachment.write_bytes(b"image fixture")
+    adapter = RollingCaptureAdapter()
+    adapter.images = []
+    async def send_images(**kwargs):
+        adapter.images.append(kwargs["images"])
+        return image_result
+    monkeypatch.setattr(adapter, "send_multiple_images", send_images)
+    monkeypatch.setattr(adapter, "extract_media", lambda text: ([(str(attachment), False)], "answer"))
+    monkeypatch.setattr(BasePlatformAdapter, "filter_media_delivery_paths", staticmethod(lambda media: media))
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("image_ok", [False, True])
+async def test_queued_lane_confirms_progress_only_on_transport_confirmation(
+        monkeypatch, tmp_path, streamed, image_ok):
+    """Retry suppression stays True after text lands; progress waits for every attachment too."""
+    adapter = _media_adapter(monkeypatch, tmp_path, SendResult(success=image_ok, error=None if image_ok else "refused"))
+    ctx, _ = _turn(adapter)
+    ctx.session_key = None
+    ctx.stream_consumer_holder[0] = SimpleNamespace(final_response_sent=streamed, message_id=None)
+    fired = []
+    adapter.register_confirmed_delivery_callback(ctx.progress_delivery_owner, lambda: fired.append(True))
+    result = {"final_response": "answer", "completed": True}
+    await object.__new__(GatewayRunner)._run_agent_deliver_first_response(ctx, adapter, result, result, None)
+    assert result["already_sent"] is True and adapter.images
+    assert len(adapter.sent) == (0 if streamed else 1)
+    assert fired == ([True] if image_ok else [])
+
+
+@pytest.mark.asyncio
+async def test_queued_lane_decline_suppresses_retry_without_confirming_progress():
+    from gateway.relay.egress import EGRESS_DECLINE_CODE
+    adapter = RollingCaptureAdapter()
+    adapter.edit_message = AsyncMock(return_value=SendResult(
+        success=False, error="declined", raw_response={"success": False, "code": EGRESS_DECLINE_CODE}))
+    ctx, _ = _turn(adapter)
+    ctx.session_key = None
+    ctx.stream_consumer_holder[0] = SimpleNamespace(final_response_sent=False, message_id="sealed")
+    fired = []
+    adapter.register_confirmed_delivery_callback(ctx.progress_delivery_owner, lambda: fired.append(True))
+    result = {"final_response": "answer", "completed": True}
+    await object.__new__(GatewayRunner)._run_agent_deliver_first_response(ctx, adapter, result, result, None)
+    assert result["already_sent"] is True and not adapter.sent
+    assert not fired and ctx.progress_delivery_owner in adapter._confirmed_delivery_callbacks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_ok", [False, True])
+async def test_streamed_final_media_failure_keeps_progress_pending(monkeypatch, tmp_path, image_ok):
+    """The adapter's terminal fence consults the real post-stream media helper's outcome."""
+    adapter = _media_adapter(monkeypatch, tmp_path, SendResult(success=image_ok, error=None if image_ok else "refused"))
+    runner = object.__new__(GatewayRunner)
+    runner._delivery_adapter_for = lambda _source: adapter
+    runner._should_send_voice_reply = lambda *args, **kwargs: False
+    fired = []
+    async def handler(event):
+        event._progress_delivery_owner = object()
+        adapter.register_confirmed_delivery_callback(event._progress_delivery_owner, lambda: fired.append(True))
+        return await runner._hmwa_deliver_turn_response(
+            event, event.source, None, "s", 1, {"already_sent": True}, [], "answer MEDIA:/x.png", None, False)
+    adapter._message_handler = handler
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chat", chat_type="channel")
+    await adapter._process_message_background(MessageEvent(text="hi", source=source), "s")
+    assert adapter.images and not adapter.sent
+    assert fired == ([True] if image_ok else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_ok", [False, True])
+async def test_partial_tts_success_cannot_confirm_refused_final_text(tmp_path, text_ok):
+    audio = tmp_path / "reply.ogg"
+    audio.write_bytes(b"audio fixture")
+    class Transport(RollingCaptureAdapter):
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent.append(content)
+            return SendResult(success=text_ok, message_id="final", error=None if text_ok else "refused")
+        async def play_tts(self, chat_id, audio_path, **kwargs):
+            return SendResult(success=True, message_id="voice")
+    adapter = Transport()
+    adapter._wants_auto_tts = lambda *args: True
+    adapter._synthesize_auto_tts = AsyncMock(return_value=([str(audio)], None))
+    fired = []
+    async def handler(event):
+        event._progress_delivery_owner = object()
+        adapter.register_confirmed_delivery_callback(event._progress_delivery_owner, lambda: fired.append(True))
+        return "final answer"
+    adapter._message_handler = handler
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chat", chat_type="channel")
+    await adapter._process_message_background(MessageEvent(text="hi", source=source), "s")
+    assert adapter.sent and not audio.exists()
+    assert fired == ([True] if text_ok else [])
+
 
 @pytest.mark.asyncio
 async def test_rolling_render_is_pure_and_failed_edit_keeps_exact_bubble():
@@ -562,6 +684,12 @@ async def test_rolling_render_is_pure_and_failed_edit_keeps_exact_bubble():
     before = list(st.progress_lines)
     assert fit_tail(st) == fit_tail(st)
     assert st.progress_lines == before
+    calls = []
+    st._progress_len_fn = lambda text: calls.append(len(text)) or len(text.encode("utf-16-le")) // 2
+    st.progress_lines = ["long event " * 20] * 10000
+    fit_tail(st)
+    assert len(calls) < 25 and sum(calls) < 3000
+    st.progress_lines = before
     adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="forbidden"))
     assert await turn._progress_send_or_edit(st, "last activity") is False
     assert await turn._progress_send_or_edit(st, "last activity") is False

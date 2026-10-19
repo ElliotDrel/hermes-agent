@@ -214,7 +214,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _deliver_media_from_response(
         self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None
-    ) -> None:
+    ) -> bool:
         """Deliver explicit MEDIA: tags from an already-streamed response (text already delivered).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
         path in a streamed reply is shown text or stale inspected content, and promoting it sent
@@ -223,8 +223,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
         Only ``MEDIA:`` directives — the explicit attachment contract — trigger post-stream uploads. See
         #20834.
+
+        Failures stay logged, never raised. Returns True only when the stage ran to completion and
+        every send reported success: confirmed delivery, not merely "do not retry".
         """
         from urllib.parse import quote as _quote
+        failed = stage_completed = False
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
@@ -256,29 +260,35 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    sent = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    failed = failed or not getattr(sent, "success", False)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    failed = True
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        sent = await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        sent = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        sent = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                    failed = failed or not getattr(sent, "success", False)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
-
+                    failed = True
+            stage_completed = True
+        return stage_completed and not failed
 
     async def _deliver_queued_first_response(
         self, response: str, source: SessionSource, adapter,
         metadata: Optional[dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        delivery_receipt: Optional[dict] = None,
     ) -> bool:
         """Deliver a queued response using the normal text+attachment split.
 
@@ -291,7 +301,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         already delivered it, the reconcile edit landed, the send succeeded, or there was nothing
         textual to send. False: the send was REFUSED (flood control, dead transport) — the caller
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
-        DECLINE returns True: that destination is not approved and must not be re-sent."""
+        DECLINE returns True: that destination is not approved and must not be re-sent.
+
+        That bool is the retry contract only. ``delivery_receipt["confirmed"]`` separately reports
+        whether the transport confirmed the text and every attachment; a DECLINE, a refused send or
+        any failed attachment leaves it False so exact-turn progress obligations stay pending."""
+        if delivery_receipt is not None:
+            delivery_receipt["confirmed"] = False
         from gateway.run import _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
@@ -342,11 +358,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
+            if delivery_receipt is not None:
+                delivery_receipt["confirmed"] = True
             return True
-        await self._deliver_media_from_response(
+        media_delivered = await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
+        if delivery_receipt is not None:
+            delivery_receipt["confirmed"] = media_delivered is True
         return True
 
     async def _send_queued_final_text(

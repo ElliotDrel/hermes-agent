@@ -74,36 +74,39 @@ def render_text(state: Any) -> str:
 
 
 def fit_tail(state: Any) -> str:
-    """Pure transport-budget fitting; repeated renders cannot discard events."""
-    lines = [str(line) for line in state.progress_lines]
+    """Pure suffix fitting; work scales with the visible tail, not accumulated history."""
+    lines = state.progress_lines
     header = str(getattr(state, "rolling_header", "") or "")
     telemetry = getattr(state, "rolling_telemetry", None)
     if telemetry:
         header += "\n" + telemetry
     measure, limit = state._progress_len_fn, state._PROGRESS_TEXT_LIMIT
-    for omitted in range(max(1, len(lines))):
-        parts = [header] if header else []
-        if omitted:
-            parts.append(f"… {omitted} earlier activities omitted")
-        parts.extend(lines[omitted:])
-        rendered = "\n".join(parts)
-        if measure(rendered) <= limit:
-            return rendered
+    newline_units = measure("\n")
+    visible, units = [], 0
+    def prefix(omitted):
+        return header + (f"\n… {omitted} earlier activities omitted" if omitted else "")
+    for index in range(len(lines) - 1, -1, -1):
+        line = str(lines[index])
+        candidate_units = units + measure(line) + newline_units
+        if measure(prefix(index)) + candidate_units > limit:
+            break
+        visible.append(line)
+        units = candidate_units
+    if visible:
+        return prefix(len(lines) - len(visible)) + "\n" + "\n".join(reversed(visible))
     if lines:
-        prefix = header + "\n"
-        if len(lines) > 1:
-            prefix += f"… {len(lines) - 1} earlier activities omitted\n"
-        if measure(prefix) < limit:
-            low, high = 0, len(lines[-1])
+        start = prefix(len(lines) - 1) + "\n"
+        last = str(lines[-1])
+        if measure(start) < limit:
+            low, high = 0, len(last)
             while low < high:
                 mid = (low + high + 1) // 2
-                if measure(prefix + lines[-1][:mid]) <= limit:
+                if measure(start + last[:mid]) <= limit:
                     low = mid
                 else:
                     high = mid - 1
-            return prefix + lines[-1][:low]
-    # Tiny transport budgets can be smaller than the header itself. Respect the
-    # adapter's length function (Discord uses UTF-16 units), including this case.
+            return start + last[:low]
+    # Tiny budgets may be smaller than the header. Respect the transport's units.
     low, high = 0, len(header)
     while low < high:
         mid = (low + high + 1) // 2
