@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
-from gateway.config import Platform, GatewayConfig, PlatformConfig
+from gateway.config import Platform, GatewayConfig, load_gateway_config
 from gateway.session import SessionSource, SessionStore
 from gateway.run import GatewayRunner
 from gateway.run_turn_runner import TurnRunner
@@ -20,8 +20,17 @@ async def test_manual_title_native_callback_optin_guard_and_durable_pin(tmp_path
         scheduled=[]
         cached=SimpleNamespace(name="Human opening")
         remote=SimpleNamespace(name="Human opening",edit=AsyncMock())
-        for enabled in [True,False,True]:
-            adapter=DiscordAdapter(PlatformConfig(enabled=True,extra={"auto_title_manual_threads":enabled}))
+        homes=[tmp_path/"profile-a",tmp_path/"profile-b"]
+        for home,enabled in zip(homes,[True,False]):
+            home.mkdir()
+            (home/"config.yaml").write_text("platforms:\n  discord:\n    enabled: true\ndiscord:\n  auto_title_manual_threads: "+str(enabled).lower()+"\n",encoding="utf-8")
+        for home,enabled in [(homes[0],True),(homes[1],False),(homes[0],True)]:
+            profile_scope=set_hermes_home_override(home)
+            try:
+                config=load_gateway_config()
+            finally:
+                reset_hermes_home_override(profile_scope)
+            adapter=DiscordAdapter(config.platforms[Platform.DISCORD])
             adapter._client=SimpleNamespace(get_channel=lambda cid:cached,fetch_channel=AsyncMock(return_value=remote))
             runner=GatewayRunner.__new__(GatewayRunner)
             runner.session_store=store
