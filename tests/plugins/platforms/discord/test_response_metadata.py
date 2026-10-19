@@ -18,10 +18,23 @@ async def test_native_metadata_send_edit_stream_and_profile_snapshots(tmp_path,m
         _threshold_tokens=100
         @property
         def threshold_tokens(self): raise AssertionError("lazy threshold on delivery")
-    for provider,model,count in [("a","model-a",2),("b","model-b",5),("a","model-a",2)]:
+    import json
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.config import load_config_readonly
+    homes=[tmp_path/"a",tmp_path/"b"]
+    for home,provider,model in [(homes[0],"a","model-a"),(homes[1],"b","model-b")]:
+        home.mkdir()
+        (home/"config.yaml").write_text(json.dumps({**cfg,"model":{"provider":provider,"default":model}}),encoding="utf-8")
+    for home,provider,model,count in [(homes[0],"a","model-a",2),(homes[1],"b","model-b",5),(homes[0],"a","model-a",2)]:
         comp=CachedCompressor();comp._threshold_tokens=100
         agent=SimpleNamespace(provider=provider,model=model,context_compressor=comp,session_id="s",_session_db=SimpleNamespace(get_session_model_config_value=lambda *a:count))
-        snapshot=_resolve_runtime_footer_metadata(agent,cfg,"discord")
+        profile_scope=set_hermes_home_override(home)
+        try:
+            routed_config=load_config_readonly()
+            assert routed_config["model"]["provider"]==provider and routed_config["model"]["default"]==model
+            snapshot=_resolve_runtime_footer_metadata(agent,routed_config,"discord")
+        finally:
+            reset_hermes_home_override(profile_scope)
         footer=build_footer_line(user_config={},platform_key="discord",model=model,context_tokens=125,context_length=200,**{k:v for k,v in snapshot.items() if k in ("provider","compaction_trigger_tokens","compaction_count")},resolved_config=snapshot["footer_config"])
         assert "compact 125%" in footer and f"compactions {count}" in footer and model in footer
     unknown=build_footer_line(user_config=cfg,platform_key="discord",model=None,context_tokens=125,context_length=None)
