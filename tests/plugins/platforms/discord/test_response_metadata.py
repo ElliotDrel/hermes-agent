@@ -111,5 +111,14 @@ async def test_real_sdk_loopback_http_footer_payloads(tmp_path,monkeypatch):
         assert [r[0] for r in requests]==["POST","GET","PATCH"]
         assert requests[-1][2]["content"]=="Original edited"
         assert all(footer not in r[2].get("content","") for r in requests)
+        assert len(requests[-1][2]["embeds"])==1
+        # The same finalization receipt never appends a second owned footer.
+        assert (await adapter.edit_message("123","1","Original edited",metadata={"runtime_footer":footer},finalize=True)).success
+        assert len(requests[-1][2]["embeds"])==1
+        media=[{"description":f"Media {i}"} for i in range(10)]
+        bodies["1"]["embeds"]=media
+        assert (await adapter.edit_message("123","1","Original edited",metadata={"runtime_footer":footer},finalize=True)).success
+        assert requests[-1][2]["embeds"]==[discord.Embed.from_dict(e).to_dict() for e in media]
+
     finally:
         await session.close();await server.cleanup()

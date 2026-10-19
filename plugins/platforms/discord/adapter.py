@@ -3478,7 +3478,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 extra = {}
                 if footer is not None:
                     existing = await msg.fetch()
-                    extra["embeds"] = [*existing.embeds, footer][:10]
+                    embeds = list(existing.embeds)
+                    if len(embeds) < 10 and not any(e.footer.text == footer.footer.text for e in embeds):
+                        embeds.append(footer)
+                    extra["embeds"] = embeds
                 await msg.edit(content=formatted, **extra)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
