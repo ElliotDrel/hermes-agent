@@ -23,6 +23,10 @@ def is_viewer_input(row):
 def check_local_input(authority, ref, row, *, source=None):
     payload = row['payload']
     allowed = set(LOCAL_INPUT_FIELDS)
+    if 'peer_message_v1' in payload:
+        from gateway.session_peer import check_origin
+        check_origin(authority, source or authority.sessions[ref.session_id].source, payload['peer_message_v1'])
+        allowed.add('peer_message_v1')
     if 'local_operator_v1' in payload:
         allowed.add('local_operator_v1')
         if payload['local_operator_v1'] != {

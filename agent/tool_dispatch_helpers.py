@@ -1,6 +1,6 @@
 """Tool-dispatch helpers — parallelism gating, multimodal envelopes, mutation tracking.
 
-Stateless utilities extracted from ``run_agent.py`` (which re-exports each name): the
+Execution caller binding and utilities extracted from ``run_agent.py`` (which re-exports each name): the
 batch-parallelism planner (path-overlap admission; V4A patch scope comes from patch-body
 headers, not a decoy ``path=``), multimodal ``{"_multimodal": True, "content": [...],
 "text_summary": ...}`` envelope helpers, file-mutation verifier inputs, trajectory
@@ -10,6 +10,7 @@ normalisation, and the tool-result message constructor with untrusted-content wr
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 import logging
 import os
 import re
@@ -25,6 +26,23 @@ from agent.tool_result_classification import (
 from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
+
+_tool_caller = ContextVar('tool_caller', default=None)
+
+
+def current_tool_caller():
+    """The actual agent dispatching this call, not an inherited session or schema identity."""
+    return _tool_caller.get()
+
+
+def call_as_agent(agent, dispatch, *args, **kwargs):
+    """Every native registry dispatch rebinds the caller, including detached agent forks."""
+    token = _tool_caller.set(agent)
+    try:
+        return dispatch(*args, **kwargs)
+    finally:
+        _tool_caller.reset(token)
+
 
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog", "setup_beat", "set_theme"})

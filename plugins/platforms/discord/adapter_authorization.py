@@ -3,6 +3,10 @@ import asyncio
 
 
 class DiscordAuthorizationMixin:
+    def session_tool_scope(self, turn):
+        from .peer_messaging import session_scope
+        return session_scope(self, turn)
+
     async def reauthorize_native_roles(self, source):
         from plugins.platforms.discord.adapter import _read_dm_role_auth_guild
         from gateway.config import Platform, PlatformConfig, load_gateway_config

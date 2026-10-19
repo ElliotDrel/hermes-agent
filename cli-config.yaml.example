@@ -1058,6 +1058,14 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Optional Discord peer tools (disabled by default; applies to new conversations).
+# Existing same-user routes must share runtime AND explicit receiving bot profile.
+# Requires a current direct access grant; cached role authorization is insufficient.
+# platforms:
+#   discord:
+#     extra:
+#       peer_messaging: false
+
 # =============================================================================
 # Session Storage Retention (state.db)
 # =============================================================================

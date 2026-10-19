@@ -51,7 +51,7 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     _context_pruned_argument_paths,
     _plan_tool_batch_segments,
-    make_tool_result_message,
+    make_tool_result_message, call_as_agent,
 )
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
@@ -1709,7 +1709,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         import model_tools
 
         with model_tools.suppress_post_tool_call_hook():
-            return model_tools.handle_function_call(
+            return call_as_agent(agent, model_tools.handle_function_call,
                 function_name,
                 next_args,
                 effective_task_id,

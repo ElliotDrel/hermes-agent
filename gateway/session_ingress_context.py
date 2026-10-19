@@ -243,3 +243,14 @@ async def reauthorize_roles(runner, source, provenance):
 def callback_runner():
     context = _callback.get()
     return context[0] if context else None
+
+
+def route_provenance(runner, source):
+    """Validate a current registered route; this snapshot itself grants no admission permission."""
+    owner = runner._transport_owner(source)
+    if owner is None:
+        raise RuntimeStoreError('not_found')
+    adapter, _, _, provenance = _binding(runner, source, owner[1])
+    if adapter is not owner[0]:
+        raise RuntimeStoreError('not_found')
+    return provenance

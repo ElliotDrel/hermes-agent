@@ -248,3 +248,21 @@ Tool calls may execute sequentially or concurrently depending on the tool mix an
 - [Built-in Tools Reference](../reference/tools-reference.md)
 - [Agent Loop Internals](./agent-loop.md)
 - [ACP Internals](./acp-internals.md)
+
+
+### Foreground adapter tool scopes
+
+The gateway's internal `platform_tool_scope` invokes an adapter's optional
+`session_tool_scope(turn)` context manager around foreground agent construction and execution.
+An adapter can use the existing registry `session_tool_scope` to expose a frozen conversation
+schema while keeping its handler capability process local. It must remove its own registration
+with the registry's compare-and-restore operation after execution, without evicting other active
+scopes. Agent tool definitions are snapshots; configuration changes must not replace a running
+conversation's schema.
+
+Native sequential and concurrent tool dispatch bind the actual executing agent with
+`call_as_agent`. `current_tool_caller()` is an internal caller-object check, not a serializable
+permission token. A copied session ID or tool schema does not prove foreground ownership.
+The Discord peer tool additionally verifies native authority adoption, generation, route,
+current direct authorization, and transaction provenance. It is not exported as a global tool
+or through the separate curated subprocess MCP tool catalog.

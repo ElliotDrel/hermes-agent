@@ -1001,3 +1001,43 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+
+## Peer session messages
+
+Peer messaging is disabled by default. To let a new Discord conversation exchange bounded,
+untrusted agent messages with existing conversations belonging to the same Discord user,
+add this to that profile's `config.yaml`:
+
+```yaml
+platforms:
+  discord:
+    extra:
+      peer_messaging: true
+```
+
+The `discord_peer_message` tool lists eligible sessions, sends a message with a stable
+`request_id`, and checks a receipt by request or admission ID. Both sessions must use the
+same runtime profile and the same explicitly identified receiving bot profile. It does not
+create channels or sessions. Both routes require a current direct access grant (allowlist,
+pairing, or native configuration); a cached role authorization alone does not grant peer
+permission. Peer text cannot run slash controls or grant human approval.
+
+Tool exposure is fixed when a conversation first runs. Start a new conversation after
+changing this setting; disabling it immediately refuses calls in existing conversations.
+Only the current foreground agent can use the tool. Delegated agents, background reviews,
+and copied tool definitions cannot inherit permission.
+
+Each human turn starts a shared budget of eight peer sends. Recipient agent turns share
+the remaining budget; new request IDs do not reset it. Reusing the same request ID and
+message observes the same operation. A refused admission refunds its slot; uncertain or
+accepted operations retain it, including failed visible posts. After restart, old peer
+chains fail closed until a genuine human turn starts a new chain.
+
+Receipts distinguish accepted FIFO admission, confirmed visible Discord posting, and
+completed model work. An unknown acknowledgement stays unknown. Checking status with an
+admission ID after a new human turn can recover model completion, but cannot reconstruct a
+lost Discord acknowledgement. Current route, credential, access, and ownership checks run
+again inside admission and FIFO claim transactions. If policy changes after acceptance,
+the native queue keeps that admission pending and model completion remains unconfirmed.
+No model provider or route is pinned by this feature.
