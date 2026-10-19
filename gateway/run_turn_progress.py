@@ -4,7 +4,6 @@ from __future__ import annotations
 from gateway.rolling_activity import (
     absorb_marker as absorb_activity_marker,
     configure_state as configure_activity_state,
-    fit_tail as fit_activity_tail,
     has_renderable_state as has_renderable_activity_state,
     render_text as render_activity_text,
     is_finish_marker, retry_terminal_edit,
@@ -341,6 +340,8 @@ class GatewayTurnProgressMixin:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
         stream bubble when the consumer accepts tool progress, else the progress queue."""
         ctx = self._ctx
+        if ctx.progress_closed:
+            return
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
         if msg == ctx.last_progress_msg[0]:
@@ -639,7 +640,6 @@ class GatewayTurnProgressMixin:
         if not st.progress_lines or not st.can_edit:
             return False
         if self._ctx.progress_grouping == "rolling":
-            fit_activity_tail(st)
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
         if len(groups) <= 1:
@@ -675,6 +675,10 @@ class GatewayTurnProgressMixin:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
+            if self._ctx.progress_grouping == "rolling":
+                repeated = _append_progress_repeat_count(base_msg, count + 1)
+                st.progress_lines.append(repeated)
+                return repeated
             if not st.progress_lines or not (
                 st.progress_lines[-1] == base_msg
                 or str(st.progress_lines[-1]).startswith(f"{base_msg} (×")
@@ -718,6 +722,18 @@ class GatewayTurnProgressMixin:
 
     async def _progress_send_or_edit(self, st, msg) -> bool:
         """Deliver this tick; transient edit failures keep the editable identity for retry."""
+        if self._ctx.progress_grouping == "rolling":
+            elapsed = max(0, int(time.monotonic() - self._ctx.progress_started))
+            used = trigger = None
+            agent = self._ctx.agent_holder[0]
+            with suppress(Exception):
+                compressor = getattr(agent, "context_compressor", None)
+                used = getattr(compressor, "last_prompt_tokens", None)
+                trigger = getattr(compressor, "_threshold_tokens", None)
+            measured = (isinstance(used, (int, float)) and not isinstance(used, bool) and used > 0
+                        and isinstance(trigger, (int, float)) and not isinstance(trigger, bool) and trigger > 0)
+            usage = f"{used / trigger:.0%} of compaction trigger" if measured else "context unknown"
+            st.rolling_telemetry = f"{elapsed // 60}:{elapsed % 60:02d} elapsed · {usage}"
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st))
             if result.success:
@@ -725,6 +741,8 @@ class GatewayTurnProgressMixin:
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
                 return False
+            if self._ctx.progress_grouping == "rolling":
+                return False  # Preserve the exact bubble even on a permanent refusal.
             if any(w in (getattr(result, "error", "") or "").lower() for w in ("flood", "retry after")):
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
             else:
@@ -734,7 +752,7 @@ class GatewayTurnProgressMixin:
         result = await self._send_progress_text(st, self._progress_text(st) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
-        return True
+        return bool(result.success and result.message_id)
 
     async def send_progress_messages(self):
         ctx = self._ctx
@@ -749,6 +767,7 @@ class GatewayTurnProgressMixin:
             self._drain_progress_queue()
             return
         st = self._progress_edit_state(adapter)
+        ctx.progress_state = st
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
         while True:

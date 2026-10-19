@@ -311,6 +311,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 return
             if (
                 ctx.progress_grouping == "rolling"
+                and not ctx.progress_closed
                 and ctx.tool_progress_enabled
                 and ctx.progress_queue is not None
                 and not already_streamed

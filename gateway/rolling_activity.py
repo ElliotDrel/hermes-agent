@@ -9,9 +9,31 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import queue
+import threading
 from contextlib import asynccontextmanager
 from contextlib import suppress
 from typing import Any, Optional
+
+
+class RollingActivityQueue(queue.Queue):
+    """One turn's producer gate: finish seals and enqueues its marker atomically."""
+
+    def __init__(self):
+        super().__init__()
+        self._producer_lock = threading.Lock()
+        self._sealed = False
+
+    def put(self, item, block=True, timeout=None):
+        with self._producer_lock:
+            if not self._sealed:
+                super().put(item, block=block, timeout=timeout)
+
+    def finish(self, marker):
+        with self._producer_lock:
+            if not self._sealed:
+                self._sealed = True
+                super().put(marker)
 
 
 WORKING_HEADER = "⏳ Working…"
@@ -45,22 +67,51 @@ def configure_state(state: Any, grouping: str, initial_message_id: Optional[str]
 
 
 def render_text(state: Any) -> str:
-    """Render the current buffer, including the rolling header and omission count."""
-    rendered = [str(line) for line in state.progress_lines]
-    header = getattr(state, "rolling_header", None)
-    omitted = getattr(state, "rolling_omitted_count", 0)
-    if header:
-        rendered.insert(0, header)
+    """Render rolling tails without consuming the chronological event buffer."""
+    if getattr(state, "rolling_header", None):
+        return fit_tail(state)
+    return "\n".join(str(line) for line in state.progress_lines)
+
+
+def fit_tail(state: Any) -> str:
+    """Pure transport-budget fitting; repeated renders cannot discard events."""
+    lines = [str(line) for line in state.progress_lines]
+    header = str(getattr(state, "rolling_header", "") or "")
+    telemetry = getattr(state, "rolling_telemetry", None)
+    if telemetry:
+        header += "\n" + telemetry
+    measure, limit = state._progress_len_fn, state._PROGRESS_TEXT_LIMIT
+    for omitted in range(max(1, len(lines))):
+        parts = [header] if header else []
         if omitted:
-            rendered.insert(1, f"… {omitted} earlier activities omitted")
-    return "\n".join(rendered)
-
-
-def fit_tail(state: Any) -> None:
-    """Drop whole oldest entries until the rolling activity bubble fits."""
-    while state.progress_lines and state._progress_len_fn(render_text(state)) > state._PROGRESS_TEXT_LIMIT:
-        state.progress_lines.pop(0)
-        state.rolling_omitted_count += 1
+            parts.append(f"… {omitted} earlier activities omitted")
+        parts.extend(lines[omitted:])
+        rendered = "\n".join(parts)
+        if measure(rendered) <= limit:
+            return rendered
+    if lines:
+        prefix = header + "\n"
+        if len(lines) > 1:
+            prefix += f"… {len(lines) - 1} earlier activities omitted\n"
+        if measure(prefix) < limit:
+            low, high = 0, len(lines[-1])
+            while low < high:
+                mid = (low + high + 1) // 2
+                if measure(prefix + lines[-1][:mid]) <= limit:
+                    low = mid
+                else:
+                    high = mid - 1
+            return prefix + lines[-1][:low]
+    # Tiny transport budgets can be smaller than the header itself. Respect the
+    # adapter's length function (Discord uses UTF-16 units), including this case.
+    low, high = 0, len(header)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if measure(header[:mid]) <= limit:
+            low = mid
+        else:
+            high = mid - 1
+    return header[:low]
 
 
 def absorb_marker(state: Any, raw: Any) -> tuple[bool, Any, bool]:
@@ -209,13 +260,64 @@ async def finish_turn_activity(turn_ctx: Any, progress_task: Any, logger: Any) -
         return
     current = asyncio.current_task()
     header = terminal_header(turn_ctx.activity_result, cancelled=bool(current and current.cancelling()))
+    if header == "✅ Completed":
+        header = "⏳ Finishing…"
     turn_ctx.progress_finish_header[0] = header
-    turn_ctx.progress_queue.put(("__activity_finish__", header))
+    finish = getattr(turn_ctx.progress_queue, "finish", turn_ctx.progress_queue.put)
+    finish(("__activity_finish__", header))
     try:
         await asyncio.wait_for(asyncio.shield(progress_task), timeout=5.0)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         progress_task.cancel()
         with suppress(asyncio.CancelledError):
             await progress_task
     except Exception:
         logger.warning("Rolling activity terminal flush failed", exc_info=True)
+
+
+def schedule_progress_completion(response: Any, _cleanup_adapter: Any, turn_ctx: Any) -> None:
+    """Capture exact progress IDs after producers stop; release only on confirmed delivery."""
+    st = turn_ctx.progress_state
+    rolling = turn_ctx.progress_grouping == "rolling" and st is not None
+    adapter = st.adapter if rolling else _cleanup_adapter
+    if (adapter is None or not isinstance(response, dict) or response.get("failed")
+            or terminal_header(response) != "✅ Completed"):
+        return
+    if not rolling and not (turn_ctx._cleanup_progress and turn_ctx._cleanup_msg_ids):
+        return
+    register = getattr(type(adapter), "register_confirmed_delivery_callback", None)
+    if register is None:
+        return
+    ids = list(dict.fromkeys(turn_ctx._cleanup_msg_ids)) if turn_ctx._cleanup_progress else []
+    chat_id = turn_ctx.source.chat_id
+    message_id = st.progress_msg_id if rolling else None
+    metadata = dict(turn_ctx._progress_metadata or {})
+    content = None
+    if rolling:
+        # The sender is quiescent: a copy keeps confirmation rendering pure.
+        import copy
+        snapshot = copy.copy(st)
+        snapshot.progress_lines = list(st.progress_lines)
+        snapshot.rolling_header = "✅ Completed"
+        content = render_text(snapshot)
+    edit_pending = bool(message_id)
+
+    async def complete() -> bool:
+        nonlocal edit_pending
+        if edit_pending:
+            kwargs = {"chat_id": chat_id, "message_id": message_id, "content": content}
+            if st._edit_accepts_metadata:
+                kwargs["metadata"] = metadata
+            if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
+                kwargs["finalize"] = True
+            result = await adapter.edit_message(**kwargs)
+            if not getattr(result, "success", False):
+                return False
+            edit_pending = False
+        for message in tuple(ids):
+            if await adapter.delete_message(chat_id, message):
+                ids.remove(message)
+        return not ids
+
+    adapter.register_confirmed_delivery_callback(turn_ctx.progress_delivery_owner, complete)
+

@@ -484,10 +484,20 @@ display:
 
 `rolling` is useful for long tool-heavy turns in notification-heavy chats. Hermes sends one
 `⏳ Working…` activity bubble, edits it with tool progress, concise interim commentary, pre-turn
-compression status, and long-running heartbeats, then marks it `Completed`, `Stopped`, or
+compression status, and long-running heartbeats, then marks it `Finishing`, `Stopped`, or
 `Needs attention` while delivering the final answer separately. At the platform limit, Hermes
 drops the oldest complete entries and shows an omission count; it never splits an entry. The
 default remains `accumulate` on every platform, including Discord.
+
+Rolling progress shows monotonic elapsed time and the last measured request usage against the
+compressor's effective trigger (including configured caps). Missing measurements display
+`context unknown`; usage above the trigger remains above 100%. Existing
+`long_running_notifications: off` disables heartbeat activity. Rendering retains chronological
+activity and fits its visible tail to the transport limit without consuming the event buffer.
+`Completed` and optional progress deletion wait for confirmed final delivery. A refused final
+keeps its progress, and a later turn cannot complete or delete its predecessor's message.
+Failed cleanup remains attached to the exact turn; the adapter retains at most 128 turn obligations.
+
 
 ### `log` mode — audit file instead of chat messages
 

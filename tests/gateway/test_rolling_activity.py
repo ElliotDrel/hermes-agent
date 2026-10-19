@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import queue
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -110,10 +111,8 @@ class SlowToolAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        import time
-
         self.tool_progress_callback("tool.started", "terminal", "long command", {})
-        time.sleep(0.25)
+        assert self.heartbeat_seen.wait(timeout=5), "heartbeat must reach the actual transport"
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
@@ -153,7 +152,7 @@ async def test_rolling_sender_keeps_one_bounded_non_conversational_bubble():
     assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text, _, _ in adapter.sent)
     assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for _, text, _ in adapter.edits)
     final = adapter.edits[-1][1]
-    assert final.startswith("✅ Completed")
+    assert final.startswith("⏳ Finishing…")
     assert "earlier activities omitted" in final
     assert "activity-4" in final
     assert "activity-0" not in final
@@ -204,7 +203,7 @@ async def test_retryable_terminal_edit_retains_finish_intent_and_message_identit
 
     assert task.done() and not task.cancelled()
     assert [message_id for message_id, _, _ in adapter.edits] == ["activity-1", "activity-1"]
-    assert adapter.edits[-1][1] == "✅ Completed"
+    assert adapter.edits[-1][1].startswith("⏳ Finishing…")
 
 
 @pytest.mark.asyncio
@@ -254,14 +253,13 @@ async def test_blocked_inbound_after_hygiene_closes_preflight_without_completed(
 
     async def _blocked(**_kwargs):
         await adapter.send("chat", warning)
-        return None
 
     runner._prepare_profile_scoped_inbound_message_text = _blocked
     runner._run_agent_progress_threading = lambda *_args: ({"non_conversational": True}, None, None)
     runner._reply_anchor_for_event = lambda event: event.message_id
     runner._clear_session_env = lambda _tokens: None
     monkeypatch.setattr(gateway_turn, "build_session_context", lambda *_args: {})
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     source = SessionSource(platform=Platform.DISCORD, chat_id="chat", chat_type="channel")
     event = MessageEvent(text="@file:blocked", source=source, message_id="trigger")
     entry = SimpleNamespace(session_id="session", session_key="agent:main:discord:chat", yolo=None)
@@ -304,7 +302,7 @@ async def test_active_gateway_path_keeps_one_bounded_editable_tail(monkeypatch, 
     rendered = [adapter.sent[0]["content"], *(call["content"] for call in adapter.edits)]
     effective_limit = adapter.MAX_MESSAGE_LENGTH - 64
     assert all(adapter.message_len_fn(text) <= effective_limit for text in rendered)
-    assert adapter.edits[-1]["content"].startswith("✅ Completed")
+    assert adapter.edits[-1]["content"].startswith("⏳ Finishing…")
     assert "earlier activities omitted" in adapter.edits[-1]["content"]
     assert adapter.oversized_sends == []
     assert adapter.oversized_edits == []
@@ -355,7 +353,7 @@ async def test_active_gateway_path_routes_commentary_into_activity(monkeypatch, 
 
     assert result["final_response"] == "done"
     assert len(adapter.sent) == 1
-    assert adapter.edits[-1]["content"].startswith("✅ Completed")
+    assert adapter.edits[-1]["content"].startswith("⏳ Finishing…")
     assert "I'll inspect the repo first." in adapter.edits[-1]["content"]
     assert {call["message_id"] for call in adapter.edits} == {"progress-1"}
 
@@ -363,6 +361,14 @@ async def test_active_gateway_path_routes_commentary_into_activity(monkeypatch, 
 @pytest.mark.asyncio
 async def test_active_gateway_path_routes_heartbeat_into_activity(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+    SlowToolAgent.heartbeat_seen = threading.Event()
+    class HeartbeatAdapter(SmallLimitProgressAdapter):
+        async def edit_message(self, chat_id, message_id, content, **kwargs):
+            kwargs.pop("metadata", None)
+            result = await super().edit_message(chat_id, message_id, content, **kwargs)
+            if "Working — 0 min" in content:
+                SlowToolAgent.heartbeat_seen.set()
+            return result
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -377,7 +383,7 @@ async def test_active_gateway_path_routes_heartbeat_into_activity(monkeypatch, t
             }
         },
         platform=Platform.DISCORD,
-        adapter_cls=SmallLimitProgressAdapter,
+        adapter_cls=HeartbeatAdapter,
     )
 
     assert result["final_response"] == "done"
@@ -411,7 +417,7 @@ async def test_rolling_queued_followup_starts_after_parent_terminal_flush(monkey
     assert result["final_response"] == "final response 2"
     parent_terminal = next(
         index for index, (_, content) in enumerate(adapter.timeline)
-        if content.startswith("✅ Completed")
+        if content.startswith("⏳ Finishing…")
     )
     child_start = next(
         index for index, (_, content) in enumerate(adapter.timeline[parent_terminal + 1 :], parent_terminal + 1)
@@ -465,3 +471,141 @@ async def test_hygiene_activity_uses_prospective_thread_and_legacy_mode_preceden
     inherited = {"display": {"tool_progress_grouping": "rolling"}}
     assert await start_hygiene_activity(runner, event, source, inherited) is None
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_confirmed_progress_is_owned_by_exact_handler_turn(monkeypatch):
+    """A refused predecessor cannot borrow its successor's successful final send."""
+    old_sending, release_old = asyncio.Event(), asyncio.Event()
+    owners, fired = {}, []
+
+    class Transport(RollingCaptureAdapter):
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            if "old" in content:
+                old_sending.set()
+                await release_old.wait()
+                return SendResult(success=False, error="refused")
+            return SendResult(success=True, message_id="new-final-id")
+
+    adapter = Transport()
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chat", chat_type="channel")
+    async def handler(event):
+        owner = owners[event.text] = object()
+        event._progress_delivery_owner = owner
+        adapter.register_confirmed_delivery_callback(owner, lambda: fired.append(event.text))
+        return event.text + "-final"
+    adapter._message_handler = handler
+    old = asyncio.create_task(adapter._process_message_background(MessageEvent(text="old", source=source), "s"))
+    await asyncio.wait_for(old_sending.wait(), 2)
+    await adapter._process_message_background(MessageEvent(text="new", source=source), "s")
+    assert fired == ["new"]
+    release_old.set()
+    await old
+    assert fired == ["new"]
+    assert owners["old"] in adapter._confirmed_delivery_callbacks
+    assert owners["new"] not in adapter._confirmed_delivery_callbacks
+    # Failed siblings remain independently; successful callbacks never replay.
+    attempts = []
+    async def retryable():
+        attempts.append(1)
+        return len(attempts) > 1
+    adapter.register_confirmed_delivery_callback(owners["old"], retryable)
+    await adapter.confirm_delivery(owners["old"])
+    await adapter.confirm_delivery(owners["old"])
+    assert fired == ["new", "old"] and len(attempts) == 2
+    assert owners["old"] not in adapter._confirmed_delivery_callbacks
+
+    # Concurrent confirmation cannot replay a callback while its first invocation awaits I/O.
+    entered, released = asyncio.Event(), asyncio.Event()
+    overlap_owner, calls = object(), []
+    async def delayed_callback():
+        calls.append(1)
+        entered.set()
+        await released.wait()
+    adapter.register_confirmed_delivery_callback(overlap_owner, delayed_callback)
+    first = asyncio.create_task(adapter.confirm_delivery(overlap_owner))
+    await entered.wait()
+    await adapter.confirm_delivery(overlap_owner)
+    released.set()
+    await first
+    assert calls == [1]
+
+    # A successful text part is insufficient when later attachment delivery aborts.
+    for failure in (RuntimeError("transport closed"), asyncio.CancelledError()):
+        partial = Transport()
+        partial._notify_turn_error = AsyncMock(return_value=None)
+        partial_fired = []
+        async def partial_handler(event):
+            event._progress_delivery_owner = object()
+            partial.register_confirmed_delivery_callback(event._progress_delivery_owner,
+                                                         lambda: partial_fired.append(True))
+            return "new-final"
+        async def attachments(*args, **kwargs):
+            raise failure
+        partial._message_handler = partial_handler
+        partial._deliver_attachments = attachments
+        try:
+            await partial._process_message_background(MessageEvent(text="partial", source=source), "partial")
+        except asyncio.CancelledError:
+            pass
+        assert not partial_fired
+
+
+@pytest.mark.asyncio
+async def test_rolling_render_is_pure_and_failed_edit_keeps_exact_bubble():
+    from gateway.rolling_activity import fit_tail
+    adapter = RollingCaptureAdapter()
+    ctx, turn = _turn(adapter, initial_message_id="owned")
+    ctx.agent_holder[0] = SimpleNamespace(context_compressor=SimpleNamespace(last_prompt_tokens=150, _threshold_tokens=100))
+    st = turn._progress_edit_state(adapter)
+    st.progress_lines[:] = ["😀" * 160, "last activity"]
+    before = list(st.progress_lines)
+    assert fit_tail(st) == fit_tail(st)
+    assert st.progress_lines == before
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="forbidden"))
+    assert await turn._progress_send_or_edit(st, "last activity") is False
+    assert await turn._progress_send_or_edit(st, "last activity") is False
+    assert st.progress_msg_id == "owned" and not adapter.sent
+    assert "150%" in st.rolling_telemetry
+    class Unresolved:
+        last_prompt_tokens = 10
+        @property
+        def threshold_tokens(self):
+            raise AssertionError("telemetry must not resolve provider context")
+    ctx.agent_holder[0].context_compressor = Unresolved()
+    await turn._progress_send_or_edit(st, "last activity")
+    assert "context unknown" in st.rolling_telemetry
+    assert st.progress_lines == before
+
+    # Finish must wait for an in-flight send and reject every late producer.
+    from gateway.rolling_activity import RollingActivityQueue
+    entered, release, sealed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    class Queue(RollingActivityQueue):
+        def finish(self, marker):
+            super().finish(marker)
+            sealed.set()
+    class Delayed(RollingCaptureAdapter):
+        async def send(self, *args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().send(*args, **kwargs)
+    delayed = Delayed()
+    delayed_ctx, delayed_turn = _turn(delayed)
+    delayed_ctx.progress_queue = Queue()
+    delayed_ctx.activity_result = {"completed": True}
+    sender = asyncio.create_task(delayed_turn.send_progress_messages())
+    delayed_ctx.progress_queue.put("first")
+    await asyncio.wait_for(entered.wait(), 2)
+    finish = asyncio.create_task(finish_turn_activity(delayed_ctx, sender, logging.getLogger(__name__)))
+    await asyncio.wait_for(sealed.wait(), 2)
+    delayed_ctx.progress_queue.put("late producer")
+    assert not finish.done()
+    release.set()
+    await finish
+    assert len(delayed.sent) == 1
+    assert all("late producer" not in content for _, content, _ in delayed.edits)
+    runner = object.__new__(GatewayRunner)
+    runner._run_agent_schedule_bubble_cleanup(delayed_ctx.activity_result, None, delayed_ctx)
+    assert "Completed" not in delayed.edits[-1][1]
+    await delayed.confirm_delivery(delayed_ctx.progress_delivery_owner)
+    assert delayed.edits[-1][1].startswith("✅ Completed")

@@ -255,7 +255,7 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
 @pytest.mark.asyncio
 async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     """When a bg-review-style callback is already registered, the cleanup
-    callback chains with it — both fire, neither clobbers the other."""
+    callback waits for confirmation while the terminal hook remains independent."""
     adapter = CleanupCaptureAdapter()
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
@@ -286,10 +286,8 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     cb = adapter.pop_post_delivery_callback(session_key)
     assert callable(cb)
     await _fire_post_delivery_cb(cb)
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-        if adapter.deleted:
-            break
+    assert adapter.deleted == []  # Terminal-release hooks are not delivery confirmation.
+    await adapter.confirm_delivery(result["_progress_delivery_owner"])
 
     # Both effects land: the pre-existing callback fires AND the cleanup
     # deletes at least one progress bubble.

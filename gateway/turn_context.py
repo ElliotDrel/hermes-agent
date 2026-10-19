@@ -7,6 +7,9 @@ single-element lists so mutation stays visible to the outer body.
 
 from __future__ import annotations
 
+import time
+import uuid
+
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
@@ -34,6 +37,10 @@ class TurnContext:
     progress_finish_header: list = field(default_factory=lambda: [None])
     initial_progress_msg_id: Optional[str] = None
     activity_result: Any = None
+    progress_delivery_owner: str = field(default_factory=lambda: uuid.uuid4().hex)
+    progress_state: Any = None
+    progress_closed: bool = False
+    progress_started: float = field(default_factory=time.monotonic)
     # mutable single-element containers (shared with the outer body)
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])
