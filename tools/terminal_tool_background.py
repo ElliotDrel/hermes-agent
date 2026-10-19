@@ -214,8 +214,13 @@ def spawn_background_process(
                 _register_completion_watcher(process_registry, proc_session, session_key)
             from agent.delegation_context import is_delegated_child_context
             if is_delegated_child_context():
-                result_data["notify_on_complete"] = False
-                result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
+                from tools.process_registry_notifications import should_surface_notification
+                suppressed = not should_surface_notification({"owner_task_id": proc_session.owner_task_id})
+                result_data["notification_suppressed"] = suppressed
+                result_data["subagent_note"] = (
+                    "Completion delivery is currently suppressed by child-process policy. " if suppressed else
+                    "Completion delivery is currently enabled by child-process policy. "
+                ) + _SUBAGENT_NOTIFY_NOTE
             elif heartbeat_seconds:
                 # Heartbeats ride the same delivery path as the completion notice, so they are
                 # only armed where that notice can actually reach the agent.
@@ -234,7 +239,7 @@ def spawn_background_process(
 
 
 _SUBAGENT_NOTIFY_NOTE = (
-    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+    "The completion watcher remains armed. You are a subagent: this process is killed when "
     "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
     "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
     "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
