@@ -12,10 +12,14 @@ from agent.usage_anchor import capture_usage_anchor, message_fingerprint, restor
 from hermes_state import SessionDB
 
 
+_TURN_TIMESTAMP = 1_800_000_000.0
+
+
 def _agent(**attrs):
     return SimpleNamespace(
         model="fixture", provider="custom", base_url="https://example.invalid/v1",
         api_mode="chat_completions", tools=[], ephemeral_system_prompt="",
+        _current_turn_timestamp=_TURN_TIMESTAMP,
         _copy_reasoning_content_for_api=lambda *_: None,
         _should_sanitize_tool_calls=lambda: False, **attrs,
     )
@@ -24,7 +28,7 @@ def _agent(**attrs):
 @pytest.mark.parametrize("rewrite", ["persist_override", "sanitized_display"])
 def test_persisted_display_rewrite_preserves_priced_wire_message(tmp_path, rewrite):
     sent = "visible question\n\n" + build_memory_context_block("recalled context")
-    messages = [{"role": "user", "content": sent}]
+    messages = [{"role": "user", "content": sent, "timestamp": _TURN_TIMESTAMP}]
     original = deepcopy(messages)
     sid = "wire-identity"
     db_path = tmp_path / "state.db"
