@@ -534,6 +534,7 @@ async def test_safe_sync_recreated_upserts_without_delete():
         fetch_commands=AsyncMock(return_value=[existing_model]),
     )
     fake_http = SimpleNamespace(
+        get_global_commands=AsyncMock(return_value=[existing_model.to_dict()]),
         upsert_global_command=AsyncMock(),
         edit_global_command=AsyncMock(),
         delete_global_command=AsyncMock(),
@@ -619,6 +620,7 @@ async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
         calls.append(f"delete:{command_id}")
 
     fake_http = SimpleNamespace(
+        get_global_commands=AsyncMock(return_value=[existing_model.to_dict()]),
         upsert_global_command=_upsert,
         edit_global_command=AsyncMock(),
         delete_global_command=_delete,
@@ -804,7 +806,7 @@ async def test_safe_sync_recreates_when_managed_install_flags_differ():
     summary = await adapter._safe_sync_slash_commands()
 
     assert summary["recreated"] == 1
-    fake_http.delete_global_command.assert_awaited_once_with(999, 42)
+    fake_http.delete_global_command.assert_not_awaited()
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
 
 
