@@ -225,7 +225,7 @@ async def test_persistent_retryable_terminal_edit_failure_is_bounded():
 @pytest.mark.asyncio
 async def test_blocked_inbound_after_hygiene_closes_preflight_without_completed(monkeypatch):
     import gateway.run as gateway_run
-    import gateway.run_turn as gateway_turn
+    import gateway.run_turn_prepare as gateway_turn
 
     adapter = RollingCaptureAdapter()
     runner = object.__new__(GatewayRunner)
@@ -242,8 +242,8 @@ async def test_blocked_inbound_after_hygiene_closes_preflight_without_completed(
         load_transcript=AsyncMock(return_value=[{"role": "user"}] * 4),
     )
 
-    async def _hygiene(*args):
-        args[-1][0] = "hygiene-1"
+    async def _hygiene(*args, activity_message):
+        activity_message[0] = "hygiene-1"
         return args[4]
 
     runner._hmwa_run_session_hygiene = _hygiene
@@ -264,7 +264,7 @@ async def test_blocked_inbound_after_hygiene_closes_preflight_without_completed(
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     source = SessionSource(platform=Platform.DISCORD, chat_id="chat", chat_type="channel")
     event = MessageEvent(text="@file:blocked", source=source, message_id="trigger")
-    entry = SimpleNamespace(session_id="session", session_key="agent:main:discord:chat")
+    entry = SimpleNamespace(session_id="session", session_key="agent:main:discord:chat", yolo=None)
 
     prepared, _tokens = await runner._hmwa_prepare_turn(
         event, source, entry, entry.session_key, entry.session_key, 1
