@@ -1790,6 +1790,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     session_key or "?",
                 )
                 first_response = ""
+                if not any(_delivery_result.get(key) for key in ("failed", "error", "interrupted", "partial")) and _delivery_result.get("completed") is not False:
+                    await adapter.settle_no_response(turn_ctx.progress_delivery_owner)
             else:
                 logger.warning(
                     "Queued follow-up for session %s: replacing a human-turn silence marker.",

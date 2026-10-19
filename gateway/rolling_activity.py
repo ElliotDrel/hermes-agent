@@ -279,7 +279,7 @@ async def finish_turn_activity(turn_ctx: Any, progress_task: Any, logger: Any) -
 
 
 def schedule_progress_completion(response: Any, _cleanup_adapter: Any, turn_ctx: Any) -> None:
-    """Capture exact progress IDs after producers stop; release only on confirmed delivery."""
+    """Capture exact progress IDs; settle after delivery confirmation or policy-authorized silence."""
     st = turn_ctx.progress_state
     rolling = turn_ctx.progress_grouping == "rolling" and st is not None
     adapter = st.adapter if rolling else _cleanup_adapter

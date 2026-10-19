@@ -538,6 +538,10 @@ class GatewayTurnPersistenceMixin:
             response = ""
 
         adapter = self._delivery_adapter_for(source)
+        if _intentional_silence and adapter is not None:
+            if not any(agent_result.get(key) for key in ("failed", "error", "interrupted", "partial")) and agent_result.get("completed") is not False:
+                await adapter.settle_no_response(agent_result.get("_progress_delivery_owner"))
+            return ""
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)

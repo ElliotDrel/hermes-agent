@@ -40,6 +40,18 @@ class DeliveryCallbacksMixin:
 
 
     async def confirm_delivery(self, owner: object) -> None:
+        """Settle progress after transport confirmation of this exact turn."""
+        await self._settle_progress_obligations(owner)
+
+    async def settle_no_response(self, owner: object) -> None:
+        """Settle this turn's progress after native policy authorized intentional silence.
+
+        This does not confirm a transport send. Callers must not use it for unknown empty,
+        failed or declined output. It shares the same owner serialization/retry obligations.
+        """
+        await self._settle_progress_obligations(owner)
+
+    async def _settle_progress_obligations(self, owner: object) -> None:
         """Claim this owner's obligations; retry failures without replaying successful siblings."""
         from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
         pending = self._confirmed_delivery_callbacks.get(owner)

@@ -737,3 +737,88 @@ async def test_rolling_render_is_pure_and_failed_edit_keeps_exact_bubble():
     assert "Completed" not in delayed.edits[-1][1]
     await delayed.confirm_delivery(delayed_ctx.progress_delivery_owner)
     assert delayed.edits[-1][1].startswith("✅ Completed")
+
+
+@pytest.mark.asyncio
+async def test_allowed_silence_settles_only_exact_predecessor_and_retries(monkeypatch):
+    """No-response completion is policy-authorized, not a borrowed transport confirmation."""
+    adapter=RollingCaptureAdapter()
+    runner=object.__new__(GatewayRunner)
+    first,_=_turn(adapter);second,_=_turn(adapter)
+    first.reply_expected=False
+    first.session_key=None
+    second.session_key=None
+    # Build and finish the real rolling sender before its exact-owner cleanup is registered.
+    turn=TurnRunner(SimpleNamespace(_delivery_adapter_for=lambda source:adapter),first)
+    progress=asyncio.create_task(turn.send_progress_messages())
+    first.progress_queue.put(("__activity_start__",))
+    first.progress_queue.put("Checking silently")
+    silence={"final_response":"NO_REPLY","completed":True}
+    first.activity_result=silence
+    await finish_turn_activity(first,progress,logging.getLogger(__name__))
+    runner._run_agent_schedule_bubble_cleanup(silence,adapter,first)
+    assert "Finishing" in adapter.edits[-1][1]
+    before_sends=len(adapter.sent)
+    settled=[]
+    attempts=[]
+    async def flaky():
+        attempts.append(True)
+        if len(attempts)==1:
+            return False
+        settled.append("first")
+        return True
+    adapter.register_confirmed_delivery_callback(first.progress_delivery_owner,flaky)
+    adapter.register_confirmed_delivery_callback(second.progress_delivery_owner,lambda:settled.append("second"))
+    adapter.confirm_delivery=AsyncMock(wraps=adapter.confirm_delivery)
+    silence={"final_response":"NO_REPLY","completed":True}
+    await runner._run_agent_deliver_first_response(first,adapter,silence,silence,None)
+    assert settled==["first"] and len(attempts)==2 and len(adapter.sent)==before_sends
+    assert "Completed" in adapter.edits[-1][1]
+    assert first.progress_delivery_owner not in adapter._confirmed_delivery_callbacks
+    assert second.progress_delivery_owner in adapter._confirmed_delivery_callbacks
+    adapter.confirm_delivery.assert_not_awaited()
+    visible={"final_response":"Visible successor","completed":True}
+    await runner._run_agent_deliver_first_response(second,adapter,visible,visible,None)
+    assert settled==["first","second"] and adapter.sent[-1][0]=="Visible successor"
+    assert not adapter._confirmed_delivery_callbacks
+    # Missing/failed/error outputs and a silence marker on an addressed human turn do not waive.
+    for result,reply_expected in [({"final_response":""},False),({"final_response":"NO_REPLY","failed":True},False),({"final_response":"NO_REPLY","error":"unknown failure"},False),({"final_response":"NO_REPLY","interrupted":True},False),({"final_response":"NO_REPLY","partial":True},False),({"final_response":"NO_REPLY","completed":False},False),({"final_response":"NO_REPLY","completed":True},True)]:
+        ctx,_=_turn(adapter);ctx.reply_expected=reply_expected;ctx.session_key=None
+        fired=[]
+        adapter.register_confirmed_delivery_callback(ctx.progress_delivery_owner,lambda:fired.append(True))
+        # Refuse any fallback send so only the no-response action could settle it.
+        monkeypatch.setattr(runner,'_deliver_queued_first_response',AsyncMock(return_value=False))
+        await runner._run_agent_deliver_first_response(ctx,adapter,result,result,None)
+        assert not fired and ctx.progress_delivery_owner in adapter._confirmed_delivery_callbacks
+
+
+@pytest.mark.asyncio
+async def test_ordinary_authorized_silent_turn_settles_without_transport_confirmation():
+    from gateway.response_filters import silence_allowed
+    adapter=RollingCaptureAdapter()
+    runner=object.__new__(GatewayRunner)
+    runner._delivery_adapter_for=lambda source:adapter
+    runner._should_send_voice_reply=lambda *a,**kw:False
+    source=SessionSource(platform=Platform.DISCORD,chat_id="chat")
+    event=MessageEvent(text="background",source=source,reply_expected=False)
+    entry=SimpleNamespace(session_id="s")
+    owner=object();successor=object();fired=[]
+    adapter.register_confirmed_delivery_callback(owner,lambda:fired.append("silent"))
+    adapter.register_confirmed_delivery_callback(successor,lambda:fired.append("successor"))
+    adapter.confirm_delivery=AsyncMock(wraps=adapter.confirm_delivery)
+    result={"final_response":"NO_REPLY","completed":True,"_progress_delivery_owner":owner}
+    assert runner._is_intentional_silence(result,result["final_response"]) and silence_allowed(None,event.reply_expected)
+    response=await runner._hmwa_deliver_turn_response(event,source,entry,"key",1,result,[],"NO_REPLY","footer",True)
+    assert response=="" and fired==["silent"] and not adapter.sent
+    adapter.confirm_delivery.assert_not_awaited()
+    assert successor in adapter._confirmed_delivery_callbacks
+    # The explicit no-response and transport paths serialize against the same owner.
+    started=asyncio.Event();release=asyncio.Event();calls=[]
+    async def slow():
+        calls.append(True);started.set();await release.wait()
+    adapter.register_confirmed_delivery_callback(successor,slow)
+    task=asyncio.create_task(adapter.settle_no_response(successor))
+    await started.wait()
+    await adapter.confirm_delivery(successor)
+    release.set();await task
+    assert fired==["silent","successor"] and len(calls)==1
