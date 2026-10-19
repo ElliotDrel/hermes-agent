@@ -199,6 +199,8 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
         for generation in generations.iterdir():
             if generation.is_symlink() or not generation.is_dir() or generation.resolve() == selected:
                 continue
+            if (generation / ".update-retained").is_file():
+                continue  # Prepared updates and their prior selection survive process leases.
             marker = generation / ".lease-managed"
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue

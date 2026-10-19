@@ -764,11 +764,12 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
 
 def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stamp: str, inputs: dict,
                       current: bool, repair: bool, explicit: bool, skip_invalid_secondary: bool = False,
-                      prepared: dict | None = None) -> None:
+                      prepared: dict | None = None, project_root: Path | None = None) -> None:
     """Build (unless current), publish the plugin change, then record the selection."""
     from pm import receipt
     from hermes_cli.runtime_state import finish_publication, recover_publication
 
+    publication_root = paths.repo_root() if project_root is None else Path(project_root)
     try:
         result = prepared
         if result is None:
@@ -777,17 +778,17 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
         if not repair and package.expected_stamp(enabled, **inputs) != stamp:
             raise ValueError("Dependency inputs changed while preparing publication; retry.")
         if change is not None:
-            change.publish(paths.repo_root())
+            change.publish(publication_root)
         if not current:
             if result.get("environment") is not None:
                 from pm.environments import flush_before_selecting
                 flush_before_selecting()
             facts.record_state("venv", stamp, enabled, **result)
         if change is not None:
-            finish_publication(paths.repo_root())
+            finish_publication(publication_root)
         receipt.record_venv_rebuild(not current, "already in sync" if current else "")
     except BaseException:
-        recover_publication(paths.repo_root())
+        recover_publication(publication_root)
         raise
 
 

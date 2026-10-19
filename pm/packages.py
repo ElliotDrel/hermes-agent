@@ -295,7 +295,9 @@ def _uv_lock_digest(path: Path) -> bytes:
     cached = _uv_lock_digest_cache.get(path)
     if cached and cached[0] == key:
         return cached[1]
-    digest = hashlib.sha256(path.read_bytes()).digest()
+    # Git archives contain LF while a Windows checkout may carry CRLF. Both
+    # describe the same dependency graph and must select the same generation.
+    digest = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).digest()
     _uv_lock_digest_cache[path] = (key, digest)
     return digest
 
