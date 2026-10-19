@@ -196,11 +196,11 @@ Profile-safe coding rules are in the root `AGENTS.md`; multiplex secret-scope ru
 
 ### Windows update pause ownership
 
-The updater asks the gateway control pipe to pause before publishing a planned-stop
-marker. A current gateway writes the existing accepted-stop receipt in its own home
-before scheduling the restart, preserving restart debt if the updater dies before
-its ACK checkpoint. Only an unavailable socket uses the marker fallback. The ACK
-reports the gateway's configured after-turn plus stop envelope through
+The identify response advertises `update_pause_receipt: 1` for gateways that persist
+socket acceptance. For these gateways, the updater asks the control pipe to pause
+before publishing a planned-stop marker. The gateway writes the existing accepted-stop
+receipt in its own home before scheduling restart, preserving restart debt if the
+updater dies before its ACK checkpoint. A refused or unavailable socket uses the marker
+fallback. Older gateways retain marker-first checkpoint ordering before the socket call.
+The ACK reports the gateway's configured after-turn plus stop envelope through
 `resolve_restart_exit_wait_budget`; the updater displays progress while awaiting exit.
-
-The identify response advertises `update_pause_receipt: 1` for gateways that persist socket acceptance. Older gateways keep the legacy marker-first checkpoint ordering; the new graceful ordering applies once the running gateway supports durable socket receipts.
