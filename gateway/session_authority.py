@@ -517,7 +517,11 @@ class SessionAuthority:
         if fingerprint := getattr(event, '_ingress_sha256', None):
             payload['native_text_v1']['ingress_sha256'] = fingerprint  # the delivery before a rewrite
         self._require_admission_open()
-        source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
+        source = restore_native_source(payload, self.runner)  # no re-hash of captured media on the loop
+        if payload['native_text_v1'].get('provenance'):
+            from gateway.session_identity import canonical_identity
+            if canonical_identity(source, runner=self.runner) is None:
+                raise RuntimeStoreError('profile_mismatch')
         from gateway.session_runtime_workers import tracked_write
         ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
