@@ -21,7 +21,6 @@ async def composition_lane(monkeypatch, tmp_path):
     runner = GatewayRunner(GatewayConfig(group_sessions_per_user=False))
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from gateway.config import load_gateway_config
-    from plugins.platforms.discord.composition import window
     homes=[tmp_path/'profile-a',tmp_path/'profile-b']
     for home,seconds in zip(homes,[20,0]):
         home.mkdir()
@@ -32,6 +31,8 @@ async def composition_lane(monkeypatch, tmp_path):
             native=load_gateway_config().platforms[Platform.DISCORD]
         finally:
             reset_hermes_home_override(scope)
+        assert native.extra.get("busy_composition_window_seconds",0)==seconds
+        from plugins.platforms.discord.composition import window
         adapter=DiscordAdapter(native)
         assert window(adapter)==seconds
     adapter.config.typing_indicator=False
