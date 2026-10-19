@@ -11,6 +11,8 @@ import aiohttp
 from agent.retry_utils import parse_retry_after_seconds
 from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
 
+_API_ROOT = "https://discord.com/api/v10"
+
 
 @asynccontextmanager
 async def _transport(adapter):
@@ -21,7 +23,7 @@ async def _transport(adapter):
 
 
 async def _request(session, options, method, thread_id, **kwargs):
-    async with session.request(method, f"https://discord.com/api/v10/channels/{int(thread_id)}",
+    async with session.request(method, f"{_API_ROOT}/channels/{int(thread_id)}",
                                **options, **kwargs) as response:
         try:
             body = await response.json()
@@ -48,7 +50,13 @@ def _rate_limit(adapter, thread_id, status, body):
     return {"status": "rate_limited", "retry_after": delay}
 
 
+def thread_rename_retry_after(adapter, thread_id: str) -> float:
+    return max(0, getattr(adapter, "_explicit_rename_cooldowns", {}).get(str(thread_id), 0) - time.monotonic())
+
+
 async def read_thread_name(adapter, thread_id: str) -> str | None:
+    if thread_rename_retry_after(adapter, thread_id):
+        return None
     async with _transport(adapter) as (session, options):
         status, body = await _request(session, options, "GET", thread_id)
         _rate_limit(adapter, thread_id, status, body)
@@ -61,7 +69,7 @@ async def rename_thread_confirmed(adapter, thread_id: str, *, name: str, expecte
     cooldowns = getattr(adapter, "_explicit_rename_cooldowns", None)
     if cooldowns is None:
         cooldowns = adapter._explicit_rename_cooldowns = {}
-    wait = cooldowns.get(str(thread_id), 0) - time.monotonic()
+    wait = thread_rename_retry_after(adapter, thread_id)
     if wait > 0:
         return {"status": "rate_limited", "retry_after": wait}
     patched = False

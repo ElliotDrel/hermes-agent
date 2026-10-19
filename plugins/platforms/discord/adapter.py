@@ -5510,6 +5510,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         return None
 
+    def thread_rename_retry_after(self, thread_id: str) -> float:
+        from .thread_rename import thread_rename_retry_after
+        return thread_rename_retry_after(self, thread_id)
+
     async def read_thread_name(self, thread_id: str) -> Optional[str]:
         from .thread_rename import read_thread_name
         return await read_thread_name(self, thread_id)

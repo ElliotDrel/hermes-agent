@@ -1008,6 +1008,9 @@ class GatewaySessionCommandsMixin:
                                  metadata=self._thread_metadata_for_source(source))
         if not getattr(ack, "success", False):
             return t("gateway.rename.ack_failed")
+        cooldown = getattr(adapter, "thread_rename_retry_after", lambda thread_id: 0)(str(source.thread_id))
+        if cooldown > 0:
+            return t("gateway.rename.cooldown", seconds=int(cooldown) + 1)
         current = await adapter.read_thread_name(str(source.thread_id))
         if current is None or snapshot is None or snapshot.get("ended_at") is not None:
             return t("gateway.rename.unavailable")
@@ -1031,14 +1034,21 @@ class GatewaySessionCommandsMixin:
         task = asyncio.create_task(self._session_db.set_session_title_if_current(session_id, title,
             expected_title=snapshot.get("title"), expected_source=snapshot.get("title_source"),
             expected_revision=snapshot["title_revision"]))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            with contextlib.suppress(ValueError):
-                await task  # SQLite may have committed; never abandon its outcome.
-            raise
-        except ValueError:  # another session legitimately owns the candidate title
-            return False
+        cancelled = False
+        while True:
+            try:
+                settled = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True  # every cancellation keeps SQLite's result owner shielded
+            except ValueError:  # another session legitimately owns the candidate title
+                settled = False
+                break
+        if cancelled:
+            raise asyncio.CancelledError
+        return settled
 
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""

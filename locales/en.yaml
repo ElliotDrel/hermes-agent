@@ -4043,7 +4043,7 @@ platform.discord.command.rename.arg_name: "Exact new name; omit to generate from
 gateway.rename.native_only: "Use /rename inside a native Discord thread. Use /title for other sessions."
 gateway.rename.pending: "A rename is already pending for this thread."
 gateway.rename.cancelled: "Rename cancelled. Verify the remote name and saved title; settlement may have completed."
-gateway.rename.failed: "Rename could not be confirmed. The saved title was not changed."
+gateway.rename.failed: "Rename could not be confirmed. Verify the remote name and saved title."
 gateway.rename.ack: "Renaming this thread (saved title: {title})…"
 gateway.rename.ack_failed: "Could not acknowledge the rename; no change was attempted."
 gateway.rename.unavailable: "The current thread or active session could not be confirmed. No change was attempted."
@@ -4053,3 +4053,5 @@ gateway.rename.session_changed: "The active session changed; the rename was canc
 gateway.rename.transport_status: "Rename {status}; the saved title was not changed."
 gateway.rename.saved_kept: "The remote name was confirmed, but the saved title could not be updated safely; it was kept."
 gateway.rename.success: "Thread renamed to {title}."
+
+gateway.rename.cooldown: "Discord is rate-limiting renames. Try again in {seconds}s; no new request or title generation was attempted."

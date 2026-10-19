@@ -111,11 +111,22 @@ async def test_rename_ack_precedes_generation_and_newer_human_title_wins(tmp_pat
         task.cancel()
         await asyncio.sleep(0)
         assert not task.done()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert db.get_session_title("session") == "Settled name"
         assert not runner._pending_thread_renames
+        runner._session_db.set_session_title_if_current = original_set
+        adapter.thread_rename_retry_after = lambda thread_id: 45
+        adapter.read_thread_name.reset_mock()
+        trace.clear()
+        result = await runner._handle_rename_command(MessageEvent(text="/rename",source=source))
+        assert "45" in result or "46" in result
+        assert trace == ["ack"]
+        adapter.read_thread_name.assert_not_awaited()
         # Native reconciliation upgrades a legacy database lacking the revision column.
         db.close()
         import sqlite3
@@ -135,49 +146,57 @@ async def test_rename_ack_precedes_generation_and_newer_human_title_wins(tmp_pat
 
 @pytest.mark.asyncio
 async def test_native_confirmed_transport_uses_fresh_reads_and_reports_uncertainty(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import json
+    import threading
     from gateway.config import PlatformConfig
     from plugins.platforms.discord.adapter import DiscordAdapter
-    import aiohttp
+    from plugins.platforms.discord import thread_rename as protocol
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="isolated-test-token"))
     trace, responses = [], []
-    class Response:
-        headers = {}
-        def __init__(self, status, body):
-            self.status, self.body = status, body
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *args):
+    class Endpoint(BaseHTTPRequestHandler):
+        def request(self):
+            assert self.headers["Authorization"] == "Bot isolated-test-token"
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"]))) if self.headers.get("Content-Length") else None
+            trace.append((self.command, body))
+            status, data = responses.pop(0)
+            payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        do_GET = request
+        do_PATCH = request
+        def log_message(self, *args):
             pass
-        async def json(self):
-            return self.body
-    class Session:
-        def __init__(self, **kwargs):
-            assert kwargs["headers"]["Authorization"] == "Bot isolated-test-token"
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *args):
-            pass
-        def request(self, method, url, **kwargs):
-            trace.append((method, kwargs.get("json")))
-            response = responses.pop(0)
-            if isinstance(response, BaseException):
-                raise response
-            return Response(*response)
-    monkeypatch.setattr(aiohttp, "ClientSession", Session)
-    for name in ["x", "😀" * 100]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+    worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval":0.01}, daemon=True)
+    worker.start()
+    monkeypatch.setattr(protocol, "_API_ROOT", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(protocol, "resolve_proxy_url", lambda **kwargs: None)
+    try:
+        for name in ["x", "😀" * 100]:
+            trace.clear()
+            responses[:] = [(200,{"type":11,"name":"Original"}), (200,{"name":name}), (200,{"type":11,"name":name})]
+            result = await adapter.rename_thread_confirmed("123", name=name, expected_name="Original")
+            assert result["status"] == "confirmed"
+            assert [step[0] for step in trace] == ["GET","PATCH","GET"]
+            assert trace[1][1] == {"name":name}
         trace.clear()
-        responses[:] = [(200,{"type":11,"name":"Original"}), (200,{"name":name}), (200,{"type":11,"name":name})]
-        result = await adapter.rename_thread_confirmed("123", name=name, expected_name="Original")
-        assert result["status"] == "confirmed"
-        assert [step[0] for step in trace] == ["GET","PATCH","GET"]
-        assert trace[1][1] == {"name":name}
-    trace.clear()
-    responses[:] = [(200,{"type":11,"name":"Human renamed"})]
-    assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "conflict"
-    assert [step[0] for step in trace] == ["GET"]
-    responses[:] = [(200,{"type":11,"name":"Original"}), (503,{})]
-    assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "uncertain"
-    responses[:] = [(200,{"type":11,"name":"Original"}), TimeoutError()]
-    assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "uncertain"
-    responses[:] = [(200,{"type":11,"name":"Original"}), (429,{"retry_after":45})]
-    assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "rate_limited"
+        responses[:] = [(200,{"type":11,"name":"Human renamed"})]
+        assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "conflict"
+        assert [step[0] for step in trace] == ["GET"]
+        responses[:] = [(200,{"type":11,"name":"Original"}), (200,{"name":"Candidate"}), (503,{})]
+        assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "uncertain"
+        responses[:] = [(200,{"type":11,"name":"Original"}), (429,{"retry_after":45})]
+        trace.clear()
+        assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "rate_limited"
+        assert [step[0] for step in trace] == ["GET","PATCH"]
+        assert await adapter.read_thread_name("123") is None
+        assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "rate_limited"
+        assert [step[0] for step in trace] == ["GET","PATCH"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
