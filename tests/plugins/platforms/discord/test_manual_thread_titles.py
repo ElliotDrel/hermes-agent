@@ -1,6 +1,7 @@
 """Opt-in title callback keeps the manual thread initial-name provenance across restart."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import json
 import pytest
 from gateway.config import Platform, GatewayConfig, load_gateway_config
 from gateway.session import SessionSource, SessionStore
@@ -10,7 +11,8 @@ from hermes_constants import set_hermes_home_override, reset_hermes_home_overrid
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 @pytest.mark.asyncio
-async def test_manual_title_native_callback_optin_guard_and_durable_pin(tmp_path):
+@pytest.mark.parametrize("shape", ["top-level", "nested-with-root", "nested-and-root-conflict"])
+async def test_manual_title_native_callback_optin_guard_and_durable_pin(tmp_path, shape):
     scope=set_hermes_home_override(tmp_path)
     store=None
     try:
@@ -23,7 +25,14 @@ async def test_manual_title_native_callback_optin_guard_and_durable_pin(tmp_path
         homes=[tmp_path/"profile-a",tmp_path/"profile-b"]
         for home,enabled in zip(homes,[True,False]):
             home.mkdir()
-            (home/"config.yaml").write_text("platforms:\n  discord:\n    enabled: true\ndiscord:\n  auto_title_manual_threads: "+str(enabled).lower()+"\n",encoding="utf-8")
+            config = {"platforms": {"discord": {"enabled": True}},
+                      "discord": {"auto_title_manual_threads": enabled}}
+            if shape != "top-level":
+                config["platforms"]["discord"]["extra"] = {"auto_title_manual_threads": enabled}
+                config["discord"] = {"require_mention": False}
+                if shape == "nested-and-root-conflict":
+                    config["discord"]["auto_title_manual_threads"] = not enabled
+            (home/"config.yaml").write_text(json.dumps(config), encoding="utf-8")
         for home,enabled in [(homes[0],True),(homes[1],False),(homes[0],True)]:
             profile_scope=set_hermes_home_override(home)
             try:
