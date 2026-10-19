@@ -138,6 +138,9 @@ async def steer_queued(connection, ref, params):
     authority.authorize(connection.actor, ref, 'session:control')
     receipt, row = await _queued(connection, ref, admission_id)
     if steer_replayed(row):
+        if set(row['payload']) - _TEXT_ONLY:
+            # A runtime notice's transfer (session_runtime_notices): never a user's steer to replay.
+            raise RuntimeStoreError('unsupported_control')
         if row['outcome'] == STEERING:
             # A transfer committed under an uncertain failure is still fenced to its claim: deliver it.
             with authority.sessions[ref.session_id].event_stream.lock:

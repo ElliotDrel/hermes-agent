@@ -87,12 +87,16 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
                                             'omitted': int(evt.get('omitted') or 0)}
         if evt.get('_replaces'):
             return await authority.admit_automation(adapter, event, identity, replaces=evt['_replaces'])
+    from gateway.session_runtime_notices import offer_after_admission
     if evt.get('type') != 'completion':
-        return await authority.admit_automation(adapter, event, identity)
+        receipt = await authority.admit_automation(adapter, event, identity)
+        # A running parent reads an async result at its next boundary (session_runtime_notices).
+        return await offer_after_admission(authority, receipt) if evt.get('type') == 'async_delegation' else receipt
     async with _heartbeat_lock(runner):
         receipt = await authority.admit_automation(adapter, event, identity)
         await withdraw_process_ticks(runner, evt)
-        return receipt
+        # After the withdrawal: a waiting tick of this process would otherwise hold the FIFO place.
+        return await offer_after_admission(authority, receipt)
 
 
 async def prepare_heartbeat(runner, event):

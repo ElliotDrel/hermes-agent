@@ -59,11 +59,11 @@ MagicMock adapters in older tests auto-create truthy attributes.
 ## Background process notifications
 
 `terminal(background=true, notify_on_complete=true)` arms a watcher on the gateway loop
-(`run_notifications.py::arm_process_watcher`) that starts a new turn on completion; verbosity is
+(`run_notifications.py::arm_process_watcher`) that admits completion to its FIFO; verbosity is
 `display.background_process_notifications`. Injection requires the `admit_internal_event` receipt
 (a handler returning None is not acceptance); refused admission refunds every claimed batch sibling
 without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
-§ Background process notifications.
+§ Background process notifications (including active-parent notices).
 
 Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
 FIFO as human input (private launch policy, `internal_notification` display kind); observers never

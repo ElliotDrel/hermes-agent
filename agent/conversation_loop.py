@@ -1744,6 +1744,8 @@ def run_conversation(
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False
+    from agent import runtime_notices
+    runtime_notices.open_turn(agent)
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
@@ -1766,6 +1768,8 @@ def run_conversation(
                 prelude=prelude,
             )
         finally:
+            # Every exit: no request is left to carry a notice, so an unread one returns to its queue place.
+            runtime_notices.seal(agent)
             end_voice_turn_route(agent)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):

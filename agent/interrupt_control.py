@@ -305,6 +305,8 @@ class InterruptControlMixin:
                     if ticket is not None:
                         _steer_fates(self)[ticket] = False
                 _set_steer_parts(self, [])
+            from agent.runtime_notices import seal
+            seal(self, discard=True)  # unread notices go back to their own queue places
         return True
 
     def steer(self, text: str, *, ticket=None) -> bool:
@@ -319,6 +321,12 @@ class InterruptControlMixin:
         # The turn no longer ran on its own (first-task-done detection reads this off the result).
         self._turn_user_intervened = True
         return True
+
+    def notify_runtime(self, text: str, *, ticket) -> bool:
+        """Hand a nonhuman runtime notice to this turn (``agent.runtime_notices``): never a steer, so the
+        turn is not marked user-intervened. ``ticket`` settles through ``withdraw_steer``."""
+        from agent.runtime_notices import offer
+        return offer(self, text, ticket)
 
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that
@@ -422,6 +430,9 @@ class InterruptControlMixin:
         stays, whatever its text) or dropped unread; False once a drain consumed it, or for an unknown one."""
         if ticket is None:
             return False
+        from agent.runtime_notices import withdraw
+        if withdraw(self, ticket):  # an unread runtime notice (``notify_runtime``)
+            return True
         with _ic_lock(self, "_pending_steer_lock"):
             parts = _steer_parts(self)
             kept = [part for part in parts if part[0] != ticket]

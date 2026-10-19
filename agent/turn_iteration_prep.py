@@ -179,6 +179,10 @@ def prepare_iteration(
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
         _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+    # Runtime notices (background results for this running turn) land only on a transcript that
+    # still ends in tool results, after any steer: append-only, never between two user rows.
+    from agent.runtime_notices import drain as _drain_runtime_notices
+    _drain_runtime_notices(agent, messages)
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -282,15 +286,16 @@ def _previous_tool_round(messages: Any) -> list:
 
 
 def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
-        _sm = messages[_si]
-        if isinstance(_sm, dict) and _sm.get("role") == "tool":
-            from agent.prompt_builder import steer_user_row
-            messages.insert(_si + 1, steer_user_row(steer_text))
-            logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
-            return
+    """Append at an available tool boundary; otherwise restore the steer and its tickets.
+
+    A prior request may already include a notice after its tool results. Inserting before that
+    row would rewrite the cached prefix and stack user rows when a request is rebuilt.
+    """
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
+        from agent.prompt_builder import steer_user_row
+        messages.append(steer_user_row(steer_text))
+        logger.debug("Pre-API-call steer drain: appended user row after newest tool result")
+        return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
 
@@ -369,6 +374,11 @@ def begin_iteration(
 
     _redirect_text = agent._drain_pending_redirect()
     if _redirect_text:
+        # Both are human input for this rebuild. Drain the steer before appending the redirect's
+        # new rows: afterwards there is no tool boundary, and inserting into history breaks replay.
+        _steer_text = agent._drain_pending_steer()
+        if _steer_text:
+            _redirect_text = f"{_steer_text}\n\n[Additional user correction]\n{_redirect_text}"
         _apply_active_turn_redirect(agent, messages, _redirect_text)
         if isinstance(original_user_message, str):
             original_user_message = (

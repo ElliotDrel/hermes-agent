@@ -686,7 +686,7 @@ The gateway runs as a long-lived process, managed via:
 ## Background process notifications
 
 `terminal(background=true, notify_on_complete=true)` starts a gateway watcher that detects
-completion and triggers a new agent turn. Verbosity: `display.background_process_notifications`
+completion and admits it to the owning session FIFO. An idle session runs it as a new agent turn. Verbosity: `display.background_process_notifications`
 (or `HERMES_BACKGROUND_NOTIFICATIONS`): `concise` (default; one line, failures append an output
 tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
 (final raw output only on non-zero exit), `off`.
@@ -696,7 +696,21 @@ _register_completion_watcher` → `run_notifications.py::arm_process_watcher`); 
 is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
 while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
 receipt (the agent's next turn is the report) unless the launching turn is still running at exit
-— then the injection only queues a follow-up, so the concise receipt goes out immediately.
+— then the concise receipt goes out immediately while the admitted result waits for a safe boundary.
+
+A completion or asynchronous-delegation result for a running session may enter that claim through
+`session_runtime_notices.py`. The transaction validates the stored automation principal and producer
+identity and refuses to overtake any earlier queued, unknown or unresolved `steering` admission.
+Only one active-parent transfer may be outstanding for an executing claim; later results retain their
+native queued turns. A diagnostic, heartbeat, watch match or client-selected text cannot use this path.
+
+The agent appends a typed `runtime_notice` user row after a tool-result boundary without changing the
+system prompt, previous request prefix, tools or user-intervention state. The frame identifies Hermes
+as its author and grants no approval. A buffered notice the turn never reads returns to its original
+FIFO position at settlement; a consumed one settles with its claim and is never replayed after an
+interrupted or uncertain owner. A cancelled caller or uncertain write leaves the native transfer fence
+for claim settlement or epoch recovery. Codex app-server and managed turns without this seam retain
+the existing next-turn behavior. Producer ACK still means committed admission, not model consumption.
 
 The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
 required. Notify-off drains these without waking. Transport failures are retried; unavailable

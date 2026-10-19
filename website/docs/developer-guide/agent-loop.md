@@ -21,6 +21,20 @@ The core orchestration engine is the `AIAgent` class. `run_agent.py` is now a th
 - Tracking iteration budgets across parent and child agents
 - Flushing persistent memory before context is lost
 
+## Runtime notices during an active turn
+
+A gateway-admitted background result may reach the running turn through `notify_runtime`, with its
+admission ID as the settlement ticket. At a tool-result boundary, `runtime_notices.drain` appends a
+`role:user` row typed `runtime_notice`, explicitly framed as Hermes-generated input without approval
+or user authority. Existing request messages and the system prompt remain byte-stable. A pending
+human steer takes the boundary first; a later notice waits rather than stacking user rows. Request
+retries never insert a late steer before an already persisted notice.
+
+The finalizer seals the notice buffer. Claim settlement withdraws unread tickets and refunds their
+original queue position; a consumed notice settles with its claim. `user_intervened` stays false for
+notices, and compression never treats them as user instructions or focus anchors. Codex app-server
+turns retain native queued delivery because they have no typed nonhuman tool-boundary seam.
+
 ## Two Entry Points
 
 ```python

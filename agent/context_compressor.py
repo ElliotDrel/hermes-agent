@@ -39,7 +39,7 @@ from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_st
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
-from agent.prompt_builder import STEER_DISPLAY_KIND
+from agent.prompt_builder import MID_TURN_DISPLAY_KINDS, STEER_DISPLAY_KIND
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
@@ -1340,9 +1340,9 @@ def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
     """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
     the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
     after the newest tool result before the next API call, and two can land in one iteration (one when the tool
-    batch ends, one before the request), so every contiguous trailing steer row is skipped."""
+    batch ends, one before the request), so every contiguous trailing steer or runtime-notice row is skipped."""
     end = len(messages)
-    while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
+    while end and messages[end - 1].get("display_kind") in MID_TURN_DISPLAY_KINDS:
         end -= 1
     start = end
     while start > 0 and messages[start - 1].get("role") == "tool":

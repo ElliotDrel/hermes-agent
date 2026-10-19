@@ -306,11 +306,12 @@ def _requeue_transfer(conn, *, admission_id: str, epoch: int, generation: int) -
                         "AND generation=?", (admission_id, STEERING, epoch, generation)).rowcount == 1
 
 
-def steer_session_input(db, *, epoch: int, admission_id: str, generation: int) -> tuple[dict, bool]:
+def steer_session_input(db, *, epoch: int, admission_id: str, generation: int, _guard=None) -> tuple[dict, bool]:
     """Hand a still-queued admission to its FIFO's running claim: queued -> terminal ``steering``
     bound to ``generation`` in one write, only while ``generation`` is the started claim this owner
     holds, so the drain can never also claim it. ``(row, True)`` when this call committed the
-    transfer, ``(row, False)`` for an exact retry of one already committed (never delivered twice)."""
+    transfer, ``(row, False)`` for an exact retry of one already committed (never delivered twice).
+    ``_guard(conn, row)`` (the owner's private policy) raises to refuse a new transfer in this write."""
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
@@ -322,6 +323,8 @@ def steer_session_input(db, *, epoch: int, admission_id: str, generation: int) -
                 "SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='started' "
                 "AND owner_epoch=? AND generation=?", (row['target_session_id'], epoch, generation)).fetchone() is None:
             raise RuntimeStoreError('session_idle')
+        if _guard is not None:
+            _guard(conn, row)
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=?,owner_epoch=?,generation=? "
                      "WHERE admission_id=?", (STEERING, epoch, generation, admission_id))
         return _row(_admission(conn, admission_id)), True
