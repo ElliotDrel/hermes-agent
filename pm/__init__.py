@@ -30,6 +30,7 @@ _EXPORTS = {
         "export_requirements", "build_requirements_environment", "prune_cache", "stage_tools",
         "prepare_tools",
     ),
+    "pm.candidates": ("prepare_candidate", "promote_candidate"),
     "pm.operations": ("environment_python", "python_tool"),
     "pm.extras": ("available", "ensure_import", "install_hint"),
     "pm.lock": ("Facts", "Lockfile"),

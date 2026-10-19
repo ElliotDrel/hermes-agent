@@ -433,7 +433,7 @@ class Venv(StatePackage):
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
-              skip_invalid_secondary: bool = False) -> dict:
+              skip_invalid_secondary: bool = False, source_snapshot: Path | None = None) -> dict:
         """Prepare one complete environment; the caller commits its selection.
 
         ``skip_invalid_secondary`` is the update's contract: an unreadable secondary profile
@@ -447,11 +447,12 @@ class Venv(StatePackage):
         from pm.workspace import enabled_member_dirs, lock_and_sync
 
         project = self.project_root()
+        source = project if source_snapshot is None else Path(source_snapshot).resolve()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        environment = managed_environment(candidate, env=source_build_environment(project),
+        environment = managed_environment(candidate, env=source_build_environment(source),
                                           explicit=explicit or repair, output=sys.stderr)
-        if not repair:
+        if not repair and plugin_dirs is None:
             # Inspection may skip a broken secondary profile, but publishing a replacement
             # graph must not silently evict its recorded members (including passed candidates).
             # An update does evict them, loudly: it must not fail on another profile's config.
@@ -474,11 +475,11 @@ class Venv(StatePackage):
                         or not recorded.is_file()):
                     raise InstallError(self.name, "recorded dependency lock is missing; refusing to drop plugins")
                 replay = recorded.parent
-            seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
-                    else project / "uv.lock")
+            seed = (Path(prior["resolved_lock"]) if source_snapshot is None and members and prior.get("resolved_lock")
+                    else source / "uv.lock")
             lock_and_sync(members, extras, root=generation / "workspace",
                           seed_lock=seed, frozen=repair or not members, replay=replay,
-                          source=project, environment=environment)
+                          source=source, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"
             environment.check()
             if repair:
