@@ -4478,7 +4478,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Format for Discord: GFM tables become bullet lists (Discord doesn't render pipe tables)."""
         if not content:
             return content
-        return convert_table_to_bullets(content)
+        from .link_previews import suppress_descriptive_previews
+        return suppress_descriptive_previews(convert_table_to_bullets(content))
 
     async def _defer_unless_expired(self, interaction: discord.Interaction, warn_fmt: str, *warn_args) -> bool:
         """Ephemeral defer(); False (after a warning) when the interaction token already expired

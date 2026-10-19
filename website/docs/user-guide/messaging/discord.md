@@ -1001,3 +1001,13 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+### Descriptive link previews
+
+Outgoing assistant text wraps complete descriptive Markdown destinations in Discord's
+angle-bracket form: `[documentation](<https://example.com/docs>)`. The label remains
+clickable without expanding into a preview card. This applies to sends and accumulated
+stream edits. Bare URLs, URL labels, images, direct media links, escaped syntax and code
+remain unchanged. Incomplete links or code fences stay unchanged until a later complete
+stream snapshot; destinations are never rewritten. This does not set message-wide embed
+suppression, so a bare media URL can still display its preview.
