@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 from hermes_state import SessionDB
 from agent.codex_runtime import _record_codex_app_server_compaction
-from hermes_state_worker_compression import worker_provider_boundary
 
 
 def test_completed_counts_rollback_rotation_resume_and_native_receipt(tmp_path,monkeypatch):
@@ -34,6 +33,7 @@ def test_completed_counts_rollback_rotation_resume_and_native_receipt(tmp_path,m
     _record_codex_app_server_compaction(agent,turn)
     _record_codex_app_server_compaction(agent,turn)
     assert db.get_session_model_config_value("child","_completed_compactions")==3
+    from hermes_state_worker_compression import worker_provider_boundary
     # Worker replay uses the same transaction helper and exact boundary id.
     for _ in range(2):
         db._execute_write(lambda conn:worker_provider_boundary(db,conn,"child",{"boundary_id":"codex:thread:worker-turn"}))

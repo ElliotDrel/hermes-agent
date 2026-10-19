@@ -67,3 +67,49 @@ async def test_native_metadata_send_edit_stream_and_profile_snapshots(tmp_path,m
     before=len(sent)
     await GatewayTurnPersistenceMixin._hmwa_deliver_turn_response(holder,event,source,entry,"key",1,{"already_sent":True},[],"",footer,True)
     assert len(sent)==before
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_loopback_http_footer_payloads(tmp_path,monkeypatch):
+    import asyncio
+    import aiohttp
+    from aiohttp import web
+    requests=[]
+    bodies={}
+    async def endpoint(request):
+        payload=await request.json() if request.method in ("POST","PATCH") else {}
+        requests.append((request.method,request.path,payload))
+        mid=request.match_info.get("mid") or "1"
+        body=bodies.setdefault(mid,{"id":mid,"channel_id":"123","content":"","embeds":[],"attachments":[],"edited_timestamp":None,"timestamp":"2026-10-19T00:00:00+00:00","type":0,"pinned":False,"tts":False,"mention_everyone":False,"mentions":[],"mention_roles":[],"author":{"id":"9","username":"Hermes","discriminator":"0","avatar":None}})
+        body.update(payload)
+        import json
+        return web.Response(body=json.dumps(body).encode("utf-8"),headers={"Content-Type":"application/json"})
+    app=web.Application()
+    app.router.add_route("*","/channels/{cid}/messages",endpoint)
+    app.router.add_route("*","/channels/{cid}/messages/{mid}",endpoint)
+    server=web.AppRunner(app);await server.setup()
+    site=web.TCPSite(server,"127.0.0.1",0);await site.start()
+    port=site._server.sockets[0].getsockname()[1]
+    monkeypatch.setattr(discord.http.Route,"BASE",f"http://127.0.0.1:{port}")
+    client=discord.Client(intents=discord.Intents.none())
+    client.http._global_over=asyncio.Event();client.http._global_over.set()
+    client.http.token="synthetic-token"
+    session=aiohttp.ClientSession();client.http._HTTPClient__session=session
+    guild=discord.Guild(data={"id":"1","name":"Synthetic"},state=client._connection)
+    channel=discord.TextChannel(state=client._connection,guild=guild,data={"id":"123","name":"Synthetic","type":0,"position":0,"permission_overwrites":[]})
+    adapter=DiscordAdapter(PlatformConfig(enabled=True))
+    adapter._client=client
+    adapter._resolve_channel=AsyncMock(return_value=channel)
+    adapter._record_response_async=AsyncMock(side_effect=lambda reply,result,*a,**kw:result)
+    try:
+        footer="model-a · compact 125% · compactions 2"
+        result=await adapter.send("123","Original answer",metadata={"runtime_footer":footer})
+        assert result.success
+        assert requests[0][2]["content"]=="Original answer" and requests[0][2]["embeds"][0]["footer"]["text"]==footer
+        result=await adapter.edit_message("123","1","Original edited",metadata={"runtime_footer":footer},finalize=True)
+        assert result.success
+        assert [r[0] for r in requests]==["POST","GET","PATCH"]
+        assert requests[-1][2]["content"]=="Original edited"
+        assert all(footer not in r[2].get("content","") for r in requests)
+    finally:
+        await session.close();await server.cleanup()
