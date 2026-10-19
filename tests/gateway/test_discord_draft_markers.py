@@ -2,6 +2,7 @@
 from datetime import datetime, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import json
 
 import pytest
 
@@ -12,17 +13,22 @@ import plugins.platforms.discord.adapter as transport
 
 
 @pytest.mark.asyncio
-async def test_profile_drafts_are_filtered_from_ingress_history_and_replies(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shape", ["top-level", "nested-with-root", "nested-and-root-conflict"])
+async def test_profile_drafts_are_filtered_from_ingress_history_and_replies(tmp_path, monkeypatch, shape):
     class Channel:
         id = 23
         name = "dm"
     monkeypatch.setattr(transport.discord, "DMChannel", Channel)
     homes = [tmp_path / "a", tmp_path / "b"]
-    for home, markers in zip(homes, ['["Draft", "Drafts"]', '[]']):
+    for home, markers in zip(homes, [["Draft", "Drafts"], []]):
         home.mkdir()
-        (home / "config.yaml").write_text(
-            "platforms:\n  discord:\n    enabled: true\n"
-            + "discord:\n  draft_markers: " + markers + "\n", encoding="utf-8")
+        config = {"platforms": {"discord": {"enabled": True}}, "discord": {"draft_markers": markers}}
+        if shape != "top-level":
+            config["platforms"]["discord"]["extra"] = {"draft_markers": markers}
+            config["discord"] = {"require_mention": False}
+            if shape == "nested-and-root-conflict":
+                config["discord"]["draft_markers"] = ["RootOnly"]
+        (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
     for home in [homes[0], homes[1], homes[0]]:
         token = set_hermes_home_override(home)
         try:

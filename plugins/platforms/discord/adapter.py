@@ -82,6 +82,8 @@ class _Snowflake:
 
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+from .config_extra import authored_extra
+
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -7313,7 +7315,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
-    seeded_extra = {"draft_markers": discord_cfg.get("draft_markers", [])}
+    seeded_extra = authored_extra(discord_cfg, ("draft_markers",))
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools
