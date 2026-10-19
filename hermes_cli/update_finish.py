@@ -170,8 +170,9 @@ def main(context: Path, result: Path) -> int:
             # closed as a success (an interrupt after verification) stays 0 (review regression 3).
             from hermes_constants import get_hermes_home
             from hermes_cli.runtime_state import _atomic_bytes
+            from hermes_cli.update_gateway_io import gateway_update_home
 
-            _atomic_bytes(get_hermes_home() / ".update_exit_code",
+            _atomic_bytes(gateway_update_home(get_hermes_home()) / ".update_exit_code",
                           b"0" if terminal.get("outcome") == "success" else b"1")
         if restarting and not cli_started:
             # Startup failed before the replacement command could own a

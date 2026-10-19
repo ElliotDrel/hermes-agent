@@ -608,7 +608,6 @@ def test_the_takeover_breadcrumb_is_written_temp_fsync_rename(tmp_path, monkeypa
     assert f"expected_sha={'a' * 40}" in crumb.read_text(encoding="utf-8")
 
 
-@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory permissions")
 def test_a_takeover_debt_another_profile_cannot_see_is_never_silent(tmp_path, monkeypatch, capsys):
     """The takeover arms after the historical updater already moved the tree, through the same
     fallback as the commit point: with the host record unwritable on a two-profile install, the
@@ -625,11 +624,16 @@ def test_a_takeover_debt_another_profile_cannot_see_is_never_silent(tmp_path, mo
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
     monkeypatch.setenv("HERMES_HOME", str(homes["coder"]))
     monkeypatch.setattr(_update_takeover, "_head_sha", lambda _root: "a" * 40)
-    lock_dir.chmod(0o500)
-    try:
-        _update_takeover._arm_fleet_obligation(tmp_path)
-    finally:
-        lock_dir.chmod(0o700)
+    import tempfile
+    native_mkstemp = tempfile.mkstemp
+
+    def deny_host_record(*args, **kwargs):
+        if Path(kwargs.get("dir", "")) == lock_dir:
+            raise PermissionError("host record directory is unwritable")
+        return native_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", deny_host_record)
+    _update_takeover._arm_fleet_obligation(tmp_path)
 
     assert (homes["coder"] / "fleet_restart_pending").is_file()
     assert "hermes gateway restart" in capsys.readouterr().err

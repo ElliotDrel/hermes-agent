@@ -393,7 +393,8 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     if _posix_pause.gateways_paused():  # the gateway that would relay it is stopped for the update
         print(f"  → {prompt_text} → {default or '(empty)'} (gateways are paused for the update)")
         return default
-    home = get_hermes_home()
+    from hermes_cli.update_gateway_io import gateway_update_home
+    home = gateway_update_home(get_hermes_home())
     prompt_path = home / ".update_prompt.json"
     response_path = home / ".update_response"
 

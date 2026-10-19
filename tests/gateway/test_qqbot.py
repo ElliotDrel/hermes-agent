@@ -926,6 +926,25 @@ class TestDefaultInteractionDispatch:
         assert response.exists()
         assert response.read_text() == "y"
 
+    @pytest.mark.asyncio
+    async def test_correlated_update_prompt_click_answers_its_invocation(self, tmp_path, monkeypatch):
+        from gateway import run
+        from plugins.platforms.qqbot.keyboards import build_update_prompt_keyboard, parse_interaction_event
+        monkeypatch.setattr(run, "_hermes_home", tmp_path)
+        run_id = "12" * 16
+        run_home = tmp_path / "logs" / "update_receipts" / "gateway" / run_id
+        run_home.mkdir(parents=True)
+        buttons = build_update_prompt_keyboard(run_id).to_dict()["content"]["rows"][0]["buttons"]
+        adapter = self._make_adapter()
+        event = parse_interaction_event({
+            "id": "i", "chat_type": 2, "user_openid": "u-1",
+            "data": {"resolved": {"button_data": buttons[0]["action"]["data"]}},
+        })
+        await adapter._default_interaction_dispatch(event)
+
+        assert (run_home / ".update_response").read_text() == "y"
+        assert not (tmp_path / ".update_response").exists()
+
 
 class TestProfileNamespaceApprovalAuthz:
     """Named-profile (multiplex) session keys must authorize like ``main``.

@@ -5560,6 +5560,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
 
+    # A channel-level /update reports in its own handoff thread (gateway/slash_commands.py).
+    update_reports_in_thread = True
+
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Create a handoff thread under a text channel; returns the thread id or ``None``.
         Falls back to seed-message + ``message.create_thread``; DMs/voice/threads can't host threads."""
@@ -5805,7 +5808,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             view = UpdatePromptView(
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
+                allowed_role_ids=self._allowed_role_ids, run_id=(metadata or {}).get("update_run_id", ""),
             )
             content = self._self_contained_prompt_content(f"☤ **{update_title}**", f"{prompt}{default_hint}")
             return {"content": content, "embed": embed, "view": view}, view
@@ -6572,9 +6575,10 @@ def _define_discord_view_classes() -> None:
         """Yes/No buttons for ``hermes update`` prompts; the answer is written to
         ``.update_response`` for the detached update process to pick up."""
 
-        def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+        def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None, run_id: str = ""):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
+            self.run_id = run_id
             self._localize_buttons(yes_btn="platform.discord.prompt.affirm", no_btn="platform.discord.prompt.negate")
 
         async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label_key: str):
@@ -6584,11 +6588,8 @@ def _define_discord_view_classes() -> None:
                 interaction, color,
                 t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             try:
-                from hermes_constants import get_hermes_home
-                response_path = get_hermes_home() / ".update_response"
-                tmp = response_path.with_suffix(".tmp")
-                tmp.write_text(answer, encoding="utf-8")
-                tmp.replace(response_path)
+                from hermes_cli.update_gateway_io import write_update_response
+                write_update_response(answer, self.run_id)
                 logger.info("Discord update prompt answered '%s' by %s", answer, interaction.user.display_name)
             except Exception as exc:
                 logger.error("Failed to write update response: %s", exc)

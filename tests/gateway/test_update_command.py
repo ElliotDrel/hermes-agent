@@ -12,6 +12,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
+from gateway.platforms.base import SendResult
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
@@ -143,7 +144,7 @@ class TestHandleUpdateCommand:
              patch("subprocess.Popen"):
             await runner._handle_update_command(event)
 
-        pending_path = hermes_home / ".update_pending.json"
+        pending_path, = hermes_home.glob("logs/update_receipts/gateway/*/.update_pending.json")
         assert pending_path.exists()
         data = json.loads(pending_path.read_text())
         assert data["platform"] == "telegram"
@@ -269,6 +270,8 @@ class TestSendUpdateNotification:
         (hermes_home / ".update_output.txt").write_text("still running")
 
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -293,6 +296,8 @@ class TestSendUpdateNotification:
         (hermes_home / ".update_exit_code").write_text("0")
 
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -324,7 +329,9 @@ class TestSendUpdateNotification:
 
         # Mock the adapter
         mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
+        mock_adapter.send = AsyncMock(return_value=SendResult(success=True))
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -337,15 +344,8 @@ class TestSendUpdateNotification:
 
 
     @pytest.mark.asyncio
-    async def test_drops_stale_marker_when_the_platform_never_connects(self, tmp_path, caplog):
-        """A marker past the wait cap is abandoned instead of deferred forever.
-
-        Regression: an update notice addressed to a platform that has no adapter —
-        and never will, because the platform is not configured at all — kept its
-        markers on disk and re-logged a deferred line on every poll. The startup
-        path reschedules the watcher for as long as the markers exist, so the
-        notice outlived every restart, in every process.
-        """
+    async def test_retains_stale_marker_until_delivery(self, tmp_path, caplog):
+        """An absent adapter must not erase an undelivered completion."""
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -363,13 +363,9 @@ class TestSendUpdateNotification:
         with patch("gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
 
-        # True is the definitive answer the startup caller keys off to stop rescheduling.
-        assert result is True
-        assert not pending_path.exists()
-        assert not (hermes_home / ".update_pending.claimed.json").exists()
-        assert not (hermes_home / ".update_output.txt").exists()
-        assert not (hermes_home / ".update_exit_code").exists()
-        assert any("adapter never connected" in r.getMessage() for r in caplog.records)
+        assert result is False
+        assert pending_path.exists()
+        assert (hermes_home / ".update_exit_code").exists()
 
     @pytest.mark.asyncio
     async def test_keeps_waiting_for_a_recent_marker(self, tmp_path):
@@ -399,8 +395,8 @@ class TestSendUpdateNotification:
 
 
     @pytest.mark.asyncio
-    async def test_cleans_up_on_error(self, tmp_path):
-        """Files are cleaned up even if notification fails."""
+    async def test_retains_on_error(self, tmp_path):
+        """Delivery failures keep the output and pending receipt for retry."""
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -416,16 +412,17 @@ class TestSendUpdateNotification:
 
         # Adapter send raises
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         mock_adapter.send.side_effect = RuntimeError("network error")
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
 
-        # Files should still be cleaned up (finally block)
-        assert not pending_path.exists()
-        assert not output_path.exists()
-        assert not exit_code_path.exists()
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
 
 
     @pytest.mark.asyncio
@@ -451,6 +448,8 @@ class TestSendUpdateNotification:
 
         # Only telegram adapter available, but pending says discord
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -496,6 +495,8 @@ class TestSendUpdateNotification:
 
         # Platform reconnects: the reconnect watcher adds the adapter back.
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -527,6 +528,8 @@ class TestSendUpdateNotification:
         exit_code_path.write_text("0")
 
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -556,6 +559,8 @@ class TestSendUpdateNotification:
         (hermes_home / ".update_output.txt").write_text("x" * 3000 + "\nERROR: pip failed\n")
         (hermes_home / ".update_exit_code").write_text("1")
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -590,6 +595,8 @@ class TestWatchUpdateProgress:
         (hermes_home / ".update_exit_code").write_text("0")
 
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -668,9 +675,21 @@ class TestDetachedUpdateExitCodePublication:
 
         output, marker = tmp_path / "out.log", tmp_path / ".update_exit_code"
         seen = []
-        monkeypatch.setattr(sys, "argv", ["-c", str(output), str(marker),
+        monkeypatch.setattr(sys, "argv", ["-c", str(output), str(marker), "",
                                           sys.executable, "-c", "raise SystemExit(4)"])
         with observe_file_writes(lambda: seen.append(marker.read_text() if marker.exists() else None)):
             exec(compile(_WINDOWS_UPDATE_HELPER, "<update-helper>", "exec"), {"__name__": "__main__"})
         assert "" not in seen
         assert marker.read_text(encoding="utf-8") == "4"
+
+    def test_windows_helper_hands_the_invocation_id_to_the_updater(self, tmp_path, monkeypatch):
+        """The child's native receipt and IPC directory are keyed by the gateway's run id."""
+        import sys
+        from gateway.slash_commands import _WINDOWS_UPDATE_HELPER
+
+        output, marker, run_id = tmp_path / "out.log", tmp_path / ".update_exit_code", "ab" * 16
+        probe = "import os; print(os.environ['HERMES_UPDATE_CORRELATION_ID'], end='')"
+        monkeypatch.setattr(sys, "argv", ["-c", str(output), str(marker), run_id, sys.executable, "-c", probe])
+        exec(compile(_WINDOWS_UPDATE_HELPER, "<update-helper>", "exec"), {"__name__": "__main__"})
+        assert output.read_text(encoding="utf-8") == run_id
+        assert marker.read_text(encoding="utf-8") == "0"

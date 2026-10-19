@@ -1,7 +1,8 @@
 """QQ Bot inline keyboards + approval / update-prompt helpers. A button click dispatches an
 ``INTERACTION_CREATE`` event carrying the button's ``data``; the bot must ACK promptly via
 ``PUT /interactions/{id}`` or the user sees an error indicator. ``button_data`` formats:
-``approve:<session_key>:<decision>`` (allow-once|allow-always|deny) and ``update_prompt:<answer>`` (y|n).
+``approve:<session_key>:<decision>`` (allow-once|allow-always|deny) and ``update_prompt:<answer>[:<run id>]``
+(y|n, plus the gateway /update invocation that asked).
 Ported from WideLee's qqbot-agent-sdk v1.2.2 (authorship via Co-authored-by)."""
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ UPDATE_PROMPT_PREFIX = "update_prompt:"
 
 # session_key may itself contain colons (agent:main:qqbot:c2c:OPENID): greedy group, decision trails.
 _APPROVAL_DATA_RE = re.compile(r"^approve:(.+):(allow-once|allow-always|deny)$")
-_UPDATE_PROMPT_RE = re.compile(r"^update_prompt:(y|n)$")
+_UPDATE_PROMPT_RE = re.compile(r"^update_prompt:(y|n)(?::([0-9a-f]{32}))?$")
 
 def _to_dict(value: Any) -> Any:
     """Serialize a dataclass tree in field-declaration order (the wire shape)."""
@@ -87,6 +88,11 @@ def parse_update_prompt_button_data(button_data: str) -> Optional[str]:
     return m.group(1) if (m := _UPDATE_PROMPT_RE.match(button_data or "")) else None
 
 
+def parse_update_prompt_run_id(button_data: str) -> str:
+    """The update invocation an update-prompt button answers; ``""`` for an uncorrelated prompt."""
+    return (m.group(2) or "") if (m := _UPDATE_PROMPT_RE.match(button_data or "")) else ""
+
+
 def _single_row_keyboard(group_id: str, *buttons: tuple) -> InlineKeyboard:
     """One row of callback buttons from ``(id, label, visited_label, data, style)`` tuples."""
     row = KeyboardRow(buttons=[
@@ -107,10 +113,11 @@ def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True) -
     return _single_row_keyboard("approval", *buttons)
 
 
-def build_update_prompt_keyboard() -> InlineKeyboard:
-    """Build a Yes/No keyboard for update confirmation prompts."""
-    return _single_row_keyboard("update_prompt", ("yes", "✓ 确认", "已确认", f"{UPDATE_PROMPT_PREFIX}y", 1),
-                                ("no", "✗ 取消", "已取消", f"{UPDATE_PROMPT_PREFIX}n", 0))
+def build_update_prompt_keyboard(run_id: str = "") -> InlineKeyboard:
+    """Build a Yes/No keyboard for update confirmation prompts; ``run_id`` names the asking invocation."""
+    suffix = f":{run_id}" if run_id else ""
+    return _single_row_keyboard("update_prompt", ("yes", "✓ 确认", "已确认", f"{UPDATE_PROMPT_PREFIX}y{suffix}", 1),
+                                ("no", "✗ 取消", "已取消", f"{UPDATE_PROMPT_PREFIX}n{suffix}", 0))
 
 
 @dataclass

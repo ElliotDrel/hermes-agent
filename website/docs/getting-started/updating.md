@@ -523,6 +523,26 @@ You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams b
 
 This pulls the latest code, updates dependencies, and restarts running gateways. The bot will briefly go offline during the restart (typically 5–15 seconds) and then resume.
 
+Each `/update` keeps its own report. Its output, exit status, prompt answers and delivery
+receipt live in `logs/update_receipts/gateway/<id>/` in the gateway's Hermes home, and `<id>` is
+the `correlation_id` of the update's own receipt in `logs/update_receipts/`. A second `/update`
+never takes over the first one's report or prompt.
+
+- **Where it reports.** On Discord, an `/update` sent in a channel reports in a new public thread
+  (`/update <id>`, archived after `discord.thread_auto_archive_duration`); one sent in a thread or
+  DM reports there. If the thread cannot be created, the report stays in the channel. Other
+  platforms report where the command was sent.
+- **Failed delivery.** When the platform does not accept the completion message, Hermes tries the
+  same profile's home channel (`/sethome`). If neither accepts it, the report stays pending and is
+  retried while the gateway watches the update and again at the next gateway start; it is never
+  dropped because the platform is disconnected. The receipt's `gateway_report` field records the
+  destination that accepted it.
+- **Prompts.** Buttons and text replies answer the update that asked. A prompt nobody answers
+  takes its default when the update's own wait (5 minutes) ends.
+- **Long updates.** When the gateway stops watching after 30 minutes, it says so in chat. The
+  update is not marked failed; its report stays pending and the next gateway start delivers it
+  (an update that restarts the gateway does this itself).
+
 ### Manual source maintenance and rollback
 
 Use the [source-install guide](../user-guide/switching-to-source.md) for an

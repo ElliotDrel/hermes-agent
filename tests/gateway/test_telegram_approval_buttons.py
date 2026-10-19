@@ -297,6 +297,40 @@ class TestTelegramApprovalCallback:
         assert (tmp_path / ".update_response").read_text() == "y"
 
     @pytest.mark.asyncio
+    async def test_correlated_update_prompt_answers_its_invocation(self, tmp_path, monkeypatch):
+        """A button sent for one /update writes only that invocation's response file."""
+        from gateway import run
+        monkeypatch.setattr(run, "_hermes_home", tmp_path)
+        run_id = "ef" * 16
+        run_home = tmp_path / "logs" / "update_receipts" / "gateway" / run_id
+        run_home.mkdir(parents=True)
+        import plugins.platforms.telegram.adapter as telegram_adapter
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton",
+                            lambda text, callback_data: SimpleNamespace(callback_data=callback_data))
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: SimpleNamespace(inline_keyboard=rows))
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=5))
+        await adapter.send_update_prompt(chat_id="12345", prompt="Continue?", metadata={"update_run_id": run_id})
+        keyboard = adapter._bot.send_message.call_args.kwargs["reply_markup"]
+        data = [button.callback_data for button in keyboard.inline_keyboard[0]]
+        assert data == [f"update_prompt:y:{run_id}", f"update_prompt:n:{run_id}"]
+        assert all(len(item.encode()) <= 64 for item in data)  # Telegram's callback_data limit
+
+        query = AsyncMock()
+        query.data = data[1]
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 123
+        update = MagicMock()
+        update.callback_query = query
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        assert (run_home / ".update_response").read_text() == "n"
+        assert not (tmp_path / ".update_response").exists()
+
+    @pytest.mark.asyncio
     async def test_update_prompt_callback_rejects_unauthorized_user(self, tmp_path):
         """Update prompt buttons should honor TELEGRAM_ALLOWED_USERS."""
         adapter = _make_adapter()

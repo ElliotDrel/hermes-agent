@@ -1523,10 +1523,7 @@ class GatewayStartupMixin:
             logger.info("Channel directory built: %d target(s)", ch_count)
         # Restarting after a /update still in progress: keep watching so we notify when it finishes.
         notified = await self._send_update_notification()
-        if not notified and any(
-            (_hermes_home / name).exists()
-            for name in (".update_pending.json", ".update_pending.claimed.json")
-        ):
+        if not notified and self._pending_update_paths():
             self._schedule_update_notification_watch()
 
     async def _start_finish_wiring(self, connected_count: int) -> None:

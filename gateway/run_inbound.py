@@ -297,15 +297,18 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return _paused_notice
 
     @staticmethod
-    def _hm_write_update_response(response_text: str) -> Optional[str]:
-        """Atomically hand *response_text* to the detached update process; returns the OSError str."""
+    def _hm_write_update_response(response_text: str, run_id: str = "") -> Optional[str]:
+        """Atomically hand *response_text* to the detached update process that asked (``run_id``);
+        returns the OSError str."""
         from gateway.run import _hermes_home
-        response_path = _hermes_home / ".update_response"
+        from hermes_cli.update_gateway_io import gateway_update_home
+        home = gateway_update_home(_hermes_home, run_id) if run_id else _hermes_home
+        response_path = home / ".update_response"
         try:
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(response_text, encoding="utf-8")
             tmp.replace(response_path)
-            (_hermes_home / ".update_prompt.json").unlink(missing_ok=True)
+            (home / ".update_prompt.json").unlink(missing_ok=True)
         except OSError as e:
             return str(e)
         return None
@@ -331,8 +334,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     _cmd_def = _resolve_update_cmd(cmd)
                     _recognized_cmd = _cmd_def.name if _cmd_def else None
             response_text = "" if _recognized_cmd else (event.text or "").strip()
+        run_id = _up_state.persistent.update_prompt_run_id
         if response_text:
-            err = self._hm_write_update_response(response_text)
+            err = self._hm_write_update_response(response_text, run_id)
             if err is not None:
                 logger.warning("Failed to write update response: %s", err)
                 return t("gateway.update.reply_failed", error=err)
@@ -343,7 +347,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # detached update's ``_gateway_prompt`` returns the prompt's default (typically a safe
         # "n" / skip) and exits instead of blocking on stdin until the watcher timeout.
         if _recognized_cmd:
-            err = self._hm_write_update_response("")
+            err = self._hm_write_update_response("", run_id)
             if err is None:
                 logger.info(
                     "Recognized /%s during pending update prompt for %s; "

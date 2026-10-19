@@ -69,8 +69,10 @@ _APPROVE_CHOICE_BY_ARG = {**dict.fromkeys(("always", "permanent", "permanently")
 
 _WINDOWS_UPDATE_HELPER = """
 import os, subprocess, sys
-output_path, exit_code_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
+output_path, exit_code_path, correlation, cmd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
 env = dict(os.environ, PYTHONUNBUFFERED="1")
+if correlation:
+    env["HERMES_UPDATE_CORRELATION_ID"] = correlation
 with open(output_path, "wb") as f:
     rc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).wait(timeout=3600)
 # Temp + replace: the gateway watcher polls the exit code and reads an empty file as failure.
@@ -125,25 +127,28 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     return data
 
 
-def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
+def _spawn_detached_update(hermes_cmd, output_path, exit_code_path, *, run_id: str = "") -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
     setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
     enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
     stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
     this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
-    update must replace it), redirects both outputs to one file and writes the exit code."""
+    update must replace it), redirects both outputs to one file and writes the exit code.
+    ``run_id`` becomes the child's launcher correlation id: its native receipt records it and its
+    IPC files live in that invocation's directory (``hermes_cli.update_gateway_io``)."""
     import shutil
     import subprocess
     if sys.platform == "win32":
         from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
         subprocess.Popen(
-            [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
+            [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path), run_id,
              sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
         return
     hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
+    correlation = f"HERMES_UPDATE_CORRELATION_ID={shlex.quote(run_id)} " if run_id else ""
     update_cmd = (
-        f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
+        f"PYTHONUNBUFFERED=1 {correlation}{hermes_cmd_str} update --gateway"
         f" > {shlex.quote(str(output_path))} 2>&1; "
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
@@ -1313,6 +1318,29 @@ class GatewaySlashCommandsMixin(
         # would publish the DEFAULT profile's diagnostics from another profile's chat.
         return await self._run_in_executor_with_context(_collect_and_upload)
 
+    async def _move_update_report_to_thread(self, src, run_id: str, pending: dict) -> None:
+        """Adapters that report updates in a thread (``update_reports_in_thread``) get one per
+        top-level invocation; a request already in a thread or DM reports where it was made."""
+        if src.thread_id or src.chat_type == "dm":
+            return
+        adapter = self._delivery_adapter_for(src)
+        if adapter is None or not getattr(type(adapter), "update_reports_in_thread", False):
+            return
+        try:
+            thread_id = await adapter.create_handoff_thread(str(src.chat_id), f"/update {run_id[:8]}")
+        except Exception:
+            logger.warning("Update report thread creation failed; reporting in the invoking channel", exc_info=True)
+            return
+        if not thread_id:
+            return
+        thread_id = str(thread_id)
+        from gateway.session_identity import replace_source
+        reply_source = replace_source(
+            src, chat_id=thread_id, thread_id=thread_id, chat_type="thread", parent_chat_id=str(src.chat_id))
+        pending.update(chat_id=thread_id, thread_id=thread_id, chat_type="thread",
+                       session_key=self._session_key_for_source(reply_source))
+        pending.pop("message_id", None)  # the invoking message is not in the thread
+
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
         restart it may trigger; marker files let this or the next gateway process notify the user."""
@@ -1358,23 +1386,33 @@ class GatewaySlashCommandsMixin(
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
-        pending_path = _hermes_home / ".update_pending.json"
-        output_path = _hermes_home / ".update_output.txt"
-        exit_code_path = _hermes_home / ".update_exit_code"
+        import uuid
+        from hermes_cli.update_gateway_io import gateway_update_home
+        run_id = uuid.uuid4().hex
         pending = {
-            "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
+            "run_id": run_id, "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
             "timestamp": datetime.now().isoformat()}
-        # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
-        # requester's own profile bot, not the default profile's adapter for the same platform.
+                # ``transport_profile``: the bot that received the request answers it (a shared bot routed to
+        # another profile included); ``profile`` stays the runtime profile the session runs in.
+        from gateway.session_identity import transport_profile_of
         pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
-                                          ("profile", getattr(src, "profile", None))) if v})
+                                          ("profile", getattr(src, "profile", None)),
+                                          ("transport_profile", transport_profile_of(src))) if v})
+        await self._move_update_report_to_thread(src, run_id, pending)
+        # Each invocation owns its marker files, so a second /update never redirects the first's
+        # report, output, exit code or prompt answers.
+        run_home = gateway_update_home(_hermes_home, run_id)
+        run_home.mkdir(parents=True)
+        pending_path = run_home / ".update_pending.json"
+        output_path = run_home / ".update_output.txt"
+        exit_code_path = run_home / ".update_exit_code"
         _tmp_pending = pending_path.with_suffix(".tmp")
         _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
         try:
-            _spawn_detached_update(hermes_cmd, output_path, exit_code_path)
+            _spawn_detached_update(hermes_cmd, output_path, exit_code_path, run_id=run_id)
         except Exception as e:
             pending_path.unlink(missing_ok=True)
             exit_code_path.unlink(missing_ok=True)

@@ -218,8 +218,12 @@ def _publish_gateway_success(request: dict) -> None:
         return
     try:
         # Temp + rename (stdlib, like _write_json): the gateway watcher polls this file and reads
-        # an empty one as exit 1.
-        marker = Path(request["home"]) / ".update_exit_code"
+        # an empty one as exit 1. The invocation's own directory, as update_gateway_io resolves it:
+        # only a directory the gateway created for this correlation id.
+        home = Path(request["home"])
+        run_id = os.environ.get("HERMES_UPDATE_CORRELATION_ID", "").strip()
+        run_home = home / "logs" / "update_receipts" / "gateway" / run_id
+        marker = (run_home if len(run_id) == 32 and set(run_id) <= set("0123456789abcdef") and run_home.is_dir() else home) / ".update_exit_code"
         temporary = marker.with_name(marker.name + ".tmp")
         temporary.write_text("0", encoding="utf-8")
         temporary.replace(marker)

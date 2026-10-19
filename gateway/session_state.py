@@ -69,6 +69,7 @@ class PersistentState:
 
     approvals: Optional[dict[str, Any]] = None  # {"command": ..., "pattern_key": ...}
     update_prompt_pending: bool = False  # /update prompt awaiting a reply
+    update_prompt_run_id: str = ""  # correlation of that prompt, never another update
     native_image_paths: list[str] = field(default_factory=list)  # consumed one-shot
     # Legacy runner-level pending text (flushed on shutdown); not the adapter-level one.
     pending_command_text: Optional[str] = None

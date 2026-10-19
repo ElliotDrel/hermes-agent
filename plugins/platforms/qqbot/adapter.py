@@ -73,7 +73,7 @@ from .chunked_upload import (
 from .keyboards import (
     ApprovalRequest, InlineKeyboard, InteractionEvent, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
-    parse_update_prompt_button_data)
+    parse_update_prompt_button_data, parse_update_prompt_run_id)
 from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
 
 
@@ -681,8 +681,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _default_interaction_dispatch(self, event: InteractionEvent) -> None:
         """Default interaction callback: ``approve:<session_key>:<decision>`` →
-        tools.approval.resolve_gateway_approval; ``update_prompt:<answer>`` →
-        ``~/.hermes/.update_response``; anything else is ignored at DEBUG."""
+        tools.approval.resolve_gateway_approval; ``update_prompt:<answer>[:<run id>]`` → the asking
+        update's ``.update_response``; anything else is ignored at DEBUG."""
         button_data = event.button_data
         if not button_data:
             return
@@ -717,21 +717,18 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     "[%s] Rejected unauthorized update prompt click (operator=%s)", self._log_tag, event.operator_openid
                 )
                 return
-            self._write_update_response(update_answer, event.operator_openid)
+            self._write_update_response(update_answer, event.operator_openid, parse_update_prompt_run_id(button_data))
             return
 
         logger.debug("[%s] Unrecognised button_data %r from interaction %s", self._log_tag, button_data, event.id)
 
     @staticmethod
-    def _write_update_response(answer: str, operator: str = "") -> None:
-        """Atomically (tmp + rename) write the update-prompt answer to
-        ``.update_response``, polled by the detached ``hermes update --gateway`` watcher."""
+    def _write_update_response(answer: str, operator: str = "", run_id: str = "") -> None:
+        """Atomically (tmp + rename) write the update-prompt answer to the asking invocation's
+        ``.update_response``, polled by the detached ``hermes update --gateway`` process."""
         try:
-            from hermes_constants import get_hermes_home
-            response_path = get_hermes_home() / ".update_response"
-            tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer, encoding="utf-8")
-            tmp.replace(response_path)
+            from hermes_cli.update_gateway_io import write_update_response
+            write_update_response(answer, run_id)
             logger.info("QQ update prompt answered %r by %s", answer, operator or "(unknown)")
         except Exception as exc:
             logger.error("Failed to write update response: %s", exc)
@@ -1495,14 +1492,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Yes/No update-confirmation prompt; button clicks (``update_prompt:y|n``)
-        are written to ``~/.hermes/.update_response`` by the interaction callback."""
-        del session_key, metadata  # present for contract parity only.
+        """Yes/No update-confirmation prompt; button clicks (``update_prompt:y|n[:<run id>]``)
+        are written to the asking update's ``.update_response`` by the interaction callback."""
+        del session_key  # present for contract parity only.
         default_hint = f" (default: {default})" if default else ""
         content = f"☤ **Update Needs Your Input**\n\n{prompt}{default_hint}"
-        return await self.send_with_keyboard(
-            chat_id, content, build_update_prompt_keyboard(), reply_to=self._last_msg_id.get(chat_id)
-        )
+        keyboard = build_update_prompt_keyboard((metadata or {}).get("update_run_id", ""))
+        return await self.send_with_keyboard(chat_id, content, keyboard, reply_to=self._last_msg_id.get(chat_id))
 
     def _build_text_body(self, content: str, reply_to: Optional[str] = None) -> dict[str, Any]:
         msg_seq = self._next_msg_seq(reply_to or "default")

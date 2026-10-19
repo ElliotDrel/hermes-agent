@@ -1832,10 +1832,14 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             prompt_id = next(self._update_prompt_counter)
             card = self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id)
-            return await self._send_interactive_card(
+            result = await self._send_interactive_card(
                 chat_id, card, metadata, "send_update_prompt failed",
                 state_map=self._update_prompt_state, state_id=prompt_id, session_key=session_key,
             )
+            if result.success:
+                # Server-side, like the session: the click answers the invocation that asked.
+                self._update_prompt_state[prompt_id]["run_id"] = (metadata or {}).get("update_run_id", "")
+            return result
         except Exception as exc:
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
@@ -1857,11 +1861,9 @@ class FeishuAdapter(BasePlatformAdapter):
         return _card(title, "green" if yes else "red", t("platform.feishu.update_prompt.answered_by", user=user_name))
 
     @staticmethod
-    def _write_update_prompt_response(answer: str) -> None:
-        response_path = get_hermes_home() / ".update_response"
-        tmp_path = response_path.with_suffix(".tmp")
-        tmp_path.write_text(answer, encoding="utf-8")
-        tmp_path.replace(response_path)
+    def _write_update_prompt_response(answer: str, run_id: str = "") -> None:
+        from hermes_cli.update_gateway_io import write_update_response
+        write_update_response(answer, run_id)
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -2383,7 +2385,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             return
         try:
-            self._write_update_prompt_response(answer)
+            self._write_update_prompt_response(answer, state.get("run_id", ""))
             logger.info(
                 "Feishu update prompt resolved for session %s (answer=%s, user=%s)",
                 state["session_key"], answer, user_name,

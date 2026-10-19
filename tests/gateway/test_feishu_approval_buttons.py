@@ -661,4 +661,24 @@ class TestResolveUpdatePrompt:
         assert not (tmp_path / ".hermes" / ".update_response").exists()
         assert 3 in adapter._update_prompt_state
 
+    @pytest.mark.asyncio
+    async def test_answer_reaches_the_invocation_that_sent_the_card(self, tmp_path, monkeypatch):
+        """The run id rides the server-side prompt state, not the clickable card payload."""
+        from gateway import run
+        monkeypatch.setattr(run, "_hermes_home", tmp_path)
+        run_id = "cd" * 16
+        run_home = tmp_path / "logs" / "update_receipts" / "gateway" / run_id
+        run_home.mkdir(parents=True)
+        adapter = _make_adapter()
+        sent = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="msg_up_009"))
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock, return_value=sent) as send:
+            await adapter.send_update_prompt(chat_id="oc_12345", prompt="Continue?", session_key="sess-up-9",
+                                             metadata={"update_run_id": run_id})
+        card = json.loads(send.call_args[1]["payload"])
+        assert run_id not in json.dumps(card)
+        prompt_id, = adapter._update_prompt_state
 
+        await adapter._resolve_update_prompt(prompt_id, "n", "Alice", open_id="ou_user1", chat_id="oc_12345")
+
+        assert (run_home / ".update_response").read_text() == "n"
+        assert not (tmp_path / ".update_response").exists()

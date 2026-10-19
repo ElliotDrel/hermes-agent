@@ -15,6 +15,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
+from gateway.platforms.base import SendResult
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
@@ -118,6 +119,9 @@ class TestUpdateCommandGatewayFlag:
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
         assert "PYTHONUNBUFFERED" in cmd_string
+        run_home, = (hermes_home / "logs" / "update_receipts" / "gateway").iterdir()
+        assert f"HERMES_UPDATE_CORRELATION_ID={run_home.name} " in cmd_string
+        assert str(run_home / ".update_exit_code") in cmd_string
         assert "rc=$?" in cmd_string
         assert "status=$?" not in cmd_string
 
@@ -142,6 +146,8 @@ class TestWatchUpdateProgress:
         (hermes_home / ".update_output.txt").write_text("→ Fetching updates...\n", encoding="utf-8")
 
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         streamed = asyncio.Event()
@@ -152,6 +158,7 @@ class TestWatchUpdateProgress:
             if "Fetching updates" in text:
                 assert not (hermes_home / ".update_exit_code").exists()
                 streamed.set()
+            return SendResult(success=True)
 
         mock_adapter.send.side_effect = receive
 
@@ -189,6 +196,8 @@ class TestWatchUpdateProgress:
         (hermes_home / ".update_output.txt").write_text("output\n")
 
         mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(success=True)
+        mock_adapter.config.home_channel = None
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         # Write a prompt, then respond and finish
@@ -242,6 +251,8 @@ class TestWatchUpdateProgress:
 
         runner1 = _make_runner()
         adapter1 = AsyncMock()
+        adapter1.send.return_value = SendResult(success=True)
+        adapter1.config.home_channel = None
         runner1.adapters = {Platform.TELEGRAM: adapter1}
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -266,6 +277,8 @@ class TestWatchUpdateProgress:
 
             runner2 = _make_runner()
             adapter2 = AsyncMock()
+            adapter2.send.return_value = SendResult(success=True)
+            adapter2.config.home_channel = None
             runner2.adapters = {Platform.TELEGRAM: adapter2}
 
             async def respond_and_finish():

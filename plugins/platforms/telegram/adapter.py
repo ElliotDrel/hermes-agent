@@ -4190,12 +4190,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard Yes/No prompt for the gateway ``/update`` watcher."""
+        run_id = (metadata or {}).get("update_run_id", "")
+        suffix = f":{run_id}" if run_id else ""  # 48 bytes with an id, inside callback_data's 64
+
         def build():
             default_hint = t("platform.telegram.prompt.default_hint", default=default) if default else ""
             text = self.format_message(f"☤ *{t('platform.telegram.prompt.update_header')}*\n\n{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data="update_prompt:y"),
-                InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data="update_prompt:n")]])
+                InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data="update_prompt:y" + suffix),
+                InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data="update_prompt:n" + suffix)]])
             return text, keyboard, None
         return await self._send_prompt(
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
@@ -4883,19 +4886,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: dict[str, Any]) -> None:
-        """``update_prompt:<y|n>`` — forward the answer to the update process."""
-        answer = data.split(":", 1)[1]  # "y" or "n"
+        """``update_prompt:<y|n>[:<run id>]`` — forward the answer to the update process that asked."""
+        from hermes_cli.update_gateway_io import is_run_id, write_update_response
+        answer, _, run_id = data.split(":", 1)[1].partition(":")
+        if answer not in ("y", "n") or (run_id and not is_run_id(run_id)):
+            return
         if not await self._callback_authorized(query, cb, _unauthorized()):
             return
         await query.answer(text=_toast("platform.telegram.prompt.update_sent", answer=answer))
         word = t("platform.telegram.prompt.affirm_word" if answer == "y" else "platform.telegram.prompt.negate_word")
         await self._edit_md_quiet(query, f"☤ {t('platform.telegram.prompt.update_answered', answer=f'*{word}*')}")
         try:
-            from hermes_constants import get_hermes_home
-            response_path = get_hermes_home() / ".update_response"
-            tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer, encoding="utf-8")
-            tmp.replace(response_path)
+            write_update_response(answer, run_id)
             logger.info("Telegram update prompt answered '%s' by user %s", answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)

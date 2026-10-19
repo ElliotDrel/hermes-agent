@@ -114,8 +114,9 @@ def _publish_gateway_exit_code(code: int) -> None:
     """Temp + rename with the stdlib only (the takeover runs before app imports are safe): the
     gateway watcher polls ``.update_exit_code`` and reads an empty file as exit 1."""
     from hermes_constants import get_hermes_home
+    from hermes_cli.update_gateway_io import gateway_update_home
 
-    marker = get_hermes_home() / ".update_exit_code"
+    marker = gateway_update_home(get_hermes_home()) / ".update_exit_code"
     temporary = marker.with_name(marker.name + ".tmp")
     temporary.write_text(f"{code}\n", encoding="utf-8")
     os.replace(temporary, marker)
