@@ -425,6 +425,8 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
         event._turn_marker_handoff = getattr(adapter, 'gateway_runner', None) is not None
         try:
             response = await adapter._message_handler(event)
+            if footer := getattr(event, "_runtime_footer_line", None):
+                delivery_event._runtime_footer_line = footer
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff

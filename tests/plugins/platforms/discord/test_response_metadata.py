@@ -72,6 +72,25 @@ async def test_native_metadata_send_edit_stream_and_profile_snapshots(tmp_path,m
     result=await GatewayTurnPersistenceMixin._hmwa_deliver_turn_response(holder,event,source,entry,"key",1,{"already_sent":True,"media_already_delivered":True},[],answer,footer,False)
     assert result is None and not sent[-1]["content"] and sent[-1]["embed"].footer.text==footer
 
+    # Native queued observer snapshots its delivery event before the handler runs.
+    # The owned footer must follow this event, never another running turn's attribute.
+    from gateway.session_ingress import dispatch_shared_busy, busy_acceptance, busy_commit
+    from gateway.platforms.event import MessageEvent
+    from tests.waiting import async_wait_until
+    adapter.gateway_runner=None
+    async def queued_handler(queued_event):
+        busy_acceptance.get().set_result(True)
+        busy_commit.get().set_result(None)
+        queued_event._gateway_accepted=True
+        queued_event._runtime_footer_line="queued route only"
+        return "Queued original"
+    adapter._message_handler=queued_handler
+    queued_event=MessageEvent(text="queued",source=source,message_id="44")
+    before=len(sent)
+    await dispatch_shared_busy(adapter,queued_event,"queued-key",durable=True)
+    await async_wait_until(lambda:len(sent)>before,timeout=5,what="queued footer delivery")
+    assert sent[-1]["content"]=="Queued original" and sent[-1]["embed"].footer.text=="queued route only"
+
     # Non-Discord stays on its existing text footer, after hooks and persistence.
     source.platform=Platform.TELEGRAM
     event=SimpleNamespace(source=source)
