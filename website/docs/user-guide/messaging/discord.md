@@ -1001,3 +1001,20 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+### Optional titles for manually created threads
+
+Hermes-created auto-threads keep their normal naming behavior. To also name an
+existing Discord thread from its conversation, opt in per profile:
+
+```yaml
+discord:
+  auto_title_manual_threads: true  # default false
+```
+
+The initial thread name is pinned in existing session routing metadata before title
+generation. The model title is applied only if a fresh Discord fetch still has that
+name. A human rename during generation, retries or gateway restarts therefore wins.
+Failed or unreadable state skips naming. Relay and other platforms retain their
+existing policy. Discord has no atomic rename precondition, so an external edit
+between the fresh read and the edit can still race.

@@ -317,11 +317,37 @@ class GatewayTopicThreadsMixin:
     # ── Discord auto-thread lanes ───────────────────────────────────────────────────────────
 
     def _is_discord_thread_lane(self, source: SessionSource) -> bool:
-        """Return True for an existing Discord thread that can receive a title."""
-        return (
-            source.platform == Platform.DISCORD and source.chat_type == "thread"
-            and bool(source.thread_id)
-        )
+        """Native auto-threads, or explicitly opted-in manual threads with a captured name."""
+        if self._is_discord_auto_thread_lane(source):
+            return True
+        delivery = getattr(self, "_delivery_adapter_for", None)
+        adapter = delivery(source) if callable(delivery) else None
+        capture = getattr(adapter, "manual_thread_title_name", None)
+        return (source.platform == Platform.DISCORD and source.chat_type == "thread" and bool(source.thread_id)
+                and not source.delivered_via_upstream_relay and bool(source.auto_thread_initial_name)
+                and callable(capture) and capture(str(source.thread_id)) is not None)
+
+    def _prepare_discord_manual_title_source(self, source: SessionSource, session_key: str) -> SessionSource:
+        """Pin a manual thread's initial name in the existing routing metadata before the model yields."""
+        if (source.platform != Platform.DISCORD or source.chat_type != "thread" or not source.thread_id
+                or source.auto_thread_created or source.delivered_via_upstream_relay):
+            return source
+        adapter = self._delivery_adapter_for(source)
+        capture = getattr(adapter, "manual_thread_title_name", None)
+        name = capture(str(source.thread_id)) if callable(capture) else None
+        if name is None:
+            return source
+        entry = self.session_store.lookup_by_session_key(session_key)
+        if entry is None:
+            return source
+        key = "discord_manual_thread_title"
+        pinned = entry.metadata.get(key)
+        if not isinstance(pinned, dict) or pinned.get("thread_id") != str(source.thread_id):
+            pinned = {"thread_id": str(source.thread_id), "name": name}
+            if not self.session_store.set_session_metadata(session_key, key, pinned):
+                return source
+        initial = pinned.get("name")
+        return replace_source(source, auto_thread_initial_name=initial) if isinstance(initial, str) else source
 
     def _is_discord_auto_thread_lane(self, source: SessionSource) -> bool:
         """Return True only for Discord threads Hermes just auto-created."""
@@ -459,7 +485,6 @@ class GatewayTopicThreadsMixin:
             {"prefer_connector_created": True, "parent_chat_id": str(source.chat_id) if source.chat_id else None}
             if relay else (
                 {"only_if_current_name": getattr(source, "auto_thread_initial_name", None)}
-                if self._is_discord_auto_thread_lane(source) else {}
             )
         )
         logger.info(

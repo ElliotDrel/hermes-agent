@@ -958,6 +958,9 @@ class GatewayTurnProgressMixin:
                 return
             runner = self._runner
             source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
+            prepare_manual = getattr(runner, "_prepare_discord_manual_title_source", None)
+            if callable(prepare_manual):
+                source = prepare_manual(source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is

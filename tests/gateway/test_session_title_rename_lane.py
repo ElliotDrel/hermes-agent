@@ -143,9 +143,9 @@ def _unreadable(session_id):
     pytest.param(
         _thread_source("thread-2", auto_thread_created=True, auto_thread_initial_name="Other"),
         _thread_source("thread-2", auto_thread_created=True, auto_thread_initial_name="Other"),
-        None, True, id="other-thread",
+        None, False, id="other-thread",
     ),
-    pytest.param(_thread_source(message_id="opening-message"), None, None, True, id="user-created-thread"),
+    pytest.param(_thread_source(message_id="opening-message"), None, None, False, id="user-created-thread"),
     pytest.param(_thread_source(), None, _unreadable, False, id="unreadable-row"),
 ])
 def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_origin, row_origin, get_session, expect_callback):
@@ -156,7 +156,7 @@ def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_ori
     if not expect_callback:  # the row read ran; attach's try/except drops the callback, as on main
         assert not hasattr(agent, "_on_session_title")
         assert scheduled == []
-        assert _UNREADABLE_CALLS == ["sess-1"]
+        assert _UNREADABLE_CALLS == (["sess-1"] if get_session is _unreadable else [])
         return
     # With the broadened thread lane (#127841) an existing native thread earns the semantic
     # rename even when recovery cannot attach auto-thread markers — but never borrowed ones:

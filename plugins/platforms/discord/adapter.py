@@ -5507,6 +5507,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         return None
 
+    def manual_thread_title_name(self, thread_id: str) -> Optional[str]:
+        """Opt-in initial snapshot only; the guarded rename still makes a fresh remote read."""
+        from utils import is_truthy_value
+        if not is_truthy_value(self.config.extra.get("auto_title_manual_threads"), default=False) or self._client is None:
+            return None
+        try:
+            thread = self._client.get_channel(int(thread_id))
+        except (TypeError, ValueError):
+            return None
+        name = getattr(thread, "name", None)
+        return name if isinstance(name, str) and name else None
+
     async def rename_thread(
         self, thread_id: str, name: str, *, only_if_current_name: Optional[str] = None,
     ) -> bool:
@@ -5525,9 +5537,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if utf16_len(cleaned) > 80:
             cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
         try:
-            thread = self._client.get_channel(thread_id_int)
-            if thread is None:
-                thread = await self._client.fetch_channel(thread_id_int)
+            thread = await self._client.fetch_channel(thread_id_int)
         except Exception:
             logger.debug("[%s] Failed to resolve Discord thread %s for rename", self.name, thread_id, exc_info=True)
             return False
@@ -7281,7 +7291,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
-    seeded_extra = {}
+    seeded_extra = {"auto_title_manual_threads": discord_cfg.get("auto_title_manual_threads", False)}
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools
