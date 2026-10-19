@@ -1017,3 +1017,7 @@ name precondition: a moderator's edit between the final preflight read and PATCH
 still race. A timeout, cancellation, server failure or mismatched readback leaves the
 saved title unchanged and reports uncertainty. A 429 retains its retry deadline.
 Other platforms continue to use `/title` with their existing behavior.
+
+Saved title revisions are reconciled automatically in the session database. They
+advance for every title/provenance write, so a newer human rename wins even when
+it restores the same name. No operator migration or history rewrite is needed.

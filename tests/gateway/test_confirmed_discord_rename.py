@@ -88,6 +88,12 @@ async def test_rename_ack_precedes_generation_and_newer_human_title_wins(tmp_pat
         for exact in ["x", "😀" * 100]:
             assert exact in await runner._handle_rename_command(MessageEvent(text="/rename " + exact, source=source))
             assert db.get_session_title("session") == exact
+        db.create_session("other", "discord")
+        db.set_session_title("other", "Taken name")
+        prior = db.get_session_title("session")
+        result = await runner._handle_rename_command(MessageEvent(text="/rename Taken name", source=source))
+        assert "saved" in result.lower() and "kept" in result.lower()
+        assert db.get_session_title("session") == prior
         before = db.get_session_title("session")
         assert "1–100" in await runner._handle_rename_command(MessageEvent(text="/rename " + "x"*101, source=source))
         assert db.get_session_title("session") == before
@@ -153,7 +159,10 @@ async def test_native_confirmed_transport_uses_fresh_reads_and_reports_uncertain
             pass
         def request(self, method, url, **kwargs):
             trace.append((method, kwargs.get("json")))
-            return Response(*responses.pop(0))
+            response = responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return Response(*response)
     monkeypatch.setattr(aiohttp, "ClientSession", Session)
     for name in ["x", "😀" * 100]:
         trace.clear()
@@ -168,6 +177,7 @@ async def test_native_confirmed_transport_uses_fresh_reads_and_reports_uncertain
     assert [step[0] for step in trace] == ["GET"]
     responses[:] = [(200,{"type":11,"name":"Original"}), (503,{})]
     assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "uncertain"
+    responses[:] = [(200,{"type":11,"name":"Original"}), TimeoutError()]
+    assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "uncertain"
     responses[:] = [(200,{"type":11,"name":"Original"}), (429,{"retry_after":45})]
     assert (await adapter.rename_thread_confirmed("123",name="Candidate",expected_name="Original"))["status"] == "rate_limited"
-
