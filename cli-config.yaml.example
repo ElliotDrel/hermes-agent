@@ -1511,7 +1511,7 @@ platform_toolsets:
 #   free_response_auto_thread: false # Free-response channels also auto-thread (default: reply inline)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)
-#   suppress_link_previews: true     # Hide URL preview embeds on bot messages (default: true)
+#   suppress_link_previews: false    # Hide every URL preview card on bot replies (default: false)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 

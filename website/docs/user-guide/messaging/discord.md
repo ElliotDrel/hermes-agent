@@ -375,7 +375,7 @@ discord:
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
-  suppress_link_previews: true    # Hide URL preview embeds on bot messages (default: true)
+  suppress_link_previews: false   # Hide every URL preview card on bot replies (default: false)
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -422,21 +422,26 @@ discord:
 
 #### `discord.suppress_link_previews`
 
-**Type:** boolean — **Default:** `true`
+**Type:** boolean — **Default:** `false`
 
-Discord unfurls URLs in bot messages into preview cards. Streamed answers that
-cite links — documentation lookups, search results, PR links — otherwise end up
-wrapped in unwanted embeds. When enabled (the default), the bot sets Discord's
-`SUPPRESS_EMBEDS` flag on the messages it sends, so no preview card is
-generated. Because the flag is set at send time and the streaming edit path
-never clears it, the suppression holds across the mid-stream edits the bot makes
-while a reply streams in.
+**Descriptive links never unfurl (always on).** Assistant text wraps complete descriptive
+Markdown destinations in Discord's angle-bracket form, `[documentation](<https://example.com/docs>)`,
+so cited links stay clickable without a preview card. This applies to sends, forum posts and
+accumulated stream edits. Bare URLs, URL labels, images, direct media links, escaped syntax and
+code are unchanged, as are incomplete links or code fences until a later complete stream snapshot;
+destinations are never rewritten. Upgrading changes only descriptive links: a reply that cites
+`[docs](https://...)` no longer shows a card, while a bare URL still does.
 
-Set `suppress_link_previews: false` if you *want* preview cards on bot messages.
+**`suppress_link_previews: true` hides every card.** The bot sets Discord's `SUPPRESS_EMBEDS` flag
+on assistant replies, overflow continuations, forum posts and media captions, including bare URLs.
+Hermes-authored notices and interactive prompts are exempt: they carry no model-chosen URLs.
+Streaming edits send content only (no `flags` field), so the send-time flag survives every
+mid-stream edit; an edit that sent `flags` would clear it and Discord would regenerate the card.
+This mirrors Telegram's `disable_link_previews`, which is also opt-in.
 
 ```yaml
 discord:
-  suppress_link_previews: false   # keep URL preview embeds
+  suppress_link_previews: true    # no URL preview cards on assistant replies
 ```
 
 #### `discord.free_response_channels`
@@ -1021,13 +1026,3 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
-
-### Descriptive link previews
-
-Outgoing assistant text wraps complete descriptive Markdown destinations in Discord's
-angle-bracket form: `[documentation](<https://example.com/docs>)`. The label remains
-clickable without expanding into a preview card. This applies to sends and accumulated
-stream edits. Bare URLs, URL labels, images, direct media links, escaped syntax and code
-remain unchanged. Incomplete links or code fences stay unchanged until a later complete
-stream snapshot; destinations are never rewritten. This does not set message-wide embed
-suppression, so a bare media URL can still display its preview.

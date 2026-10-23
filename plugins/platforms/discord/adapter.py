@@ -306,7 +306,7 @@ from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
-from utils import atomic_json_write, env_float
+from utils import atomic_json_write, env_float, is_truthy_value
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
@@ -1331,17 +1331,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
-        # Link-preview suppression. Discord unfurls URLs in bot messages into
-        # preview cards; the dependable lever is the per-message SUPPRESS_EMBEDS
-        # flag, set at send time via ``channel.send(suppress_embeds=...)``. The
-        # streaming edit path uses ``PartialMessage.edit(content=...)``, which
-        # sends no ``flags`` field and so preserves the suppression across every
-        # mid-stream edit (Discord only regenerates the embed when an edit
-        # actively clears the flag). Defaults on; operators who want previews
-        # set ``extra.suppress_link_previews: false``.
-        self._suppress_link_previews: bool = self._coerce_suppress_link_previews(
-            self.config.extra.get("suppress_link_previews", True)
-        )
+        # Opt-in message-wide SUPPRESS_EMBEDS on assistant text (Telegram's disable_link_previews
+        # twin); descriptive links lose previews regardless via format_message. Edit-path contract:
+        # website/docs/user-guide/messaging/discord.md#discordsuppress_link_previews.
+        self._suppress_link_previews: bool = is_truthy_value(self.config.extra.get("suppress_link_previews"), False)
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.
@@ -1355,17 +1348,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._last_overflow_preview: dict[tuple, str] = {}
         self._warned_fail_closed_default = False
 
-    @staticmethod
-    def _coerce_suppress_link_previews(value: Any) -> bool:
-        """Coerce ``extra.suppress_link_previews`` to a bool (default on).
-
-        YAML already yields a real bool, but env/JSON overrides can arrive as
-        strings; treat the usual falsey spellings as off and everything else
-        (including a missing key, which arrives as the ``True`` default) as on.
-        """
-        if isinstance(value, str):
-            return value.strip().lower() not in ("false", "0", "no", "off", "")
-        return bool(value)
+    def _link_preview_kwargs(self) -> dict[str, Any]:
+        """Send kwargs for assistant text and captions; Hermes-authored notices and prompts skip it."""
+        return {"suppress_embeds": True} if self._suppress_link_previews else {}
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -3320,7 +3305,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
-                        suppress_embeds=self._suppress_link_previews,
+                        **self._link_preview_kwargs(),
                     )
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
@@ -3332,7 +3317,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
-                            suppress_embeds=self._suppress_link_previews,
+                            **self._link_preview_kwargs(),
                         )
                     else:
                         raise
@@ -3380,7 +3365,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         thread_name = _derive_forum_thread_name(content)
         starter_content = chunks[0] if chunks else thread_name
         try:
-            thread = await forum_channel.create_thread(name=thread_name, content=starter_content)
+            thread = await forum_channel.create_thread(
+                name=thread_name, content=starter_content, **self._link_preview_kwargs())
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -3389,7 +3375,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(content=chunk, **self._link_preview_kwargs())
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -3413,7 +3399,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 elif files:
                     hint = getattr(files[0], "filename", "") or ""
             thread_name = _derive_forum_thread_name(hint) if hint.strip() else t("platform.discord.forum.default_title")
-        kwargs: dict[str, Any] = {"name": thread_name}
+        kwargs: dict[str, Any] = {"name": thread_name, **self._link_preview_kwargs()}
         if content:
             kwargs["content"] = content
         if file is not None:
@@ -3492,11 +3478,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
                 self._last_overflow_preview.pop(_preview_key, None)
             try:
-                # PartialMessage.edit sends no ``flags`` field, so a link-preview
-                # embed suppressed at send time (see ``suppress_embeds`` on the
-                # send path) stays suppressed across these streaming edits —
-                # Discord only regenerates the embed when an edit clears the
-                # SUPPRESS_EMBEDS flag, which this content-only edit never does.
+                # Content-only on purpose: sending ``flags`` would clear send-time SUPPRESS_EMBEDS
+                # (see the suppress_link_previews docs anchor in __init__).
                 await msg.edit(content=formatted)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
@@ -3575,7 +3558,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 sent = await channel.send(
                     content=chunk,
                     reference=reference,
-                    suppress_embeds=self._suppress_link_previews,
+                    **self._link_preview_kwargs(),
                 )
             except Exception as send_err:
                 # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
@@ -3587,7 +3570,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     sent = await channel.send(
                         content=chunk,
                         reference=None,
-                        suppress_embeds=self._suppress_link_previews,
+                        **self._link_preview_kwargs(),
                     )
                 except Exception as retry_err:
                     logger.warning(

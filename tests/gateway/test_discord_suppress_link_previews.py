@@ -1,18 +1,8 @@
-"""Regression tests for Discord link-preview suppression (issue #91657).
+"""Regression tests for opt-in Discord message-wide link-preview suppression (#91657).
 
-Discord unfurls URLs in bot messages into preview cards.  The dependable lever
-is the per-message ``SUPPRESS_EMBEDS`` flag, set at send time via
-``channel.send(suppress_embeds=...)``.  The adapter exposes this as
-``extra.suppress_link_previews`` (default **on**) so streamed answers that cite
-links (docs lookups, search results, PR links) don't clutter the channel with
-embeds.
-
-The streaming edit path edits through ``PartialMessage.edit(content=...)``,
-which — in the pinned discord.py 2.7.1 — sends no ``flags`` field, so it
-*preserves* a suppression applied at send time (Discord only regenerates the
-embed when an edit actively clears the flag).  These tests pin both halves:
-the send carries the flag per config, and the streaming edit never passes a
-``suppress``/``flags`` keyword that could clear it.
+``extra.suppress_link_previews`` sets ``SUPPRESS_EMBEDS`` on assistant text and captions; the
+edit-path contract it relies on is documented once, under ``discord.suppress_link_previews`` in
+``website/docs/user-guide/messaging/discord.md``.
 """
 
 import sys
@@ -84,21 +74,16 @@ def _wire_channel(adapter, *, original_msg=None):
 
 
 class TestConfig:
-    def test_defaults_on_when_key_absent(self):
-        assert _make_adapter()._suppress_link_previews is True
-
-    def test_explicit_true(self):
-        assert _make_adapter(True)._suppress_link_previews is True
-
-    def test_explicit_false(self):
-        assert _make_adapter(False)._suppress_link_previews is False
-
-    @pytest.mark.parametrize("raw", ["false", "False", "0", "no", "off", ""])
-    def test_string_falsey_spellings_disable(self, raw):
+    @pytest.mark.parametrize("raw", [None, False, "false", "0", "no", "off", ""])
+    def test_absent_null_and_falsey_values_keep_previews(self, raw):
         assert _make_adapter(raw)._suppress_link_previews is False
 
-    @pytest.mark.parametrize("raw", ["true", "yes", "on", "1"])
-    def test_string_truthy_spellings_enable(self, raw):
+    def test_yaml_null_matches_absent_key(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***", extra={"suppress_link_previews": None}))
+        assert adapter._suppress_link_previews is _make_adapter()._suppress_link_previews
+
+    @pytest.mark.parametrize("raw", [True, "true", "yes", "on", "1"])
+    def test_truthy_values_enable(self, raw):
         assert _make_adapter(raw)._suppress_link_previews is True
 
 
@@ -109,8 +94,8 @@ class TestConfig:
 
 class TestSendSuppression:
     @pytest.mark.asyncio
-    async def test_send_suppresses_by_default(self):
-        adapter = _make_adapter()
+    async def test_send_suppresses_when_enabled(self):
+        adapter = _make_adapter(True)
         _, sends = _wire_channel(adapter)
         result = await adapter.send("555", "see https://example.com for docs")
         assert result.success is True
@@ -118,19 +103,19 @@ class TestSendSuppression:
         assert sends[0]["suppress_embeds"] is True
 
     @pytest.mark.asyncio
-    async def test_send_keeps_previews_when_disabled(self):
-        adapter = _make_adapter(False)
-        _, sends = _wire_channel(adapter)
+    async def test_send_keeps_previews_by_default(self):
+        adapter = _make_adapter()
+        channel, _ = _wire_channel(adapter)
         result = await adapter.send("555", "see https://example.com for docs")
         assert result.success is True
-        assert sends[0]["suppress_embeds"] is False
+        assert "suppress_embeds" not in channel.send.await_args.kwargs
 
     @pytest.mark.asyncio
     async def test_overflow_continuations_carry_the_flag(self):
         # A finalized oversized edit splits into a first-chunk edit plus
         # continuation channel.send() calls — those continuations are part of
         # the same streamed reply and must stay suppressed too.
-        adapter = _make_adapter()
+        adapter = _make_adapter(True)
         partial = SimpleNamespace(
             id=42,
             edit=AsyncMock(),
@@ -141,6 +126,26 @@ class TestSendSuppression:
         assert result.success is True
         assert sends, "expected overflow continuations"
         assert all(s["suppress_embeds"] is True for s in sends)
+
+
+    @pytest.mark.asyncio
+    async def test_forum_posts_and_media_captions_carry_the_flag(self, tmp_path, monkeypatch):
+        adapter = _make_adapter(True)
+        thread_channel = SimpleNamespace(id=7, send=AsyncMock(return_value=SimpleNamespace(id=8)))
+        forum = SimpleNamespace(id=6, create_thread=AsyncMock(return_value=SimpleNamespace(thread=thread_channel)))
+        await adapter._send_to_forum(forum, "see https://example.com\n" + "x" * (MAX + 10))
+        assert forum.create_thread.await_args.kwargs["suppress_embeds"] is True
+        assert thread_channel.send.await_args.kwargs["suppress_embeds"] is True
+
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"fake")
+        sent = SimpleNamespace(id=9, attachments=[SimpleNamespace(filename="clip.mp4", url="https://cdn.example/c")])
+        channel = SimpleNamespace(send=AsyncMock(return_value=sent), type=0)
+        adapter._client = SimpleNamespace(get_channel=lambda _cid: channel, fetch_channel=AsyncMock())
+        monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: False)
+        result = await adapter._send_file_attachment("555", str(clip), caption="see https://example.com")
+        assert result.success is True
+        assert channel.send.await_args.kwargs["suppress_embeds"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -156,7 +161,7 @@ class TestEditPreservesSuppression:
         the bit cleared) is exactly what makes Discord regenerate the embed
         mid-stream; a content-only edit leaves the send-time suppression intact.
         """
-        adapter = _make_adapter()
+        adapter = _make_adapter(True)
         edit_calls = []
 
         async def record_edit(**kwargs):

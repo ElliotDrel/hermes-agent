@@ -72,7 +72,7 @@ class DiscordMediaMixin:
                 if self._is_forum_parent(channel):
                     await self._send_to_forum(channel, caption)
                 else:
-                    await channel.send(content=caption)
+                    await channel.send(content=caption, **self._link_preview_kwargs())
         except Exception:
             logger.debug("[%s] Failed to send oversized-file notice for %s", self.name, filename, exc_info=True)
         return SendResult(success=False, error=error)
@@ -111,7 +111,8 @@ class DiscordMediaMixin:
                 channel, content=(caption or "").strip(), files=[discord_file],
             )
             return result
-        msg = await channel.send(content=caption if caption else None, files=[discord_file])
+        msg = await channel.send(
+            content=caption if caption else None, files=[discord_file], **self._link_preview_kwargs())
         attachments = getattr(msg, "attachments", None) or []
         if not attachments:
             # Discord accepted the message but attached nothing: fail loud instead of a silent drop.
@@ -234,7 +235,7 @@ class DiscordMediaMixin:
                         if self._is_forum_parent(channel):
                             await self._send_to_forum(channel, captions[0])
                         else:
-                            await channel.send(content=captions[0])
+                            await channel.send(content=captions[0], **self._link_preview_kwargs())
                     if skip_notices and shown and not self._is_forum_parent(channel):
                         try:
                             await channel.send(content="\n".join(skip_notices))
@@ -257,7 +258,7 @@ class DiscordMediaMixin:
                         channel, content=(content or "").strip(), files=files,
                     )
                 else:
-                    await channel.send(content=content, files=files)
+                    await channel.send(content=content, files=files, **self._link_preview_kwargs())
                 delivered = True
             except Exception as e:
                 logger.warning(
@@ -398,7 +399,8 @@ class DiscordMediaMixin:
                 file = discord.File(io.BytesIO(data), filename=filename_for(headers))
                 if self._is_forum_parent(channel):
                     return await self._forum_post_file(channel, content=(caption or "").strip(), file=file)
-                msg = await channel.send(content=caption if caption else None, file=file)
+                msg = await channel.send(
+                    content=caption if caption else None, file=file, **self._link_preview_kwargs())
                 return SendResult(success=True, message_id=str(msg.id))
         except ImportError:
             logger.warning("[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp", self.name, exc_info=True)
