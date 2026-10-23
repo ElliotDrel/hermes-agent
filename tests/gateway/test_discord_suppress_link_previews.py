@@ -1,4 +1,4 @@
-"""Regression tests for opt-in Discord message-wide link-preview suppression (#91657).
+"""Regression tests for default-on Discord message-wide link-preview suppression (#91657).
 
 ``extra.suppress_link_previews`` sets ``SUPPRESS_EMBEDS`` on assistant text and captions; the
 edit-path contract it relies on is documented once, under ``discord.suppress_link_previews`` in
@@ -74,17 +74,17 @@ def _wire_channel(adapter, *, original_msg=None):
 
 
 class TestConfig:
-    @pytest.mark.parametrize("raw", [None, False, "false", "0", "no", "off", ""])
-    def test_absent_null_and_falsey_values_keep_previews(self, raw):
-        assert _make_adapter(raw)._suppress_link_previews is False
-
-    def test_yaml_null_matches_absent_key(self):
-        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***", extra={"suppress_link_previews": None}))
-        assert adapter._suppress_link_previews is _make_adapter()._suppress_link_previews
-
-    @pytest.mark.parametrize("raw", [True, "true", "yes", "on", "1"])
-    def test_truthy_values_enable(self, raw):
+    @pytest.mark.parametrize("raw", [None, True, "true", "yes", "on", "1"])
+    def test_absent_null_and_truthy_values_suppress(self, raw):
         assert _make_adapter(raw)._suppress_link_previews is True
+
+    def test_yaml_null_keeps_the_default(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***", extra={"suppress_link_previews": None}))
+        assert adapter._suppress_link_previews is True
+
+    @pytest.mark.parametrize("raw", [False, "false", "0", "no", "off", ""])
+    def test_falsey_values_keep_previews(self, raw):
+        assert _make_adapter(raw)._suppress_link_previews is False
 
 
 # --------------------------------------------------------------------------- #
@@ -94,8 +94,8 @@ class TestConfig:
 
 class TestSendSuppression:
     @pytest.mark.asyncio
-    async def test_send_suppresses_when_enabled(self):
-        adapter = _make_adapter(True)
+    async def test_send_suppresses_by_default(self):
+        adapter = _make_adapter()
         _, sends = _wire_channel(adapter)
         result = await adapter.send("555", "see https://example.com for docs")
         assert result.success is True
@@ -103,8 +103,8 @@ class TestSendSuppression:
         assert sends[0]["suppress_embeds"] is True
 
     @pytest.mark.asyncio
-    async def test_send_keeps_previews_by_default(self):
-        adapter = _make_adapter()
+    async def test_send_keeps_previews_when_disabled(self):
+        adapter = _make_adapter(False)
         channel, _ = _wire_channel(adapter)
         result = await adapter.send("555", "see https://example.com for docs")
         assert result.success is True
@@ -146,6 +146,16 @@ class TestSendSuppression:
         result = await adapter._send_file_attachment("555", str(clip), caption="see https://example.com")
         assert result.success is True
         assert channel.send.await_args.kwargs["suppress_embeds"] is True
+
+    @pytest.mark.asyncio
+    async def test_media_url_fallback_keeps_its_preview(self):
+        # The base fallback posts the media URL as text; its preview card IS the media.
+        adapter = _make_adapter()
+        channel, sends = _wire_channel(adapter)
+        result = await adapter.send_image("555", "http://127.0.0.1/cat.png", caption="cat")
+        assert result.success is True
+        assert sends[-1]["content"].endswith("http://127.0.0.1/cat.png")
+        assert sends[-1]["suppress_embeds"] is False
 
 
 # --------------------------------------------------------------------------- #

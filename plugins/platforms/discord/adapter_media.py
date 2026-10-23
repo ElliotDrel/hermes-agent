@@ -374,14 +374,18 @@ class DiscordMediaMixin:
         filename_for, fallback, metadata: Optional[dict], error_metadata: Optional[dict],
     ) -> SendResult:
         """Download ``url`` and post it as a native attachment (Discord renders those inline).
-        ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
+        ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure),
+        which relies on Discord's preview to show the media, so it keeps link previews."""
         from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, is_safe_url
+
+        def url_fallback(md: Optional[dict]):
+            return fallback({**(md or {}), "keep_link_previews": True})
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
         if not is_safe_url(url):
             logger.warning("[%s] Blocked unsafe %s URL during Discord send_%s", self.name, kind, kind)
-            return await fallback(metadata)
+            return await url_fallback(metadata)
         try:
             import aiohttp
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
@@ -404,10 +408,10 @@ class DiscordMediaMixin:
                 return SendResult(success=True, message_id=str(msg.id))
         except ImportError:
             logger.warning("[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp", self.name, exc_info=True)
-            return await fallback(error_metadata)
+            return await url_fallback(error_metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send %s attachment, falling back to URL: %s", self.name, kind, e, exc_info=True)
-            return await fallback(error_metadata)
+            return await url_fallback(error_metadata)
 
 
     async def send_image(

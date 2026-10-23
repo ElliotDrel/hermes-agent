@@ -1331,10 +1331,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
-        # Opt-in message-wide SUPPRESS_EMBEDS on assistant text (Telegram's disable_link_previews
-        # twin); descriptive links lose previews regardless via format_message. Edit-path contract:
-        # website/docs/user-guide/messaging/discord.md#discordsuppress_link_previews.
-        self._suppress_link_previews: bool = is_truthy_value(self.config.extra.get("suppress_link_previews"), False)
+        # Message-wide SUPPRESS_EMBEDS on assistant text, default on; ``false`` keeps previews.
+        # Edit-path contract and exemptions: website/docs/user-guide/messaging/discord.md
+        # (#discordsuppress_link_previews).
+        self._suppress_link_previews: bool = is_truthy_value(self.config.extra.get("suppress_link_previews"), True)
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.
@@ -1348,9 +1348,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._last_overflow_preview: dict[tuple, str] = {}
         self._warned_fail_closed_default = False
 
-    def _link_preview_kwargs(self) -> dict[str, Any]:
-        """Send kwargs for assistant text and captions; Hermes-authored notices and prompts skip it."""
-        return {"suppress_embeds": True} if self._suppress_link_previews else {}
+    def _link_preview_kwargs(self, metadata: Optional[dict] = None) -> dict[str, Any]:
+        """Send kwargs for assistant text and captions. A media URL fallback sets
+        ``keep_link_previews`` because the preview is the media; notices and prompts never call this."""
+        if not self._suppress_link_previews or (metadata or {}).get("keep_link_previews"):
+            return {}
+        return {"suppress_embeds": True}
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -3288,7 +3291,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, content, metadata)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
             chunks = self._cap_split_chunks(
@@ -3305,7 +3308,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
-                        **self._link_preview_kwargs(),
+                        **self._link_preview_kwargs(metadata),
                     )
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
@@ -3317,7 +3320,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
-                            **self._link_preview_kwargs(),
+                            **self._link_preview_kwargs(metadata),
                         )
                     else:
                         raise
@@ -3357,7 +3360,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
         return thread_channel, thread_id, starter_msg, message_id
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(self, forum_channel: Any, content: str, metadata: Optional[dict] = None) -> SendResult:
         """Create a forum thread post with the message as starter (forum channels reject direct
         sends; name from the first line). Chunk failures land in ``raw_response['warnings']``."""
         formatted = self.format_message(content)
@@ -3366,7 +3369,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         starter_content = chunks[0] if chunks else thread_name
         try:
             thread = await forum_channel.create_thread(
-                name=thread_name, content=starter_content, **self._link_preview_kwargs())
+                name=thread_name, content=starter_content, **self._link_preview_kwargs(metadata))
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -3375,7 +3378,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk, **self._link_preview_kwargs())
+                msg = await thread_channel.send(content=chunk, **self._link_preview_kwargs(metadata))
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"

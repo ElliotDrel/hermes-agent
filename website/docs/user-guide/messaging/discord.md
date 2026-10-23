@@ -375,7 +375,7 @@ discord:
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
-  suppress_link_previews: false   # Hide every URL preview card on bot replies (default: false)
+  suppress_link_previews: true    # Hide URL preview cards on bot replies (default: true)
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -422,26 +422,37 @@ discord:
 
 #### `discord.suppress_link_previews`
 
-**Type:** boolean — **Default:** `false`
+**Type:** boolean — **Default:** `true`
 
-**Descriptive links never unfurl (always on).** Assistant text wraps complete descriptive
+:::note Behavior change on upgrade
+With the default, assistant replies no longer show URL preview cards, including for bare URLs.
+Set `suppress_link_previews: false` to keep them.
+:::
+
+**`true` (default; also when the key is present but empty).** The bot sets Discord's
+`SUPPRESS_EMBEDS` flag on assistant replies, overflow continuations, forum posts and media
+captions. Attachments still display; only link cards are hidden. Streaming edits send content
+only (no `flags` field), so the send-time flag survives every mid-stream edit; an edit that sent
+`flags` would clear it and Discord would regenerate the card. Exceptions:
+
+- When a native image or GIF upload fails, Hermes falls back to posting the media URL as text.
+  That message keeps its preview, because the preview is the media.
+- Hermes's own notices (oversized-upload warnings, thread seeds, voice notices) and interactive
+  prompts (approvals, clarify) are sent unchanged. Status lines that travel through the normal
+  reply path are suppressed like any reply.
+
+**`false`.** No flag is set and bare URLs unfurl as before.
+
+**Descriptive links never unfurl (either setting).** Assistant text wraps complete descriptive
 Markdown destinations in Discord's angle-bracket form, `[documentation](<https://example.com/docs>)`,
-so cited links stay clickable without a preview card. This applies to sends, forum posts and
-accumulated stream edits. Bare URLs, URL labels, images, direct media links, escaped syntax and
-code are unchanged, as are incomplete links or code fences until a later complete stream snapshot;
-destinations are never rewritten. Upgrading changes only descriptive links: a reply that cites
-`[docs](https://...)` no longer shows a card, while a bare URL still does.
-
-**`suppress_link_previews: true` hides every card.** The bot sets Discord's `SUPPRESS_EMBEDS` flag
-on assistant replies, overflow continuations, forum posts and media captions, including bare URLs.
-Hermes-authored notices and interactive prompts are exempt: they carry no model-chosen URLs.
-Streaming edits send content only (no `flags` field), so the send-time flag survives every
-mid-stream edit; an edit that sent `flags` would clear it and Discord would regenerate the card.
-This mirrors Telegram's `disable_link_previews`, which is also opt-in.
+so cited links stay clickable without a card. This applies to sends, forum posts and accumulated
+stream edits. Bare URLs, URL labels, images, direct media links, escaped syntax and code are
+unchanged, as are incomplete links or code fences until a later complete stream snapshot;
+destinations are never rewritten.
 
 ```yaml
 discord:
-  suppress_link_previews: true    # no URL preview cards on assistant replies
+  suppress_link_previews: false   # keep bare-URL preview cards
 ```
 
 #### `discord.free_response_channels`
