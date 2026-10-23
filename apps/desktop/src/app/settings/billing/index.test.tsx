@@ -1,8 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
+import { $freeTierSignIn } from '@/store/free-tier-sign-in'
 
 import { formatMoney } from './billing-amounts'
 import {
@@ -29,7 +32,8 @@ const apiMocks = vi.hoisted(() => ({
   resumeSubscription: vi.fn(),
   scheduleSubscriptionChange: vi.fn(),
   stepUp: vi.fn(),
-  updateAutoReload: vi.fn()
+  updateAutoReload: vi.fn(),
+  updateKeepGoingOnCredits: vi.fn()
 }))
 
 vi.mock('./api', () => ({
@@ -44,7 +48,8 @@ vi.mock('./api', () => ({
     resumeSubscription: apiMocks.resumeSubscription,
     scheduleSubscriptionChange: apiMocks.scheduleSubscriptionChange,
     stepUp: apiMocks.stepUp,
-    updateAutoReload: apiMocks.updateAutoReload
+    updateAutoReload: apiMocks.updateAutoReload,
+    updateKeepGoingOnCredits: apiMocks.updateKeepGoingOnCredits
   })
 }))
 
@@ -79,6 +84,51 @@ afterEach(() => {
 })
 
 describe('BillingSettings', () => {
+  it('changes billing shell language without losing the credit amount or issuing a charge', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
+    apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+    let language!: I18nContextValue
+
+    function Surface() {
+      language = useI18n()
+
+      return <BillingSettings />
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <MemoryRouter>
+        <I18nProvider configClient={null} initialLocale="zh">
+          <QueryClientProvider client={client}>
+            <Surface />
+          </QueryClientProvider>
+        </I18nProvider>
+      </MemoryRouter>
+    )
+    await screen.findByText('支付与额度')
+    expect(screen.getByText('余额')).toBeTruthy()
+    const input = screen.getByRole('spinbutton', { name: '自定义充值金额' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '37' } })
+    await act(() => language.setLocale('zh-hant'))
+    expect(screen.getByText('支付與額度')).toBeTruthy()
+    expect(screen.getByText('餘額')).toBeTruthy()
+    expect((screen.getByRole('spinbutton', { name: '自訂儲值金額' }) as HTMLInputElement).value).toBe('37')
+    expect(apiMocks.charge).not.toHaveBeenCalled()
+    apiMocks.charge.mockResolvedValue({
+      ok: false,
+      refusal: { kind: 'stripe_unavailable', message: '', retryAfter: 120 },
+      idempotencyKey: 'fixture-charge'
+    })
+    fireEvent.click(screen.getByRole('button', { name: '購買' }))
+    await screen.findByText(/Stripe 遇到問題/)
+    await act(() => language.setLocale('zh'))
+    expect(screen.getByText(/Stripe 遇到问题/)).toBeTruthy()
+    expect(apiMocks.charge).toHaveBeenCalledTimes(1)
+    expect(apiMocks.charge).toHaveBeenCalledWith('37', undefined)
+    expect(screen.getAllByText(postTrainSubscriptionState.current!.tier_name!).length).toBeGreaterThan(0)
+    client.clear()
+  })
+
   it('renders the post-train payload with enabled buy controls and card provenance', async () => {
     apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
     apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
@@ -156,6 +206,25 @@ describe('BillingSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
+  })
+
+  it('shows "Keep going on credits" only on window plans and flips it', async () => {
+    renderBilling()
+    await screen.findByRole('button', { name: 'Manage' })
+    expect(screen.queryByRole('switch', { name: 'Keep going on credits' })).toBeNull()
+    cleanup()
+
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling({ ...todayBillingState, keep_going_on_credits: false }))
+    apiMocks.updateKeepGoingOnCredits.mockResolvedValue({ data: { ok: true }, ok: true })
+    const client = renderBilling()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+
+    const toggle = await screen.findByRole('switch', { name: 'Keep going on credits' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(apiMocks.updateKeepGoingOnCredits).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'state'] }))
   })
 
   it('renders the enabled auto-refill row without crashing when the card is null', async () => {
@@ -548,13 +617,18 @@ describe('BillingSettings', () => {
     )
   })
 
-  it('renders logged-out as a connect card without normal account rows', async () => {
+  it('renders logged-out as a connect card whose sign-in opens the shared dialog', async () => {
     apiMocks.fetchBillingState.mockResolvedValue(okBilling(loggedOutBillingState))
     apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(loggedOutSubscriptionState))
+    $freeTierSignIn.set({ status: 'closed' })
 
     renderBilling()
 
     expect(await screen.findByText('Connect your Nous account')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect($freeTierSignIn.get()).toEqual({ status: 'requested' })
+    expect(apiMocks.openExternal).not.toHaveBeenCalled()
+    $freeTierSignIn.set({ status: 'closed' })
     expect(screen.queryByText('Payment method')).toBeNull()
     expect(screen.queryByText('Usage')).toBeNull()
   })
