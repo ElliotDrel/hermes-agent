@@ -109,6 +109,7 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_MAX_RATE_LIMIT_WAIT_SECONDS = 30.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
@@ -1513,6 +1514,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
                 allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
+                max_ratelimit_timeout=_DISCORD_MAX_RATE_LIMIT_WAIT_SECONDS,
                 **proxy_kwargs_for_bot(proxy_url),
             )
             # Fresh connection, fresh dispatch-side silence window: the previous client's last
@@ -5555,8 +5557,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 if self._is_discord_rate_limit(direct_error):
                     retry_after = self._extract_discord_retry_after(direct_error)
                     logger.warning(
-                        "[%s] Discord rate-limited auto-thread creation; retry after %ss",
-                        self.name, retry_after,
+                        "[%s] Discord rate-limited auto-thread creation; retry after %s",
+                        self.name, f"{retry_after:.2f}s" if retry_after is not None else "unknown delay",
                     )
                     raise _AutoThreadRateLimited(retry_after) from direct_error
                 if not self._thread_creation_definitely_refused(direct_error):
@@ -5574,8 +5576,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                                 await seed_msg.delete()
                         retry_after = self._extract_discord_retry_after(fallback_error)
                         logger.warning(
-                            "[%s] Discord rate-limited fallback auto-thread creation; retry after %ss",
-                            self.name, retry_after,
+                            "[%s] Discord rate-limited fallback auto-thread creation; retry after %s",
+                            self.name, f"{retry_after:.2f}s" if retry_after is not None else "unknown delay",
                         )
                         raise _AutoThreadRateLimited(retry_after) from fallback_error
                     if not self._thread_creation_definitely_refused(fallback_error):
