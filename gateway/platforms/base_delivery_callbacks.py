@@ -108,4 +108,3 @@ class DeliveryCallbacksMixin:
             return None
         self._post_delivery_callbacks.pop(session_key, None)
         return callback if callable(callback) else None
-
