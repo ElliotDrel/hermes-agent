@@ -611,14 +611,10 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 def _usage_windows(
     source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
-    label_fn: Optional[Callable[[dict, str], str]] = None,
     model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
-
-    ``label_fn`` can customize labels from each provider window. ``model_scoped`` keys
-    describe limits scoped to a model family, not the whole account.
-    """
+    ``model_scoped`` keys build windows that cap only a model family, never the account."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
@@ -629,9 +625,7 @@ def _usage_windows(
         if fraction and used <= 1:
             used *= 100
         windows.append(AccountUsageWindow(
-            label=label_fn(window, label) if label_fn else label,
-            used_percent=used,
-            reset_at=_parse_dt(window.get(reset_key)),
+            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
             scope="model" if key in model_scoped else "account",
         ))
     return windows
@@ -854,8 +848,8 @@ def _fetch_anthropic_account_usage(
 ) -> Optional[AccountUsageSnapshot]:
     # An explicit api_key (live agent / per-credential pool read) must not be shadowed by
     # the ambient OAuth singleton: fetch_account_usage(base_url, api_key) promises to
-    # report the credential that owns the request, not whichever account OAuth last
-    # activated in this process. Fall back only when no explicit credential was supplied.
+    # report THAT credential's usage. An API key answers the OAuth usage endpoint with
+    # 401, so only an OAuth-shaped token reaches the fetch.
     explicit = str(api_key or "").strip()
     token = explicit or (resolve_anthropic_token() or "").strip()
     if not token:
