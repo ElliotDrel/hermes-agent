@@ -1331,10 +1331,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
-        # Message-wide SUPPRESS_EMBEDS on assistant text, default on; ``false`` keeps previews.
+        # Message-wide SUPPRESS_EMBEDS on assistant text, opt-in (default off keeps bare-URL previews).
         # Edit-path contract and exemptions: website/docs/user-guide/messaging/discord.md
         # (#discordsuppress_link_previews).
-        self._suppress_link_previews: bool = is_truthy_value(self.config.extra.get("suppress_link_previews"), True)
+        self._suppress_link_previews: bool = is_truthy_value(self.config.extra.get("suppress_link_previews"), False)
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.
@@ -1350,7 +1350,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     def _link_preview_kwargs(self, metadata: Optional[dict] = None) -> dict[str, Any]:
         """Send kwargs for assistant text and captions. A media URL fallback sets
-        ``keep_link_previews`` because the preview is the media; notices and prompts never call this."""
+        ``keep_link_previews`` because the preview is the media; thread seeds, voice notices and
+        interactive prompts never call this."""
         if not self._suppress_link_previews or (metadata or {}).get("keep_link_previews"):
             return {}
         return {"suppress_embeds": True}
