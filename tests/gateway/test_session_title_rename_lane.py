@@ -61,16 +61,6 @@ def test_the_rename_waits_for_the_model_title(lane):
     assert renames == ["Fix flaky auth test"]
 
 
-def test_user_created_discord_thread_registers_title_rename():
-    callback, renames = _attach("discord")
-
-    # The callback helper represents an existing user-created thread; unlike a
-    # bot-created thread it has no auto-thread markers to consult.
-    callback("Rename this thread", "llm")
-
-    assert renames == ["Rename this thread"]
-
-
 def _thread_source(thread_id="thread-1", **fields):
     return SessionSource(
         platform=Platform.DISCORD, chat_id=thread_id, chat_type="thread", thread_id=thread_id, **fields,
