@@ -189,3 +189,29 @@ def test_refresh_failure_preserves_last_good_snapshot(monkeypatch):
     assert usage._CACHE[key] == (500.0, stale)
     assert key not in usage._REFRESHING
     _reset_cache()
+
+
+def test_cache_keeps_case_sensitive_endpoint_snapshots_separate(monkeypatch):
+    _reset_cache()
+    endpoints = (
+        "https://example.invalid/TenantA?account=A",
+        "https://example.invalid/tenanta?account=A",
+        "https://example.invalid/TenantA?account=a",
+    )
+    snapshots = {endpoint: object() for endpoint in endpoints}
+    monkeypatch.setattr(usage.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(usage, "_start_refresh", usage._refresh)
+    monkeypatch.setattr(
+        usage, "fetch_account_usage",
+        lambda _provider, *, base_url, api_key: snapshots[base_url],
+    )
+    try:
+        for endpoint, snapshot in snapshots.items():
+            usage.get_cached(
+                "custom", base_url=endpoint, api_key="same-token", hermes_home="/profiles/a"
+            )
+            assert usage.get_cached(
+                "custom", base_url=endpoint, api_key="same-token", hermes_home="/profiles/a"
+            ) is snapshot
+    finally:
+        _reset_cache()
