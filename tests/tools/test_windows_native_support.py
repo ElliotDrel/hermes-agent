@@ -683,9 +683,11 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
 
 class TestCronSchedulerBashResolution:
-    """cron.scheduler_script must resolve bash via PATH (Git Bash on Windows) and,
-    when no bash exists, return an actionable error instead of a [WinError 2] crash."""
+    """On POSIX, cron.scheduler_script resolves bash via PATH and, when no bash exists, returns
+    an actionable error instead of crashing. Windows goes through the canonical ``_find_bash``
+    instead (a bare PATH lookup finds the WSL stub there): tests/cron/test_cron_script.py."""
 
+    @pytest.mark.platforms("posix")
     def test_sh_script_uses_bash_found_on_path(self, tmp_path, monkeypatch):
         from cron import scheduler_script
 
@@ -700,6 +702,7 @@ class TestCronSchedulerBashResolution:
         assert error is None
         assert argv == [found, str(script)]
 
+    @pytest.mark.platforms("posix")
     def test_missing_bash_returns_actionable_error(self, tmp_path, monkeypatch):
         from cron import scheduler_script
 

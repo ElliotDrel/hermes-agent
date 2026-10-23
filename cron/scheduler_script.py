@@ -366,8 +366,8 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     return path, None
 
 
-def _resolve_script_bash() -> tuple[Optional[str], Optional[str]]:
-    """``(bash, error)`` for a ``.sh``/``.bash`` job script.
+def _resolve_script_bash(deadline: Optional[float] = None) -> tuple[Optional[str], Optional[str]]:
+    """``(bash, error)`` for a ``.sh``/``.bash`` job script; ``deadline`` bounds the Windows probes.
 
     On Windows a bare ``shutil.which("bash")`` is wrong: the only Git directory on the native
     PATH is ``Git\\cmd``, which ships ``git.exe`` and no ``bash.exe``, so the lookup resolves to
@@ -375,9 +375,10 @@ def _resolve_script_bash() -> tuple[Optional[str], Optional[str]]:
     WSL's *default* distro; when the default is a minimal one (``docker-desktop``) there is no
     ``/bin/bash`` and the job dies with ``WSL ... execvpe(/bin/bash) failed: No such file or
     directory`` even though Git Bash is installed and healthy. ``_find_bash`` is the canonical
-    resolver (``HERMES_GIT_BASH_PATH`` → portable/known Git installs → PATH, skipping the
-    System32/WindowsApps stubs and validating that the candidate can actually start) — the same
-    fix ``gateway/platforms/webhook_filters.py`` took for #116818. POSIX keeps the previous
+    resolver (``pm.shell.bash``: the store's bash, ``HERMES_GIT_BASH_PATH``, known Git installs,
+    then PATH minus the System32/WindowsApps stubs; on Windows it returns only a candidate whose
+    start probe succeeded, else raises with its own remedy) — the same fix
+    ``gateway/platforms/webhook_filters.py`` took for #116818. POSIX keeps the previous
     ``which`` / ``/bin/bash`` contract unchanged.
     """
     if sys.platform == "win32":
@@ -385,7 +386,7 @@ def _resolve_script_bash() -> tuple[Optional[str], Optional[str]]:
         # (agent/shell_hooks.py, agent/skill_preprocessing.py, hermes_constants.py).
         from tools.environments.local import _find_bash
         try:
-            return _find_bash(), None
+            return _find_bash(deadline), None
         except RuntimeError as exc:  # no usable Git Bash — report it, never crash the tick
             return None, str(exc)
     return (
@@ -426,7 +427,7 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
 
 
 def _script_argv(
-    path: Path, interpreter: Optional[str] = None,
+    path: Path, interpreter: Optional[str] = None, deadline: Optional[float] = None,
 ) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
@@ -434,10 +435,12 @@ def _script_argv(
     / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
     may raise; callers run this inside their ``try``."""
     if path.suffix.lower() in {".sh", ".bash"}:
-        _bash, error = _resolve_script_bash()
+        _bash, error = _resolve_script_bash(deadline)
         if _bash is None:
+            # The resolver's own remedy is specific; generic install advice would contradict it.
             return None, {}, (
-                f"Cannot run .sh/.bash script {path.name!r}: {error or 'bash not found on PATH'}. "
+                f"Cannot run .sh/.bash script {path.name!r}: {error}" if error else
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
@@ -475,8 +478,12 @@ def _run_job_script(
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
+    # One budget for resolution and the run: probing broken Git Bash installs holds the tick too.
+    deadline = time.monotonic() + script_timeout
     try:
-        argv, env_overlay, err = _script_argv(path, interpreter)
+        argv, env_overlay, err = _script_argv(path, interpreter, deadline)
+        if time.monotonic() >= deadline:
+            return False, f"Script timed out after {script_timeout}s resolving its interpreter: {path}"
         if argv is None:
             return False, err
         from tools.environments.local import build_subprocess_env
@@ -514,7 +521,6 @@ def _run_job_script(
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=workdir or str(path.parent), env=env, **popen_kwargs)
-        deadline = time.monotonic() + script_timeout
         while True:
             # Tree-kill on cancel AND timeout: killpg misses setsid grandchildren (watchdogs,
             # backgrounded shell jobs); kill_process_tree snapshots descendants BEFORE signalling.

@@ -277,7 +277,7 @@ class TestRunJobScript:
 
         git_bash = r"C:\Program Files\Git\bin\bash.exe"
         monkeypatch.setattr("shutil.which", lambda name: r"C:\Windows\System32\bash.exe")
-        monkeypatch.setattr(local_env, "_find_bash", lambda: git_bash)
+        monkeypatch.setattr(local_env, "_find_bash", lambda deadline=None: git_bash)
         script = tmp_path / "job.sh"
         script.write_text("echo hi\n", encoding="utf-8")
 
@@ -292,7 +292,7 @@ class TestRunJobScript:
         from cron.scheduler_script import _script_argv
         from tools.environments import local as local_env
 
-        def _no_bash():
+        def _no_bash(deadline=None):
             raise RuntimeError(
                 "No shell found. Hermes needs bash (Git for Windows on Windows). "
                 "Run `hermes pm install` or reinstall the bundle."
@@ -306,6 +306,43 @@ class TestRunJobScript:
 
         assert argv is None
         assert err and "No shell found" in err
+        # The resolver's remedy stands alone; generic install advice after it would contradict it.
+        assert "install Git for Windows" not in err
+
+    @pytest.mark.platforms("windows")
+    def test_bash_probes_share_the_script_timeout(self, cron_env, monkeypatch):
+        """Probing broken Git Bash installs runs inside the configured script budget: each probe
+        gets only the remaining time, probing stops when it is spent, and the job is never
+        launched afterwards (the tick lock is held for the whole resolution)."""
+        import time
+
+        import cron.scheduler_script as sched_script
+        from pm import shell
+
+        clock = [1000.0]
+        probes = []
+
+        def hung_probe(candidate, timeout=5.0):
+            probes.append(timeout)
+            clock[0] += timeout  # a broken bash.exe that never answers
+            return False
+
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(sched_script, "_get_script_timeout", lambda: 7)
+        monkeypatch.setattr(shell, "_staged_bash", lambda: None)
+        monkeypatch.setattr(shell, "windows_bash_candidates",
+                            lambda on_path, env: [rf"C:\Git{i}\bin\bash.exe" for i in range(4)])
+        monkeypatch.setattr(shell.os.path, "isfile", lambda p: True)
+        monkeypatch.setattr(shell, "_bash_starts", hung_probe)
+        launched = []
+        monkeypatch.setattr(sched_script.subprocess, "Popen", lambda *a, **kw: launched.append(a))
+        (cron_env / "scripts" / "job.sh").write_text("echo hi\n", encoding="utf-8")
+
+        ok, out = sched_script._run_job_script("job.sh")
+
+        assert sum(probes) <= 7 and len(probes) < 4
+        assert not ok and "timed out" in out
+        assert not launched
 
     def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
         """The bootstrap must process .pth files — the whole reason the
