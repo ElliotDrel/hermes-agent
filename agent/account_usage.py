@@ -6,8 +6,8 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any, Callable, Optional
+from urllib.parse import urlparse
 
 import httpx
 
