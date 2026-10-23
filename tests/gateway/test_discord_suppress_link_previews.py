@@ -35,7 +35,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 MAX = DiscordAdapter.MAX_MESSAGE_LENGTH  # 2000
 
@@ -151,7 +151,7 @@ class TestSendSuppression:
     async def test_media_url_fallback_keeps_its_preview(self):
         # The base fallback posts the media URL as text; its preview card IS the media.
         adapter = _make_adapter()
-        channel, sends = _wire_channel(adapter)
+        _channel, sends = _wire_channel(adapter)
         result = await adapter.send_image("555", "http://127.0.0.1/cat.png", caption="cat")
         assert result.success is True
         assert sends[-1]["content"].endswith("http://127.0.0.1/cat.png")
