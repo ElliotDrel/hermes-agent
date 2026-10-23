@@ -1331,6 +1331,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Link-preview suppression. Discord unfurls URLs in bot messages into
+        # preview cards; the dependable lever is the per-message SUPPRESS_EMBEDS
+        # flag, set at send time via ``channel.send(suppress_embeds=...)``. The
+        # streaming edit path uses ``PartialMessage.edit(content=...)``, which
+        # sends no ``flags`` field and so preserves the suppression across every
+        # mid-stream edit (Discord only regenerates the embed when an edit
+        # actively clears the flag). Defaults on; operators who want previews
+        # set ``extra.suppress_link_previews: false``.
+        self._suppress_link_previews: bool = self._coerce_suppress_link_previews(
+            self.config.extra.get("suppress_link_previews", True)
+        )
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.
@@ -1343,6 +1354,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Telegram #58563 fix.
         self._last_overflow_preview: dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+
+    @staticmethod
+    def _coerce_suppress_link_previews(value: Any) -> bool:
+        """Coerce ``extra.suppress_link_previews`` to a bool (default on).
+
+        YAML already yields a real bool, but env/JSON overrides can arrive as
+        strings; treat the usual falsey spellings as off and everything else
+        (including a missing key, which arrives as the ``True`` default) as on.
+        """
+        if isinstance(value, str):
+            return value.strip().lower() not in ("false", "0", "no", "off", "")
+        return bool(value)
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -3294,7 +3317,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await channel.send(
+                        content=chunk,
+                        reference=chunk_reference,
+                        suppress_embeds=self._suppress_link_previews,
+                    )
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -3302,7 +3329,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(
+                            content=chunk,
+                            reference=None,
+                            suppress_embeds=self._suppress_link_previews,
+                        )
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -3461,6 +3492,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
                 self._last_overflow_preview.pop(_preview_key, None)
             try:
+                # PartialMessage.edit sends no ``flags`` field, so a link-preview
+                # embed suppressed at send time (see ``suppress_embeds`` on the
+                # send path) stays suppressed across these streaming edits —
+                # Discord only regenerates the embed when an edit clears the
+                # SUPPRESS_EMBEDS flag, which this content-only edit never does.
                 await msg.edit(content=formatted)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
@@ -3536,7 +3572,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 # Prior message without to_reference (duck-typed): build the reference from ids.
                 reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(
+                    content=chunk,
+                    reference=reference,
+                    suppress_embeds=self._suppress_link_previews,
+                )
             except Exception as send_err:
                 # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
                 logger.warning(
@@ -3544,7 +3584,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(
+                        content=chunk,
+                        reference=None,
+                        suppress_embeds=self._suppress_link_previews,
+                    )
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
