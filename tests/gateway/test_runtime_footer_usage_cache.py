@@ -38,7 +38,7 @@ def test_footer_account_usage_cache_key_is_profile_and_credential_scoped(monkeyp
     )
 
     assert a != b
-    assert a == c
+    assert a != c
     assert a != d
     assert "token-a" not in repr(a)
 
@@ -197,6 +197,9 @@ def test_cache_keeps_case_sensitive_endpoint_snapshots_separate(monkeypatch):
         "https://example.invalid/TenantA?account=A",
         "https://example.invalid/tenanta?account=A",
         "https://example.invalid/TenantA?account=a",
+        "https://example.invalid/TenantA",
+        "https://example.invalid/TenantA/",
+        "https://example.invalid/TenantA?account=A/",
     )
     snapshots = {endpoint: object() for endpoint in endpoints}
     monkeypatch.setattr(usage.time, "monotonic", lambda: 100.0)

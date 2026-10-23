@@ -35,7 +35,7 @@ def cache_key(provider: str | None, *, base_url: str | None = None,
     return (
         str(hermes_home if hermes_home is not None else get_hermes_home()),
         str(provider or "").strip().lower(),
-        str(base_url or "").strip().rstrip("/"),
+        str(base_url or "").strip(),
         digest,
     )
 
