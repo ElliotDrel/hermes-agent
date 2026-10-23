@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Aistriú Hermes: **{name}**"
       auto_create_failed: "⚠️ Níorbh fhéidir le Hermes snáithe Discord a chruthú don teachtaireacht seo, mar sin níor próiseáladh an t-iarratas. Bain triail eile as le do thoil."
       auto_create_failed_generic: "Níor próiseáladh an t-iarratas. Bain triail eile as le do thoil."
+      rate_limited: "Tá Discord ag cur teorainn go sealadach ar Hermes le snáithe eile a chruthú. Níor próiseáladh an teachtaireacht seo. Bain triail eile as i gceann {delay}, nó lean ar aghaidh i snáithe atá ann cheana."
+      rate_limited_unknown: "Tá Discord ag cur teorainn go sealadach ar chruthú snáitheanna. Níor próiseáladh an teachtaireacht seo. Lean ar aghaidh i snáithe atá ann cheana; níor thug Discord am athiarrachta."
+      creation_uncertain: "Níorbh fhéidir cruthú an tsnáithe Discord a dheimhniú. Níor seoladh do theachtaireacht chuig an ngníomhaire. Seiceáil na snáitheanna atá ann sula mbainfidh tú triail eile as; níor chruthaigh Hermes snáithe cúltaca eile."
     media:
       upload_too_large: "⚠️ Níorbh fhéidir `{filename}` a cheangal — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord don chainéal seo. Dlúthaigh an comhad nó roinn nasc ina ionad."
       image_skipped_too_large: "⚠️ Léimeadh thar `{filename}` — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord."

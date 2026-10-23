@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Hermes 인계: **{name}**"
       auto_create_failed: "⚠️ Hermes가 이 메시지에 대한 Discord 스레드를 만들 수 없어서 요청이 처리되지 않았어요. 다시 시도해 주세요."
       auto_create_failed_generic: "요청이 처리되지 않았어요. 다시 시도해 주세요."
+      rate_limited: "Discord가 일시적으로 Hermes의 새 스레드 생성을 제한하고 있어요. 이 메시지는 처리되지 않았어요. {delay} 후에 다시 시도하거나 기존 스레드에서 이어가 주세요."
+      rate_limited_unknown: "Discord가 일시적으로 스레드 생성을 제한하고 있어요. 이 메시지는 처리되지 않았어요. 기존 스레드에서 이어가 주세요. Discord가 재시도 시간을 알려 주지 않았어요."
+      creation_uncertain: "Discord 스레드 생성을 확인할 수 없었어요. 메시지가 에이전트에 전달되지 않았어요. 다시 시도하기 전에 기존 스레드를 확인해 주세요. Hermes는 대체 스레드를 추가로 만들지 않았어요."
     media:
       upload_too_large: "⚠️ `{filename}`을(를) 첨부할 수 없었어요 — {size_mb} MB는 이 채널의 Discord 업로드 한도 {limit_mb} MB를 초과해요. 파일을 압축하거나 링크로 공유해 주세요."
       image_skipped_too_large: "⚠️ `{filename}` 건너뜀 — {size_mb} MB는 Discord 업로드 한도 {limit_mb} MB를 초과해요."

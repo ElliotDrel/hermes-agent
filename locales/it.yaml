@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Passaggio di consegne Hermes: **{name}**"
       auto_create_failed: "⚠️ Hermes non è riuscito a creare un thread Discord per questo messaggio, quindi la richiesta non è stata elaborata. Riprova."
       auto_create_failed_generic: "La richiesta non è stata elaborata. Riprova."
+      rate_limited: "Discord sta limitando temporaneamente la creazione di un altro thread da parte di Hermes. Questo messaggio non è stato elaborato. Riprova tra {delay} o continua in un thread esistente."
+      rate_limited_unknown: "Discord sta limitando temporaneamente la creazione di thread. Questo messaggio non è stato elaborato. Continua in un thread esistente; Discord non ha indicato quando riprovare."
+      creation_uncertain: "Non è stato possibile confermare la creazione del thread Discord. Il tuo messaggio non è stato inviato all'agente. Controlla i thread esistenti prima di riprovare; Hermes non ha creato un altro thread di ripiego."
     media:
       upload_too_large: "⚠️ Impossibile allegare `{filename}` — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB per questo canale. Comprimi il file o condividi un link."
       image_skipped_too_large: "⚠️ `{filename}` ignorato — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB."

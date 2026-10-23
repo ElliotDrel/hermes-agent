@@ -1198,6 +1198,9 @@ platform:
       handoff_seed: "🧵 Hermes-átadás: **{name}**"
       auto_create_failed: "⚠️ A Hermes nem tudott Discord-szálat létrehozni ehhez az üzenethez, ezért a kérés nem lett feldolgozva. Próbáld újra."
       auto_create_failed_generic: "A kérés nem lett feldolgozva. Próbáld újra."
+      rate_limited: "A Discord átmenetileg korlátozza, hogy a Hermes újabb szálat hozzon létre. Ez az üzenet nem lett feldolgozva. Próbáld újra {delay} múlva, vagy folytasd egy meglévő szálban."
+      rate_limited_unknown: "A Discord átmenetileg korlátozza a szálak létrehozását. Ez az üzenet nem lett feldolgozva. Folytasd egy meglévő szálban; a Discord nem adott meg újrapróbálkozási időt."
+      creation_uncertain: "A Discord-szál létrehozását nem sikerült megerősíteni. Az üzenetedet nem küldtük el az ügynöknek. Újrapróbálás előtt ellenőrizd a meglévő szálakat; a Hermes nem hozott létre másik tartalék szálat."
     media:
       upload_too_large: "⚠️ Nem sikerült csatolni: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét ebben a csatornában. Tömörítsd a fájlt, vagy ossz meg egy linket helyette."
       image_skipped_too_large: "⚠️ Kihagyva: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét."

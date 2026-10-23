@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Hermes のハンドオフ: **{name}**"
       auto_create_failed: "⚠️ Hermes はこのメッセージ用の Discord スレッドを作成できなかったため、リクエストは処理されませんでした。もう一度お試しください。"
       auto_create_failed_generic: "リクエストは処理されませんでした。もう一度お試しください。"
+      rate_limited: "Discord が一時的に Hermes による新しいスレッドの作成を制限しています。このメッセージは処理されませんでした。{delay}後にもう一度お試しいただくか、既存のスレッドで続けてください。"
+      rate_limited_unknown: "Discord が一時的にスレッドの作成を制限しています。このメッセージは処理されませんでした。既存のスレッドで続けてください。Discord から再試行までの時間は通知されませんでした。"
+      creation_uncertain: "Discord スレッドの作成を確認できませんでした。メッセージはエージェントに送信されていません。再試行する前に既存のスレッドを確認してください。Hermes は代替スレッドを追加で作成していません。"
     media:
       upload_too_large: "⚠️ `{filename}` を添付できませんでした — {size_mb} MB はこのチャンネルの Discord アップロード上限 {limit_mb} MB を超えています。ファイルを圧縮するか、代わりにリンクを共有してください。"
       image_skipped_too_large: "⚠️ `{filename}` をスキップしました — {size_mb} MB は Discord のアップロード上限 {limit_mb} MB を超えています。"

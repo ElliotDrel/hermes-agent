@@ -1388,6 +1388,9 @@ platform:
       handoff_seed: "🧵 Passation Hermes : **{name}**"
       auto_create_failed: "⚠️ Hermes n'a pas pu créer de fil Discord pour ce message, la demande n'a donc pas été traitée. Veuillez réessayer."
       auto_create_failed_generic: "La demande n'a pas été traitée. Veuillez réessayer."
+      rate_limited: "Discord limite temporairement la création d'un autre fil par Hermes. Ce message n'a pas été traité. Réessayez dans {delay} ou poursuivez dans un fil existant."
+      rate_limited_unknown: "Discord limite temporairement la création de fils. Ce message n'a pas été traité. Poursuivez dans un fil existant ; Discord n'a pas indiqué de délai avant une nouvelle tentative."
+      creation_uncertain: "La création du fil Discord n'a pas pu être confirmée. Votre message n'a pas été envoyé à l'agent. Vérifiez les fils existants avant de réessayer ; Hermes n'a pas créé de fil de secours supplémentaire."
     media:
       upload_too_large: "⚠️ Impossible de joindre `{filename}` — {size_mb} Mo dépasse la limite d'envoi Discord de {limit_mb} Mo pour ce canal. Compressez le fichier ou partagez plutôt un lien."
       image_skipped_too_large: "⚠️ `{filename}` ignoré — {size_mb} Mo dépasse la limite d'envoi Discord de {limit_mb} Mo."

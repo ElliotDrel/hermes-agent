@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Hermes devri: **{name}**"
       auto_create_failed: "⚠️ Hermes bu mesaj için bir Discord konusu oluşturamadı, bu yüzden istek işlenmedi. Lütfen yeniden deneyin."
       auto_create_failed_generic: "İstek işlenmedi. Lütfen yeniden deneyin."
+      rate_limited: "Discord, Hermes'in yeni bir konu oluşturmasını geçici olarak sınırlıyor. Bu mesaj işlenmedi. {delay} sonra yeniden deneyin veya mevcut bir konuda devam edin."
+      rate_limited_unknown: "Discord, konu oluşturmayı geçici olarak sınırlıyor. Bu mesaj işlenmedi. Mevcut bir konuda devam edin; Discord yeniden deneme süresi bildirmedi."
+      creation_uncertain: "Discord konusunun oluşturulduğu doğrulanamadı. Mesajınız ajana gönderilmedi. Yeniden denemeden önce mevcut konulara bakın; Hermes ek bir yedek konu oluşturmadı."
     media:
       upload_too_large: "⚠️ `{filename}` eklenemedi — {size_mb} MB, Discord'un bu kanal için {limit_mb} MB yükleme sınırını aşıyor. Dosyayı sıkıştırın veya bunun yerine bir bağlantı paylaşın."
       image_skipped_too_large: "⚠️ `{filename}` atlandı — {size_mb} MB, Discord'un {limit_mb} MB yükleme sınırını aşıyor."

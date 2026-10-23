@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Transferência do Hermes: **{name}**"
       auto_create_failed: "⚠️ O Hermes não conseguiu criar um tópico do Discord para esta mensagem, então a solicitação não foi processada. Tente novamente."
       auto_create_failed_generic: "A solicitação não foi processada. Tente novamente."
+      rate_limited: "O Discord está limitando temporariamente a criação de outro tópico pelo Hermes. Esta mensagem não foi processada. Tente novamente em {delay} ou continue em um tópico existente."
+      rate_limited_unknown: "O Discord está limitando temporariamente a criação de tópicos. Esta mensagem não foi processada. Continue em um tópico existente; o Discord não informou quando tentar novamente."
+      creation_uncertain: "Não foi possível confirmar a criação do tópico do Discord. Sua mensagem não foi enviada ao agente. Verifique os tópicos existentes antes de tentar de novo; o Hermes não criou outro tópico alternativo."
     media:
       upload_too_large: "⚠️ Não foi possível anexar `{filename}` — {size_mb} MB excede o limite de envio de {limit_mb} MB do Discord para este canal. Comprima o arquivo ou compartilhe um link."
       image_skipped_too_large: "⚠️ `{filename}` ignorado — {size_mb} MB excede o limite de envio de {limit_mb} MB do Discord."

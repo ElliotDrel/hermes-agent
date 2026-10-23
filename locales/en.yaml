@@ -1231,6 +1231,9 @@ platform:
       handoff_seed: "🧵 Hermes handoff: **{name}**"
       auto_create_failed: "⚠️ Hermes could not create a Discord thread for this message, so the request was not processed. Please retry."
       auto_create_failed_generic: "The request was not processed. Please retry."
+      rate_limited: "Discord is temporarily rate-limiting Hermes from creating another thread. This message was not processed. Try again in {delay}, or continue in an existing thread."
+      rate_limited_unknown: "Discord is temporarily rate-limiting thread creation. This message was not processed. Continue in an existing thread; Discord did not provide a retry time."
+      creation_uncertain: "Discord thread creation could not be confirmed. Your message was not sent to the agent. Check existing threads before retrying; Hermes did not create another fallback thread."
     media:
       upload_too_large: "⚠️ Could not attach `{filename}` — {size_mb} MB exceeds Discord's {limit_mb} MB upload limit for this channel. Compress the file or share a link instead."
       image_skipped_too_large: "⚠️ Skipped `{filename}` — {size_mb} MB exceeds Discord's {limit_mb} MB upload limit."
@@ -4057,11 +4060,6 @@ tips:
     p09: "Explain this error and how to fix it"
     p10: "Set a reminder or schedule a recurring task"
     p11: "Type / to browse commands, or Ctrl+P for the palette"
-
-platform.discord.thread.rate_limited: "Discord is temporarily rate-limiting Hermes from creating another thread. This message was not processed. Try again in {delay}, or continue in an existing thread."
-platform.discord.thread.rate_limited_unknown: "Discord is temporarily rate-limiting thread creation. This message was not processed. Continue in an existing thread; Discord did not provide a retry time."
-
-platform.discord.thread.creation_uncertain: "Discord thread creation could not be confirmed. Your message was not sent to the agent. Check existing threads before retrying; Hermes did not create another fallback thread."
 
 # Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
 plan_usage:

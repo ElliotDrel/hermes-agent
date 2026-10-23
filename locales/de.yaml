@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Hermes-Übergabe: **{name}**"
       auto_create_failed: "⚠️ Hermes konnte für diese Nachricht keinen Discord-Thread erstellen, daher wurde die Anfrage nicht verarbeitet. Bitte versuchen Sie es erneut."
       auto_create_failed_generic: "Die Anfrage wurde nicht verarbeitet. Bitte versuchen Sie es erneut."
+      rate_limited: "Discord begrenzt Hermes vorübergehend beim Erstellen eines weiteren Threads. Diese Nachricht wurde nicht verarbeitet. Versuche es in {delay} erneut oder setze in einem bestehenden Thread fort."
+      rate_limited_unknown: "Discord begrenzt das Erstellen von Threads vorübergehend. Diese Nachricht wurde nicht verarbeitet. Setze in einem bestehenden Thread fort; Discord hat keine Wartezeit angegeben."
+      creation_uncertain: "Das Erstellen des Discord-Threads konnte nicht bestätigt werden. Deine Nachricht wurde nicht an den Agenten gesendet. Prüfe bestehende Threads, bevor du es erneut versuchst; Hermes hat keinen weiteren Ersatz-Thread erstellt."
     media:
       upload_too_large: "⚠️ `{filename}` konnte nicht angehängt werden — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB für diesen Kanal. Komprimieren Sie die Datei oder teilen Sie stattdessen einen Link."
       image_skipped_too_large: "⚠️ `{filename}` übersprungen — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB."

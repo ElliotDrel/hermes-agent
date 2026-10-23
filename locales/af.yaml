@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Hermes-oorhandiging: **{name}**"
       auto_create_failed: "⚠️ Hermes kon nie 'n Discord-draad vir hierdie boodskap skep nie, so die versoek is nie verwerk nie. Probeer asseblief weer."
       auto_create_failed_generic: "Die versoek is nie verwerk nie. Probeer asseblief weer."
+      rate_limited: "Discord beperk tans die tempo waarteen Hermes nog 'n draad kan skep. Hierdie boodskap is nie verwerk nie. Probeer weer oor {delay}, of gaan voort in 'n bestaande draad."
+      rate_limited_unknown: "Discord beperk tans die skepping van drade. Hierdie boodskap is nie verwerk nie. Gaan voort in 'n bestaande draad; Discord het nie 'n herprobeertyd gegee nie."
+      creation_uncertain: "Die skepping van die Discord-draad kon nie bevestig word nie. Jou boodskap is nie na die agent gestuur nie. Kontroleer bestaande drade voordat jy weer probeer; Hermes het nie nog 'n terugval-draad geskep nie."
     media:
       upload_too_large: "⚠️ Kon nie `{filename}` aanheg nie — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB vir hierdie kanaal. Pers die lêer saam of deel eerder 'n skakel."
       image_skipped_too_large: "⚠️ `{filename}` oorgeslaan — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB."

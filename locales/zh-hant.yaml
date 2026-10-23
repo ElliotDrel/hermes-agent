@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Hermes 交接：**{name}**"
       auto_create_failed: "⚠️ Hermes 無法為這則訊息建立 Discord 討論串，因此未處理此請求。請重試。"
       auto_create_failed_generic: "此請求未處理。請重試。"
+      rate_limited: "Discord 暫時限制 Hermes 再建立討論串。此訊息未處理。請在 {delay} 後重試，或在現有討論串中繼續。"
+      rate_limited_unknown: "Discord 暫時限制建立討論串。此訊息未處理。請在現有討論串中繼續；Discord 未提供重試時間。"
+      creation_uncertain: "無法確認 Discord 討論串是否已建立。你的訊息未傳送給代理。重試前請先檢查現有討論串；Hermes 沒有再建立備用討論串。"
     media:
       upload_too_large: "⚠️ 無法附加 `{filename}` — {size_mb} MB 超過 Discord 在此頻道的 {limit_mb} MB 上傳上限。請壓縮檔案或改為分享連結。"
       image_skipped_too_large: "⚠️ 已略過 `{filename}` — {size_mb} MB 超過 Discord 的 {limit_mb} MB 上傳上限。"

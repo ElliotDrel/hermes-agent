@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 Hermes 交接：**{name}**"
       auto_create_failed: "⚠️ Hermes 无法为这条消息创建 Discord 话题，因此请求未被处理。请重试。"
       auto_create_failed_generic: "请求未被处理。请重试。"
+      rate_limited: "Discord 暂时限制 Hermes 再创建帖子。此消息未被处理。请在 {delay} 后重试，或在现有帖子中继续。"
+      rate_limited_unknown: "Discord 暂时限制创建帖子。此消息未被处理。请在现有帖子中继续；Discord 未提供重试时间。"
+      creation_uncertain: "无法确认 Discord 帖子是否已创建。你的消息未发送给智能体。重试前请先检查现有帖子；Hermes 没有再创建备用帖子。"
     media:
       upload_too_large: "⚠️ 无法附加 `{filename}` — {size_mb} MB 超出了 Discord 对此频道 {limit_mb} MB 的上传上限。请压缩文件或改为分享链接。"
       image_skipped_too_large: "⚠️ 已跳过 `{filename}` — {size_mb} MB 超出了 Discord {limit_mb} MB 的上传上限。"

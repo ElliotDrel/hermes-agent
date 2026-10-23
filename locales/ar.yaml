@@ -1181,6 +1181,9 @@ platform:
       handoff_seed: "🧵 تسليم Hermes: **{name}**"
       auto_create_failed: "⚠️ تعذّر على Hermes إنشاء سلسلة Discord لهذه الرسالة، لذا لم تتم معالجة الطلب. يرجى إعادة المحاولة."
       auto_create_failed_generic: "لم تتم معالجة الطلب. يرجى إعادة المحاولة."
+      rate_limited: "يحدّ Discord مؤقتًا من إنشاء Hermes لسلسلة جديدة. لم تتم معالجة هذه الرسالة. حاول مجددًا بعد {delay}، أو تابع في سلسلة موجودة."
+      rate_limited_unknown: "يحدّ Discord مؤقتًا من إنشاء السلاسل. لم تتم معالجة هذه الرسالة. تابع في سلسلة موجودة؛ لم يوفّر Discord وقتًا لإعادة المحاولة."
+      creation_uncertain: "تعذّر تأكيد إنشاء سلسلة Discord. لم تُرسل رسالتك إلى الوكيل. تحقّق من السلاسل الموجودة قبل إعادة المحاولة؛ لم ينشئ Hermes سلسلة بديلة أخرى."
     media:
       upload_too_large: "⚠️ تعذّر إرفاق `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord لهذه القناة وهو {limit_mb} MB. اضغط الملف أو شارك رابطًا بدلًا من ذلك."
       image_skipped_too_large: "⚠️ تم تخطّي `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord وهو {limit_mb} MB."
