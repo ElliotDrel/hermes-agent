@@ -6276,7 +6276,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         # channel. Surface a short visible error so the user can retry once Discord
                         # recovers, and skip agent invocation for this message. See #20243.
                         notice = self._auto_thread_failure_notice(rate_limit_error)
-                        await message.channel.send(self.warning_text(notice, notice))
+                        await message.channel.send(self.warning_text(
+                            notice, t("platform.discord.thread.auto_create_failed_generic")))
                     except Exception as notify_error:
                         logger.warning(
                             "[%s] Failed to notify user of auto-thread failure: %s", self.name,

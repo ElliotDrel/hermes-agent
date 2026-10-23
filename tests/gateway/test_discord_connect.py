@@ -196,7 +196,7 @@ async def test_connect_caps_long_discord_rate_limit_waits(monkeypatch):
     """Long REST cooldowns must surface as RateLimited instead of blocking message handling."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
 
     intents = SimpleNamespace(
         message_content=False, dm_messages=False, guild_messages=False,
