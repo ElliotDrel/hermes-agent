@@ -815,6 +815,44 @@ request is answered, cancelled, or expires, even if the Discord view timeout is
 longer. A shorter Discord timeout retires the buttons without extending or ending
 the underlying approval wait.
 
+## Session-to-session messages (maintained fork)
+
+An active Discord gateway agent can use
+`send_session_message(target_session_id, message)` to contact another existing
+Discord session owned by the same user in the same profile. Use an exact current
+session ID from `/sessions`; the tool does not create sessions or resolve titles.
+CLI, cron, background jobs, delegated agents, other transports, and other profiles
+do not receive this runtime capability.
+
+The gateway attributes the sender automatically. A destination receives a labelled
+agent-origin input at a normal turn boundary. Peer content remains below real user
+instructions and cannot grant approvals or execute gateway slash commands. A busy
+destination keeps each message in its durable per-session FIFO, in order, without
+steering or interrupting the running turn; an idle destination schedules a normal
+turn. A destination that has no committed conversation yet is admitted through its
+adapter instead. The recipient can reply explicitly with the same tool and the
+sender session ID in the attribution.
+
+Each automatic chain permits at most four hops and eight total sends across all
+branches. A real user turn starts a new budget. Identical target/text calls within
+one turn deduplicate, including parallel calls. Budgets and deduplication are
+process-local (a restart fails closed: a reply to a message delivered before it gets
+no budget); they are not a durable message bus.
+
+The result separates `accepted`, `delivery` (`started`, `queued`, or `refused`),
+and `visible`. `started` means the gateway scheduled processing, not that a model
+completed a response. After internal admission, a visible destination post is
+attempted for at most 15 seconds. If that post fails, internal admission still
+stands and `visible_error` explains the failure. Visible posts are marked
+nonconversational to exclude them from later Discord history backfill. Bot
+self-messages remain ignored; delivery never depends on a self-mention.
+
+To disable the feature, add `session_messaging` to `agent.disabled_toolsets` and
+restart the gateway. This changes tool schemas, so treat enable/disable as a
+new-session boundary. Existing destination routes must remain current; a later
+reset, deletion, shutdown, or queue rejection can prevent processing after
+admission. No completion guarantee is implied.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

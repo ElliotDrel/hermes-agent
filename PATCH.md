@@ -271,6 +271,42 @@ budgets; tool arguments cannot forge them. Existing routes only, no direct histo
 writes or bot self-message bypass. Peer content cannot authorize gateway control.
 Other transports and delegated/background execution receive no capability.
 
+v0.23.2 transfer: approval Elliot granted a change-specific manual override on
+2026-11-17 (T3 session) for re-porting this settled behavior after a per-intent
+assessment of model-facing effect, failure mode and rollback; scope is the settled
+intent only. Model-facing effect: one `send_session_message` schema in the named
+`session_messaging` toolset (never `_HERMES_CORE_TOOLS`), present only on an owned
+Discord turn (`GatewayTurnMixin._with_session_messaging` after display settings, on
+the owning task; `_resolve_turn_toolsets` strips it from config/background/cold-review
+runs; `agent.disabled_toolsets` is the rollback switch), plus the peer text as an
+internal, non-control user-role input. Touchpoints: `gateway/session_messaging.py`,
+`tools/session_message_tool.py`, `toolsets.py`, `gateway/run_turn.py` (`_run_agent`
+binds the capability inside the profile scope; `_with_session_messaging`),
+`gateway/session_automation.py` (`admit_route_wake(identity=)`, `session-message` added
+to `_ROUTE_WAKE_PRODUCERS` so queued wakes follow a route rotation).
+Adaptations: delivery commits a route wake into the destination's durable authority
+FIFO (`admit_route_wake`, as kanban/loop wakes do) and falls back to one
+`admit_internal_event` through the destination adapter when the target has no committed
+conversation; the old private busy-queue branch and the `run_inbound` busy guard are
+gone (v0.23.2 already queues internal events without steering). Internal events never
+use `session_ingress.admit_message` (`_hm_authority_admission` excludes them), and a
+durable wake cannot carry a runtime object, so the shared chain budget is found again by
+the delivery's message id in a bounded (512) per-messenger record; an evicted or
+restart-lost record fails closed (a reply gets no budget). `send` binds the sender's
+profile scope on the event loop (tool workers hop threads), and the destination must
+share profile and user. Residual risk: a durable wake runs as the destination's
+committed human source (peer text is labelled but not a distinct provenance), adding the
+schema changes the tool set of every Discord session, and a restart drops reply budgets.
+Rollback: revert the 021 commit (disable via `agent.disabled_toolsets` first).
+v0.23.2 verification: 11 passed in tests/gateway/test_session_messaging.py (unit,
+schema scope, real GatewayRunner + DiscordAdapter + authority A->B: idle start, busy
+durable FIFO order, budget by id, cross-profile/user refusal) and
+tests/agent/test_session_message_payload.py (offline wire: role, resume, stable tools,
+cache on/off); 13-file adjacent run (registry, toolsets, tools config, wake/automation,
+kanban wake) and 9-file turn/busy run passed; the 2 failures in
+tests/gateway/test_authority_automation.py also fail on upstream ae2a81ccc0
+(WinError 10106 in a clean-env subprocess), not attributed to this change.
+
 ## HERMES-FORK-002: Discord personal drafts
 
 Ignore explicit draft/drafts markers (optional slash; whitespace or colon boundary)

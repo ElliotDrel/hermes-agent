@@ -431,7 +431,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         from agent.skill_utils import parse_config_string_list
         enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
         disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
-        return enabled, disabled
+        # HERMES-FORK-021: session messaging is a session-scoped capability granted only by an owned
+        # Discord turn (``_with_session_messaging``), never by config, process env or a check_fn.
+        return [name for name in enabled if name != "session_messaging"], disabled
 
 
     def _mcp_reload_refresh_cached_agents(self, multiplex: bool, profile) -> None:
@@ -813,8 +815,30 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     ) -> dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
-        with self._profile_scope_for_source(source):
+        # HERMES-FORK-021: grant the peer-messaging capability only at an owned turn boundary,
+        # including queued recursion; other transports and background runs never receive it.
+        from gateway.session_messaging import SessionMessenger, bind_session_messenger
+        messenger = getattr(self, "_session_messenger", None)
+        if messenger is None:
+            messenger = self._session_messenger = SessionMessenger(self)
+        with self._profile_scope_for_source(source), bind_session_messenger(
+            messenger, source, session_id, turn_kwargs.get("inbound_message_id"),
+            generation=turn_kwargs.get("run_generation"),
+        ):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
+
+    @staticmethod
+    def _with_session_messaging(disp, source: SessionSource):
+        """*disp* with the session-scoped ``session_messaging`` toolset when the owning Discord turn
+        holds the capability (explicit ``disabled_toolsets`` remains the rollback switch). Runs on the
+        owning task, which the capability check requires; a delegated child never gets it."""
+        from gateway.session_messaging import session_messaging_available
+        if (source.platform != Platform.DISCORD or disp.enabled_toolsets is None
+                or "session_messaging" in (disp.disabled_toolsets or [])
+                or not session_messaging_available()):
+            return disp
+        return dataclasses.replace(
+            disp, enabled_toolsets=sorted(set(disp.enabled_toolsets) | {"session_messaging"}))
 
     def _run_agent_display_settings(self, source: SessionSource) -> GatewayRunner._RunAgentDisplay:
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
@@ -2094,6 +2118,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         from run_agent import AIAgent
 
         disp = await asyncio.to_thread(self._run_agent_display_settings, source)  # auth lock + config I/O; scope rides the copied context
+        disp = self._with_session_messaging(disp, source)
         if scheduled_heartbeat:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.

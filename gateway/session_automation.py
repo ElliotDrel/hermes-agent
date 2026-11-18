@@ -733,7 +733,7 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 
-_ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})
+_ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick', 'session-message'})
 
 
 def route_owner_lock(runner, session_id):
@@ -915,12 +915,14 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     return entry, release
 
 
-async def admit_route_wake(runner, adapter, source, text, producer, metadata=None):
+async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, identity=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
     interrupts or races the admitted one. ``False`` when no authority serves the scope or the
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
-    path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal."""
+    path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal. ``identity``
+    (a JSON list starting with ``producer``) lets a producer that keeps a runtime-only record per wake
+    (session messaging's chain budget) find it again from the executing event's ``message_id``."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
     from gateway.session_detached import detached_live, detached_route_of, route_entry
@@ -931,7 +933,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     if authority is None or entry is None:
         return False
     import uuid
-    identity = json.dumps([producer, key, uuid.uuid4().hex], separators=(',', ':'))
+    identity = identity or json.dumps([producer, key, uuid.uuid4().hex], separators=(',', ':'))
     if source.platform == Platform.LOCAL or detached_route_of(source):
         # A local route (or a conversation its chat moved past, answered by its app viewers) has no
         # messaging provenance to borrow: its wake rides local_automation_v1 on the live session's own
