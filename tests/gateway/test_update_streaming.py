@@ -143,7 +143,8 @@ class TestWatchUpdateProgress:
 
         async def receive(chat_id, text, **kwargs):
             sent.append(text)
-            if "Fetching updates" in text:
+            # The completion receipt quotes the output tail too; only a stream chunk precedes the exit code.
+            if "Fetching updates" in text and "update finished" not in text.lower():
                 assert not (hermes_home / ".update_exit_code").exists()
                 streamed.set()
 

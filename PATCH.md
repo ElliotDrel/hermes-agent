@@ -81,6 +81,32 @@ Preparation can precede the normal restart wait, so the watcher includes that bu
 Share public-thread creation, requester membership and archive settings with
 ordinary auto-threads.
 
+Touchpoints: plugins/platforms/discord/adapter.py (`_run_update_slash`, the update
+branch of `_register_slash_commands`, `_create_thread` now creates public threads and
+joins the requester, as `/thread` does), gateway/run_notifications_update.py
+(`_UpdateTarget.send_callback`, `_deliver_update_completion`, watcher budget and
+deadline, receipt deferral). Reporting text stays upstream's i18n; the deadline sends no
+notice (no new catalog keys) and keeps the receipt.
+
+v0.23.2 re-port. Authorization: Elliot's change-specific manual override, granted
+2026-11-18 (T3 session). Residual risk: reporting runs only for an update that writes
+the native pending marker; 001's preparation turn no longer arms it, so the shared
+sender is exercised by marker-driven native updates and its tests, not by the `/update`
+skill turn itself. Behavior changed for every platform, not only Discord: the final
+notice is the shared receipt (it quotes the output tail) and an undelivered one is kept
+until the marker passes the one-hour adapter-wait bound, then dropped with a warning.
+`/thread` also now creates public threads and joins its requester.
+A refused `/update` (managed/non-git install, pending marker) is answered before any thread is
+created (`update_refusal`). One run makes one fallback decision: after a send fell back to the
+main chat, that run's remaining output and receipt go there (runner-keyed by marker identity),
+never splitting between thread and home; a new run starts in its own thread again.
+Rollback: revert the 016 commit.
+Verification: `test_update_delivery_fallback` (8, new), `test_discord_slash_commands`,
+`test_update_streaming`, `test_update_command` (receipt-retention test replaces the old
+"always clean up" contract) pass; the one environmental `cmd_update` failure reproduces
+on the stable base worktree. Live Discord thread creation and delivery fallback are not
+exercised.
+
 ## HERMES-FORK-005: Discord visual-only response metadata
 
 A bounded transform_gateway_response hook receives the completed agent's live

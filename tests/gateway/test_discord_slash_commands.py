@@ -291,7 +291,7 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
 
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_reports_success(adapter):
-    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
+    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock(), add_user=AsyncMock())
     parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread), send=AsyncMock())
     interaction_channel = SimpleNamespace(parent=parent_channel)
     interaction = SimpleNamespace(
@@ -309,7 +309,9 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         name="Planning",
         auto_archive_duration=1440,
         reason="Requested by Jezza via /thread",
+        type=sys.modules["discord"].ChannelType.public_thread,
     )
+    created_thread.add_user.assert_awaited_once_with(interaction.user)
     created_thread.send.assert_awaited_once_with("Kickoff")
     # Thread link shown to user
     interaction.followup.send.assert_awaited()
@@ -320,7 +322,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
 
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
-    created_thread = SimpleNamespace(id=555, name="Planning")
+    created_thread = SimpleNamespace(id=555, name="Planning", add_user=AsyncMock())
     seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
     channel = SimpleNamespace(
         create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
@@ -344,6 +346,7 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         reason="Requested by Jezza via /thread",
     )
     interaction.followup.send.assert_awaited()
+    created_thread.add_user.assert_awaited_once_with(interaction.user)
 
 
 # ------------------------------------------------------------------
@@ -689,3 +692,110 @@ async def test_handoff_thread_uses_configured_archive_duration(adapter):
     adapter.config.extra["auto_thread_archive_duration"] = 4320
     assert await adapter.create_handoff_thread("100", "plan") == "7"
     assert parent.create_thread.await_args.kwargs["auto_archive_duration"] == 4320
+
+
+# ------------------------------------------------------------------
+# /update runs in its own thread (HERMES-FORK-016)
+# ------------------------------------------------------------------
+
+
+def _channel_update_interaction():
+    return SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_registers_native_update_slash_command(adapter):
+    adapter._run_update_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["update"](interaction)
+
+    adapter._run_update_slash.assert_awaited_once_with(interaction)
+
+
+@pytest.mark.asyncio
+async def test_update_slash_creates_public_member_thread_with_shared_archive(adapter):
+    """The real thread helper runs (only Discord I/O is mocked): public thread, requester joined,
+    and the same archive setting an ordinary auto-thread uses."""
+    from plugins.platforms.discord.adapter import _apply_yaml_config
+    adapter.config.extra.update(_apply_yaml_config({}, {"auto_thread_archive_duration": 4320}))
+    interaction = _channel_update_interaction()
+    created_thread = SimpleNamespace(id=555, name="Hermes update", add_user=AsyncMock())
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread))
+    adapter._resolve_interaction_channel = AsyncMock(return_value=parent_channel)
+    adapter._thread_parent_channel = MagicMock(return_value=parent_channel)
+    adapter._dispatch_thread_session = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    kwargs = parent_channel.create_thread.await_args.kwargs
+    assert kwargs["name"] == "Hermes update"
+    assert kwargs["type"] == sys.modules["discord"].ChannelType.public_thread
+    created_thread.add_user.assert_awaited_once_with(interaction.user)
+    ordinary = SimpleNamespace(content="Normal conversation", author=interaction.user,
+                               create_thread=AsyncMock(return_value=created_thread))
+    await adapter._auto_create_thread(ordinary)
+    assert kwargs["auto_archive_duration"] == ordinary.create_thread.await_args.kwargs["auto_archive_duration"] == 4320
+    adapter._dispatch_thread_session.assert_awaited_once_with(interaction, created_thread, "/update")
+    assert "<#555>" in interaction.edit_original_response.await_args.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_update_slash_thread_join_failure_still_starts(adapter):
+    interaction = _channel_update_interaction()
+    created_thread = SimpleNamespace(id=555, name="Hermes update", add_user=AsyncMock(side_effect=RuntimeError("no")))
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread))
+    adapter._resolve_interaction_channel = AsyncMock(return_value=parent_channel)
+    adapter._thread_parent_channel = MagicMock(return_value=parent_channel)
+    adapter._dispatch_thread_session = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    adapter._dispatch_thread_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_slash_does_not_start_when_thread_creation_fails(adapter):
+    interaction = _channel_update_interaction()
+    adapter._create_thread = AsyncMock(return_value={"error": "missing permission"})
+    adapter._dispatch_thread_session = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    adapter._dispatch_thread_session.assert_not_awaited()
+    assert "missing permission" in interaction.edit_original_response.await_args.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_refused_update_slash_creates_no_thread(adapter, tmp_path, monkeypatch):
+    """An update already pending refuses the command; that must not leave an empty thread behind."""
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    (tmp_path / ".update_pending.json").write_text("{}")
+    interaction = _channel_update_interaction()
+    adapter._create_thread = AsyncMock()
+    adapter._dispatch_thread_session = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    adapter._create_thread.assert_not_awaited()
+    adapter._dispatch_thread_session.assert_not_awaited()
+    assert "already pending" in interaction.edit_original_response.await_args.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_update_slash_reuses_existing_thread(adapter):
+    interaction = SimpleNamespace(channel=_FakeThreadChannel(channel_id=555, name="existing-thread"))
+    adapter._run_simple_slash = AsyncMock()
+    adapter._create_thread = AsyncMock()
+
+    await adapter._run_update_slash(interaction)
+
+    adapter._create_thread.assert_not_awaited()
+    assert adapter._run_simple_slash.await_args.args[:2] == (interaction, "/update")

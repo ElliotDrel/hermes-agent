@@ -295,8 +295,10 @@ class TestSendUpdateNotification:
 
 
     @pytest.mark.asyncio
-    async def test_cleans_up_on_error(self, tmp_path):
-        """Files are cleaned up even if notification fails."""
+    @pytest.mark.parametrize("stale", [False, True])
+    async def test_undelivered_receipt_is_kept_until_it_expires(self, tmp_path, stale):
+        """HERMES-FORK-016: a receipt that could not be delivered stays for a retry, but only
+        until it is older than the adapter-wait bound (a deleted chat must not leak markers)."""
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -304,9 +306,10 @@ class TestSendUpdateNotification:
         pending_path = hermes_home / ".update_pending.json"
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
-        pending_path.write_text(json.dumps({
-            "platform": "telegram", "chat_id": "111", "user_id": "222",
-        }))
+        marker = {"platform": "telegram", "chat_id": "111", "user_id": "222"}
+        if stale:
+            marker["timestamp"] = "2000-01-01T00:00:00"
+        pending_path.write_text(json.dumps(marker))
         output_path.write_text("✓ Done")
         exit_code_path.write_text("0")
 
@@ -316,12 +319,11 @@ class TestSendUpdateNotification:
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
-            await runner._send_update_notification()
+            assert await runner._send_update_notification() is stale
 
-        # Files should still be cleaned up (finally block)
-        assert not pending_path.exists()
-        assert not output_path.exists()
-        assert not exit_code_path.exists()
+        assert pending_path.exists() is not stale
+        assert output_path.exists() is not stale
+        assert exit_code_path.exists() is not stale
 
 
     @pytest.mark.asyncio

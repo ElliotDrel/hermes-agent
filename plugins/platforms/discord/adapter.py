@@ -85,6 +85,7 @@ class _Snowflake:
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 DEFAULT_THREAD_ARCHIVE_MINUTES = 10080  # HERMES-FORK-013: seven days
+_UPDATE_THREAD_NAME = "Hermes update"  # HERMES-FORK-016: one thread per /update run
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -4499,6 +4500,49 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    async def _run_update_slash(self, interaction: discord.Interaction) -> None:
+        """Run ``/update`` in the invoking thread, or in a thread created for this run.
+
+        Progress, the completion receipt and the update conversation then share one thread.
+        If Discord cannot create it, no update turn starts.
+        """
+        if isinstance(getattr(interaction, "channel", None), discord.Thread):
+            await self._run_simple_slash(interaction, "/update", "platform.discord.command.update.followup")
+            return
+        if not await self._check_slash_authorization(interaction, "/update"):
+            return
+        # Refuse before creating anything: a refused /update must not leave an empty thread behind.
+        from gateway.run import _hermes_home
+        from hermes_cli._startup_fast import project_root_str
+        from hermes_cli.fork_update_entry import update_refusal
+        refusal = update_refusal(_Path(project_root_str()), _hermes_home)
+        deferred_response = await self._defer_unless_expired(
+            interaction,
+            "[Discord] /update: interaction expired before defer. Creating the update thread anyway.",
+        )
+        if refusal:
+            if deferred_response:
+                await interaction.edit_original_response(content=refusal)
+            return
+        result = await self._create_thread(
+            interaction, name=_UPDATE_THREAD_NAME, auto_archive_duration=self._auto_thread_archive_duration(),
+        )
+        if not result.get("success"):
+            if deferred_response:
+                error = result.get("error") or t("platform.discord.command.thread.error_unknown")
+                await interaction.edit_original_response(
+                    content=t("platform.discord.command.thread.failed", error=error))
+            return
+        thread_id = str(result["thread_id"])
+        await self._threads.mark_async(thread_id)
+        if deferred_response:
+            try:
+                await interaction.edit_original_response(
+                    content=t("platform.discord.command.thread.created", link=f"<#{thread_id}>"))
+            except Exception as exc:
+                logger.debug("Discord update thread link response failed: %s", exc)
+        await self._dispatch_thread_session(interaction, result["thread"], "/update")
+
     def _slash_proxy(self, name: str, args: tuple, template: str, followup: Optional[str], *,
                      strip: bool = True, prefix: str = "slash_"):
         """Build a slash callback rendering ``template`` from its args via ``_run_simple_slash``;
@@ -4544,6 +4588,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         for name, description, args, template, followup in _native_slash_commands():
             if template is None:
                 self._register_thread_slash(tree, name, description)
+                continue
+            if name == "update":
+                tree.command(name=name, description=description)(self._run_update_slash)
                 continue
             tree.command(name=name, description=description)(
                 self._slash_proxy(name, args, template, followup, strip=name != "insights")
@@ -5374,10 +5421,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         try:
             thread = await parent_channel.create_thread(
                 name=name, auto_archive_duration=auto_archive_duration, reason=reason,
+                type=discord.ChannelType.public_thread,
             )
             if starter_message:
                 await thread.send(starter_message)
-            return self._thread_created(thread, name)
         except Exception as direct_error:
             try:
                 seed_content = starter_message or t("platform.discord.thread.seed_message", name=name)
@@ -5385,13 +5432,18 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 thread = await seed_msg.create_thread(
                     name=name, auto_archive_duration=auto_archive_duration, reason=reason,
                 )
-                return self._thread_created(thread, name)
             except Exception as fallback_error:
                 return {
                     "error": t(
                         "platform.discord.command.thread.error_both_failed",
                         direct_error=str(direct_error), fallback_error=str(fallback_error)),
                 }
+        # The requester must see the thread they asked for, whichever path created it.
+        try:
+            await thread.add_user(interaction.user)
+        except Exception as exc:
+            logger.warning("[%s] Could not add %s to new thread %s: %s", self.name, display_name, thread.id, exc)
+        return self._thread_created(thread, name)
 
     @staticmethod
     def _thread_created(thread: Any, name: str) -> dict[str, Any]:

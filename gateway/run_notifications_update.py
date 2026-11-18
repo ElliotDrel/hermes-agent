@@ -75,6 +75,8 @@ class GatewayUpdateNotificationsMixin:
         # Re-runs the owner lookup: an update outlives a reconnect, whose replacement adapter must
         # carry the prompt (the retired one has no bot and its button state would never be read).
         resolve_adapter: Optional[Any] = None
+        # Replaces the plain adapter send; Discord uses it to fall back to the main chat (016).
+        send_callback: Optional[Any] = None
 
         @property
         def adapter(self):
@@ -86,6 +88,8 @@ class GatewayUpdateNotificationsMixin:
             return _non_conversational_metadata(self.metadata, platform=self.platform)
 
         async def send(self, text: str):
+            if self.send_callback is not None:
+                return await self.send_callback(text)
             return await self.adapter.send(self.chat_id, text, metadata=self.send_metadata())
 
     def _schedule_update_notification_watch(self) -> None:
@@ -180,11 +184,59 @@ class GatewayUpdateNotificationsMixin:
                     return None
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
                 # Fallback session key if not stored (old pending files)
-                return self._UpdateTarget(
+                target = self._UpdateTarget(
                     adapter, chat_id, session_key or f"{platform_str}:{chat_id}", metadata, platform,
                     resolve_adapter=lambda: self._authorization_adapter(platform, profile),
                 )
+                if platform == Platform.DISCORD:
+                    target.send_callback = lambda text: self._deliver_update_completion(
+                        pending, platform, target.adapter, text)
+                return target
         return None
+
+    async def _deliver_update_completion(self, pending: dict, platform, adapter, text: str) -> bool:
+        """Deliver an update message to this run's chat, else the profile's main chat.
+
+        Returned send failures count like raised ones. The home channel's own thread is never
+        reused (an earlier run's thread must not become this run's destination), and it is
+        tried only when it differs from this run's chat or the run was in a thread. Notices
+        are non-conversational so a reply to them is not an agent turn.
+        """
+        from gateway.run import _non_conversational_metadata
+        from gateway.run_shutdown import _send_error, _send_failed
+        chat_id = pending.get("chat_id")
+        targets = [(chat_id, self._pending_marker_metadata(platform, chat_id, pending, adapter))] if chat_id else []
+        profile = self._marker_profile(pending)
+        config = (getattr(self, "_profile_configs", {}).get(profile) if profile
+                  else getattr(self, "config", None))
+        platform_config = config.platforms.get(platform) if config else None
+        home = getattr(platform_config, "home_channel", None)
+        if platform == Platform.DISCORD and home and home.chat_id and (
+                str(home.chat_id) != str(chat_id) or pending.get("thread_id")):
+            targets.append((str(home.chat_id), None))
+        if not targets:
+            return True  # nowhere to deliver: a definitive skip, not a failure to retry
+        # One decision per run: once a send fell back to the main chat, the rest of that run's
+        # output and its receipt follow it there instead of splitting between thread and home.
+        fallen_back = getattr(self, "_update_fallback_runs", None)
+        if fallen_back is None:
+            fallen_back = self._update_fallback_runs = set()
+        run_key = (str(platform), str(chat_id), str(pending.get("thread_id")),
+                   str(pending.get("session_key")), str(pending.get("timestamp")))
+        if run_key in fallen_back and len(targets) > 1:
+            targets = targets[1:]
+        for target_chat, metadata in targets:
+            try:
+                result = await adapter.send(
+                    target_chat, text, metadata=_non_conversational_metadata(metadata, platform=platform))
+                if not _send_failed(result):
+                    if target_chat != chat_id and chat_id:
+                        fallen_back.add(run_key)
+                    return True
+                logger.warning("Update delivery failed to %s:%s: %s", platform.value, target_chat, _send_error(result))
+            except Exception as exc:
+                logger.warning("Update delivery failed to %s:%s: %s", platform.value, target_chat, exc)
+        return False
 
     def _pending_marker_metadata(self, platform, chat_id, data: dict, adapter):
         """Thread metadata for a persisted update/restart marker (thread_id/chat_type/message_id keys)."""
@@ -203,8 +255,8 @@ class GatewayUpdateNotificationsMixin:
                 return
             await asyncio.sleep(poll_interval)
         if paths.any_pending() and not paths.exit_code.exists():
-            paths.exit_code.write_text("124", encoding="utf-8")
-            await self._send_update_notification()
+            # A reporting deadline is not an installer exit: keep the receipt for a later watcher.
+            logger.warning("Update reporting deadline elapsed; installer result is unknown, retaining markers")
 
     @staticmethod
     def _update_exit_code(paths: _UpdatePaths) -> int:
@@ -267,6 +319,9 @@ class GatewayUpdateNotificationsMixin:
         """
         paths = self._update_paths()
         loop = asyncio.get_running_loop()
+        # The run can precede the ordinary restart wait; do not expire while that wait is in progress.
+        from hermes_cli.gateway import _get_restart_exit_wait_budget
+        timeout += _get_restart_exit_wait_budget()
         deadline = loop.time() + timeout
         target = self._resolve_update_target(paths)
         if target is None:
@@ -295,14 +350,13 @@ class GatewayUpdateNotificationsMixin:
             if paths.exit_code.exists():
                 _read_new_output()
                 await _flush_buffer()
-                with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
-                    exit_code = self._update_exit_code(paths)
-                    await target.send(
-                        t("gateway.update.finished") if exit_code == 0 else _update_failed_notice()
-                    )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
-                self._clear_update_markers(paths, session_key)
-                return
+                # The shared completion sender inspects returned failures, falls back to the
+                # main chat, and keeps undelivered receipt files for a retry.
+                if await self._send_update_notification():
+                    self._clear_update_markers(paths, session_key)
+                    return
+                await asyncio.sleep(poll_interval)
+                continue
             _read_new_output()
             if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
                 await _flush_buffer()
@@ -321,19 +375,16 @@ class GatewayUpdateNotificationsMixin:
                     logger.debug("Failed to read update prompt: %s", e)
             await asyncio.sleep(poll_interval)
         if not paths.exit_code.exists():
-            logger.warning("Update watcher timed out after %.0fs", timeout)
-            paths.exit_code.write_text("124", encoding="utf-8")
+            # A reporting deadline is not an installer exit: no fabricated exit code or timeout
+            # notice, and the pending receipt stays for the next watcher.
+            logger.warning("Update watcher stopped after %.0fs; installer result unknown, retaining markers", timeout)
             await _flush_buffer()
-            with suppress(Exception):
-                await target.send(t("gateway.update.timed_out"))
-            self._clear_update_markers(paths, session_key)
 
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
 
         False while the update is still running (caller may retry); True after a definitive send/skip.
         """
-        from gateway.run import _non_conversational_metadata
         paths = self._update_paths()
         if not paths.any_pending():
             return False
@@ -366,9 +417,10 @@ class GatewayUpdateNotificationsMixin:
             output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
             platform = Platform(platform_str)
             adapter = self._authorization_adapter(platform, self._marker_profile(pending))
-            if chat_id and not adapter:
-                age = self._marker_age_seconds(pending)
-                if age is not None and age > _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS:
+            age = self._marker_age_seconds(pending)
+            expired = age is not None and age > _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS
+            if not adapter:
+                if expired:
                     # The platform never came back. Deferring forever leaks the markers and re-logs
                     # on every poll for the life of the install: the startup path reschedules this
                     # watcher whenever the markers are still on disk, so an undeliverable marker
@@ -382,20 +434,25 @@ class GatewayUpdateNotificationsMixin:
                 # Target platform not reconnected yet (common right after the update's restart): keep the
                 # markers for a later retry instead of silently losing the notification.
                 return _defer("Update notification deferred: %s adapter not connected yet", platform_str)
-            if chat_id:
-                metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
-                from tools.ansi_strip import strip_ansi
-                output = strip_ansi(output).strip()
-                if exit_code == 0:
-                    msg = t("gateway.update.finished_success")
-                    if output:
-                        msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
-                else:
-                    msg = _update_failed_notice()
-                    if output:
-                        msg = t("gateway.update.last_lines", msg=msg, tail=_update_output_tail(output, 800))
-                await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
-                logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
+            from tools.ansi_strip import strip_ansi
+            output = strip_ansi(output).strip()
+            if exit_code == 0:
+                msg = t("gateway.update.finished_success")
+                if output:
+                    msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
+            else:
+                msg = _update_failed_notice()
+                if output:
+                    msg = t("gateway.update.last_lines", msg=msg, tail=_update_output_tail(output, 800))
+            if not await self._deliver_update_completion(pending, platform, adapter, msg):
+                if expired:  # same bound as a missing adapter: a deleted chat must not leak markers forever
+                    logger.warning(
+                        "Post-update notification for %s:%s dropped after %.1fh: undeliverable",
+                        platform_str, chat_id, age / 3600.0)
+                    self._clear_update_markers(paths, pending.get("session_key"))
+                    return True
+                return _defer("Update receipt undelivered; retaining completion for retry")
+            logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
         except Exception as e:
             logger.warning("Post-update notification failed: %s", e)
         finally:
