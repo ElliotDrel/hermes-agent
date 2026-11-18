@@ -213,6 +213,101 @@ async def test_auto_thread_failure_skips_agent_and_notifies_user(adapter, monkey
     channel.send.assert_awaited_once()
 
 
+# ── auto-thread rate limits ──────────────────────────────────────────
+
+
+class RateLimitError(Exception):
+    def __init__(self, retry_after: float):
+        super().__init__(f"Too many requests. Retry in {retry_after} seconds.")
+        self.retry_after = retry_after
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_rate_limit_does_not_create_seed_or_retry(adapter, monkeypatch):
+    """A Discord 429 must stop before the visible seed-message fallback.
+
+    The fallback is useful for a transient direct-create transport failure, but
+    it is a second thread-create request when Discord has explicitly supplied a
+    cooldown. Retrying it after 0.75 seconds produces false "thread created"
+    notices and cannot succeed until the returned retry_after expires.
+    """
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    message.create_thread = AsyncMock(side_effect=RateLimitError(120))
+    seed_message = SimpleNamespace(create_thread=AsyncMock(side_effect=RateLimitError(120)))
+    message.channel.send = AsyncMock(return_value=seed_message)
+    sleep = AsyncMock()
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", sleep)
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    message.create_thread.assert_awaited_once()
+    message.channel.send.assert_not_awaited()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_rate_limit_cools_down_parent_channel(adapter):
+    """A second root message must not call Discord before retry_after expires."""
+    channel = FakeTextChannel(channel_id=800)
+    first = make_message(channel=channel, content="first")
+    first.create_thread = AsyncMock(side_effect=RateLimitError(120))
+    channel.send = AsyncMock()
+
+    assert await adapter._auto_create_thread(first) is None
+
+    second = make_message(channel=channel, content="second")
+    second.create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    assert await adapter._auto_create_thread(second) is None
+    second.create_thread.assert_not_awaited()
+    channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_cooldown_posts_one_notice_per_window(adapter, monkeypatch):
+    """HERMES-FORK-004: mentions during a 429 cooldown are skipped without each posting a notice
+    (extra traffic only extends the 429); a fresh window after expiry notifies once again."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    for name in ("DISCORD_NO_THREAD_CHANNELS", "DISCORD_IGNORED_CHANNELS", "DISCORD_FREE_RESPONSE_CHANNELS"):
+        monkeypatch.delenv(name, raising=False)
+    channel = FakeTextChannel(channel_id=800)
+    channel.send = AsyncMock()
+    for i in range(3):
+        message = make_message(channel=channel, content=f"hello {i}")
+        message.create_thread = AsyncMock(side_effect=RateLimitError(120))
+        await adapter._handle_message(message)
+    adapter.handle_message.assert_not_awaited()
+    channel.send.assert_awaited_once()
+
+    adapter._auto_thread_cooldown._until["800"] = 0.0  # window expired
+    message = make_message(channel=channel, content="later")
+    message.create_thread = AsyncMock(side_effect=RateLimitError(120))
+    await adapter._handle_message(message)
+    assert channel.send.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_fallback_rate_limit_deletes_seed_and_does_not_retry(adapter, monkeypatch):
+    """A fallback 429 removes its false seed notice and starts the cooldown."""
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    message.create_thread = AsyncMock(side_effect=ConnectionError("temporary network failure"))
+    seed_message = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=RateLimitError(120)),
+        delete=AsyncMock(),
+    )
+    message.channel.send = AsyncMock(return_value=seed_message)
+    sleep = AsyncMock()
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", sleep)
+
+    assert await adapter._auto_create_thread(message) is None
+    message.create_thread.assert_awaited_once()
+    message.channel.send.assert_awaited_once()
+    seed_message.delete.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 

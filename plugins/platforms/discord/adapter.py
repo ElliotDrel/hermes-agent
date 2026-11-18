@@ -1175,6 +1175,7 @@ from plugins.platforms.discord.adapter_opus import load_opus_codec
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin, is_automated_message
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
+from plugins.platforms.discord.adapter_thread_cooldown import AutoThreadCooldown
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
@@ -1209,6 +1210,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
+        self._auto_thread_cooldown = AutoThreadCooldown()  # parent-channel 429 cooldowns (HERMES-FORK-004)
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
@@ -5366,6 +5368,11 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
+        parent_channel_id = str(getattr(getattr(message, "channel", None), "id", ""))
+        cooling = self._auto_thread_cooldown.remaining(parent_channel_id)
+        if cooling:
+            logger.warning("[%s] Auto-thread creation cooling down for parent channel %s (%.2fs remaining)", self.name, parent_channel_id or "unknown", cooling)
+            return None
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
         for attempt in range(2):
@@ -5374,12 +5381,29 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
+                if self._is_discord_rate_limit(direct_error):
+                    retry_after = self._extract_discord_retry_after(direct_error) or 60.0
+                    self._auto_thread_cooldown.record(parent_channel_id, retry_after)
+                    logger.warning("[%s] Auto-thread creation rate limited for %.2fs; skipping fallback and retry", self.name, retry_after)
+                    return None
+                seed_msg = None
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
                     thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
+                    if self._is_discord_rate_limit(fallback_error):
+                        retry_after = self._extract_discord_retry_after(fallback_error) or 60.0
+                        self._auto_thread_cooldown.record(parent_channel_id, retry_after)
+                        delete_seed = getattr(seed_msg, "delete", None)
+                        if delete_seed is not None:
+                            try:
+                                await delete_seed()
+                            except Exception:
+                                logger.debug("[%s] Could not remove auto-thread seed after rate limit", self.name, exc_info=True)
+                        logger.warning("[%s] Auto-thread fallback rate limited for %.2fs; removed seed and skipping retry", self.name, retry_after)
+                        return None
                     if attempt == 0:
                         # Brief backoff: most failures here are transient connect errors.
                         await asyncio.sleep(0.75)
@@ -6100,6 +6124,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 else:
                     # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
                     # reply (dumps the task into a shared channel). Surface an error and skip the run.
+                    # During a 429 cooldown only the first mention in the window gets the notice.
+                    if not self._auto_thread_cooldown.claim_notice(str(message.channel.id)):
+                        return False
                     try:
                         # That breaks thread-first Discord workflows by dumping a new task into a shared
                         # channel. Surface a short visible error so the user can retry once Discord

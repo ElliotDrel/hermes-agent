@@ -238,6 +238,12 @@ before dispatch, history backfill and reply previews. Unrelated words remain inp
 Confirmed thread-create `429` records the parent channel retry deadline and skips
 seed fallback/retry. A fallback `429` removes its false seed when one exists.
 Ordinary transient retries and configured thread settings remain native.
+While a channel cools down, later mentions are skipped silently: at most one
+`auto_create_failed` notice per cooldown window per parent channel (the old fork
+posted one per mention; extra traffic only extends the 429). State lives in
+`plugins/platforms/discord/adapter_thread_cooldown.py` (`AutoThreadCooldown`), not the
+adapter facade. Verification: test_discord_channel_controls.py (10 passed) incl. the
+one-notice-per-window test.
 
 ## HERMES-FORK-012: Semantic titles and Discord rename
 
