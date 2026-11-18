@@ -1645,6 +1645,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `transform_terminal_output` | `tools/terminal_tool_result.py` `_apply_output_transform_hook` |
 | `transform_tool_result` | `model_tools.py` `_apply_transform_tool_result_hook` |
 | `transform_llm_output` | `agent/turn_finalizer.py` `apply_llm_output_transform` |
+| `transform_gateway_response` | `gateway/response_metadata.py` `transform_discord_response`, called from `gateway/run_turn.py` at Discord final send/edit and queued first-response delivery |
 | `pre_llm_call` | `agent/turn_context.py` `_collect_pre_llm_call_context` |
 | `post_llm_call` | `agent/turn_finalizer.py` `_apply_output_hooks` |
 | `on_stream_start` / `on_stream_end` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_stream_start` / `_emit_stream_end` |

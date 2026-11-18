@@ -1510,6 +1510,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Most failed results name no provider; the error card's sign-in / update-key action needs it.
             "provider": getattr(agent, "provider", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+            # Read-only telemetry for the display-only ``transform_gateway_response`` hook.
+            "context_used_tokens": getattr(comp, "last_total_tokens", None),
+            "compaction_trigger_tokens": getattr(comp, "threshold_tokens", None),
+            "compaction_count": getattr(comp, "compression_count", None),
             # The rest of the `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS): a finite
             # viewer reads the committed result over `prompt.receipt`, so the projection must keep
             # what the in-process one-shot took straight from `run_conversation`.

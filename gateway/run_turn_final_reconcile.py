@@ -126,9 +126,10 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
 
 
 async def edit_streamed_message(consumer: Any, source: Any, response: dict, content: str, *, sk: str,
-                                ok: tuple, fail_result: str, fail_exc: str) -> None:
+                                ok: tuple, fail_result: str, fail_exc: str) -> Optional[bool]:
     """Edit the consumer's message in place with ``content``; on success mark
-    ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
+    ``response["already_sent"]`` and log ``ok``. Returns True on success, False on a failed edit,
+    None when the turn was replaced. A returned failure logs ``fail_result`` as
     ``(session, error)`` and an exception logs ``fail_exc`` as ``(session, exc)``; either way
     ``already_sent`` stays unset so the normal final send delivers the content."""
     try:
@@ -137,11 +138,12 @@ async def edit_streamed_message(consumer: Any, source: Any, response: dict, cont
             still_current=getattr(consumer, "_run_still_current", None))
     except Exception as edit_err:  # health: allow BLE001 -- any edit failure falls back to the normal final send
         logger.warning(fail_exc, sk, edit_err)
-        return
+        return False
     if result is TURN_REPLACED:
-        return  # its stale-run discard owns what happens next
+        return None  # its stale-run discard owns what happens next
     if not getattr(result, "success", True):
         logger.warning(fail_result, sk, getattr(result, "error", None))
-        return
+        return False
     response["already_sent"] = True
     logger.info(*ok)
+    return True

@@ -5127,6 +5127,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
                 content = getattr(msg, "clean_content", msg.content) or ""
+                if msg.author == self._client.user:
+                    from gateway.response_metadata import strip_response_metadata_footer
+                    content = strip_response_metadata_footer(content)
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
@@ -6240,6 +6243,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                if reply_to_text and getattr(message.reference.resolved, "author", None) == self._client.user:
+                    from gateway.response_metadata import strip_response_metadata_footer
+                    reply_to_text = strip_response_metadata_footer(reply_to_text) or None
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,

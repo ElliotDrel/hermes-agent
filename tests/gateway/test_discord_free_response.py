@@ -645,6 +645,27 @@ async def test_fetch_channel_context_reply_target_in_primary_window_not_duplicat
     assert result.count("recent reply target") == 1
 
 
+@pytest.mark.asyncio
+async def test_metadata_footer_never_reenters_backfill_or_reply_preview(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    footer = "\n\n*Model: sol · Provider: nous · Context used: 1 tokens (1% of compaction trigger) · Compactions: 0*"
+    target = make_history_message(author=adapter._client.user, content="answer" + footer, msg_id=3)
+    channel = FakeHistoryChannel([target], channel_id=123)
+    trigger = make_message(channel=channel, content="follow up")
+    trigger.reference = SimpleNamespace(message_id=3, resolved=target)
+    context = await adapter._fetch_channel_context(channel, before=trigger, reply_target=target)
+    assert "answer" in context
+    assert "Model:" not in context
+    assert target.content == "answer" + footer
+    await adapter._handle_message(trigger)
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_to_text == "answer"
+    assert "Model:" not in (event.channel_context or "")
+    assert target.content == "answer" + footer
+
+
 def test_nonconversational_fallback_requires_self_improvement_emoji():
     assert discord_platform._looks_like_nonconversational_history_message(
         "💾 Self-improvement review: Memory updated"

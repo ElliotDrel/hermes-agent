@@ -67,6 +67,23 @@ The workspace formatter performs no route DB reads, network model metadata or
 subscription-quota refresh. Percent is labeled "of compaction trigger" and uses the
 effective runtime threshold, including small-context floors/caps, not the nominal
 window or configured raw cap. Missing telemetry is not fabricated.
+Touchpoints: `gateway/response_metadata.py` (new: `transform_discord_response`,
+`prepare_delivery_response`, `delivery_text`, footer strip); `gateway/run_turn.py`
+(completion path after persistence, queued first-response lane, streamed-edit
+reconciliation using `delivery_response`/`delivery_transformed`);
+`gateway/run_turn_runner.py` (read-only telemetry keys on the turn result);
+`hermes_cli/plugins*.py` (hook registration); Discord adapter strips (`_keep`, reply
+preview). Not ported: fork commit b14784c1d4 (durable ctx/compaction metadata) wrote
+session meta and changed transform_llm_output payloads; v0.23.2 telemetry is read
+live instead. The progress-header percent change (39197b980c) belongs to 017.
+When the body already streamed to a split or `__no_edit__` message, the display-only
+copy cannot be edited in: the turn is marked `already_sent` and that turn's footer is
+dropped rather than re-sending the whole body (review fix; queued lane shares it). A
+rejected in-place footer edit (e.g. a Discord 429) takes the same path: the streamed body
+stands, the footer is dropped, nothing is posted twice (not for plugin response_transformed).
+v0.23.2 verification: tests/gateway/test_response_metadata.py (13), the Discord
+free-response suite and run_progress_topics suite (55, incl. four streaming/queued
+matrix cases and the failed-footer-edit no-resend case asserting history and result messages stay footer-free) all pass.
 
 ## HERMES-FORK-015: Windows search pattern transport
 
