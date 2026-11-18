@@ -4202,12 +4202,31 @@ def _run_planned_stop_watcher(
     from gateway.status import (
         _get_planned_stop_marker_path, planned_stop_marker_targets_self)
     marker_path = _get_planned_stop_marker_path()
+    # The Windows updater writes its marker just before the update-pause socket call; an accepted
+    # pause owns the exit (restart-when-idle). Fire only on a marker seen on two consecutive ticks so
+    # that ACK can land first and the marker never interrupts the idle wait (HERMES-FORK-023).
+    seen_last_tick = False
+    # Verdict of the loop-thread re-check below: [] until it ran, then [fired] / [declined].
+    verdict: list[bool] = []
+    scheduled = False
     while not stop_event.is_set():
         try:
-            if (
+            if scheduled:
+                if not verdict:
+                    stop_event.wait(poll_interval)
+                    continue
+                if verdict[0]:
+                    break
+                # Declined: a pause was accepted after our check. Resume polling from a fresh sighting.
+                scheduled, seen_last_tick = False, False
+                verdict.clear()
+            armed = (
                 marker_path.exists()
                 and not getattr(runner, "_draining", False)
-                and getattr(runner, "_running", False)):
+                and not getattr(runner, "_update_pause_pending", False)
+                and getattr(runner, "_running", False))
+            confirmed, seen_last_tick = armed and seen_last_tick, armed
+            if confirmed:
                 # A marker may target a PREVIOUS instance that exited before stop() cleaned up;
                 # firing on it means an "UNKNOWN" exit and a watchdog crash-loop; probe unlinks stale.
                 # A marker existing is NOT sufficient — it may have been written for a PREVIOUS gateway
@@ -4224,8 +4243,18 @@ def _run_planned_stop_watcher(
                     stop_event.wait(poll_interval)
                     continue
                 # Same path as a real signal; the handler consumes the marker (validates pid + start_time).
-                loop.call_soon_threadsafe(shutdown_handler, None)
-                break
+                # Re-check the pause flag ON the loop: a pause ``_request`` scheduled earlier by the
+                # control socket runs first (loop FIFO), so it cannot set the flag after this decision.
+                def _fire_unless_paused() -> None:
+                    if getattr(runner, "_update_pause_pending", False):
+                        verdict.append(False)
+                        return
+                    verdict.append(True)
+                    shutdown_handler(None)
+
+                scheduled = True
+                loop.call_soon_threadsafe(_fire_unless_paused)
+                continue
         except Exception as _e:
             logger.debug("Planned-stop watcher tick error: %s", _e)
         stop_event.wait(poll_interval)

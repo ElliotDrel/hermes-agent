@@ -333,6 +333,11 @@ async def _start_gateway_start_control_socket(runner):
                 try:
                     from gateway.restart_when_idle import force_restart, request_service_restart
                     accepted_box.append(force_restart(runner) if force else request_service_restart(runner))
+                    if accepted_box[0] and not force:
+                        # The updater wrote its planned-stop marker first (crash custody); this
+                        # accepted pause now owns the exit, so the marker watcher must not cut the
+                        # restart-when-idle wait short (HERMES-FORK-023).
+                        runner._update_pause_pending = True
                     accepted_box.append(runner._describe_active_work())
                 finally:
                     _done.set()

@@ -134,7 +134,7 @@ def test_pause_stops_launcher_after_worker_drain(
     # precisely the case that used to leave the launcher alive and abort.
     drained_dead: set[int] = set()
 
-    def _drain_marks_workers_dead(pids, *, timeout):
+    def _drain_marks_workers_dead(pids, *, timeout, profile_homes=None):
         drained_dead.update(int(p) for p in pids)
         return set()
 

@@ -16,6 +16,8 @@ import json
 import os
 import threading
 import time
+
+import pytest
 from unittest.mock import MagicMock
 
 
@@ -83,16 +85,115 @@ def test_watcher_fires_shutdown_when_marker_appears(tmp_path, monkeypatch):
         daemon=True,
     )
     watcher.start()
+    deadline = time.time() + 10.0
+    while not loop._captured and time.time() < deadline:
+        time.sleep(0.01)
+    # The watcher schedules a loop-thread re-check; run it as the loop would.
+    fn, args = loop._captured[0]
+    fn(*args)
     watcher.join(timeout=10.0)
 
     assert not watcher.is_alive(), "Watcher should exit after firing"
     assert len(loop._captured) == 1, (
         f"Expected exactly one shutdown invocation, got {loop._captured}"
     )
-    fn, args = loop._captured[0]
-    assert fn is shutdown_handler
     # The handler must be called with signal=None (planned stop sentinel).
-    assert args == (None,)
+    shutdown_handler.assert_called_once_with(None)
+
+
+def test_watcher_loop_recheck_declines_when_pause_lands_after_its_check(tmp_path, monkeypatch):
+    """HERMES-FORK-023: the pause ``_request`` is queued on the loop before the watcher's callback,
+    so it sets the flag first; the callback must decline, and the watcher must keep polling (and fire
+    later once the pause is gone) instead of giving up."""
+    marker = tmp_path / ".gateway-planned-stop.json"
+    _write_self_marker(marker)
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    runner = _FakeRunner(running=True, draining=False)
+    shutdown_handler = MagicMock(name="shutdown_signal_handler")
+    queue = []
+
+    def call_soon_threadsafe(fn, *args):
+        queue.append((fn, args))
+
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    loop.call_soon_threadsafe = call_soon_threadsafe
+    stop_event = threading.Event()
+    watcher = threading.Thread(
+        target=_run_planned_stop_watcher, args=(stop_event, runner, loop, shutdown_handler),
+        kwargs={"poll_interval": 0.01}, daemon=True)
+    watcher.start()
+
+    def next_callback():
+        deadline = time.time() + 10.0
+        while not queue and time.time() < deadline:
+            time.sleep(0.01)
+        return queue.pop(0)
+
+    # The pause request was queued earlier on the loop (FIFO) than the watcher's callback.
+    pause_request = lambda: setattr(runner, "_update_pause_pending", True)  # noqa: E731
+    first_fn, first_args = next_callback()
+    pause_request()          # loop runs the earlier-queued _request first
+    first_fn(*first_args)    # then the watcher's re-check
+    shutdown_handler.assert_not_called()
+    assert watcher.is_alive(), "A declined fire must not end the watcher"
+
+    runner._update_pause_pending = False  # pause ended without an exit
+    second_fn, second_args = next_callback()
+    second_fn(*second_args)
+    watcher.join(timeout=10.0)
+    assert not watcher.is_alive()
+    shutdown_handler.assert_called_once_with(None)
+    stop_event.set()
+
+
+def _run_watcher_for(runner, marker, monkeypatch, *, seconds=0.3):
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    loop = _make_loop_capturing_calls()
+    stop_event = threading.Event()
+    watcher = threading.Thread(
+        target=_run_planned_stop_watcher, args=(stop_event, runner, loop, MagicMock()),
+        kwargs={"poll_interval": 0.05}, daemon=True)
+    watcher.start()
+    time.sleep(seconds)
+    stop_event.set()
+    watcher.join(timeout=10.0)
+    return loop._captured
+
+
+def test_watcher_defers_to_an_accepted_update_pause(tmp_path, monkeypatch):
+    """HERMES-FORK-023: the Windows updater writes its marker before the pause call (crash custody).
+    Once the gateway accepted the pause, restart-when-idle owns the exit; the marker must not stop
+    the gateway mid-turn while that idle wait runs."""
+    marker = tmp_path / ".gateway-planned-stop.json"
+    _write_self_marker(marker)
+    runner = _FakeRunner(running=True, draining=False)
+    runner._update_pause_pending = True
+    assert _run_watcher_for(runner, marker, monkeypatch) == []
+    assert marker.exists()
+
+
+def test_watcher_waits_one_tick_so_a_pause_ack_lands_first(tmp_path, monkeypatch):
+    """A pause accepted between the updater's marker write and the watcher's second sighting wins."""
+    marker = tmp_path / ".gateway-planned-stop.json"
+    _write_self_marker(marker)
+    runner = _FakeRunner(running=True, draining=False)
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    loop = _make_loop_capturing_calls()
+    ticks = []
+    stop_event = threading.Event()
+    real_wait = stop_event.wait
+
+    def wait(timeout=None):
+        ticks.append(1)
+        if len(ticks) == 1:
+            runner._update_pause_pending = True  # the ACK lands right after the first sighting
+        if len(ticks) > 5:
+            stop_event.set()
+        return real_wait(0.01)
+
+    stop_event.wait = wait
+    _run_planned_stop_watcher(stop_event, runner, loop, MagicMock(), poll_interval=0.01)
+    assert loop._captured == []
 
 
 def test_watcher_tolerates_marker_path_resolution_errors(tmp_path, monkeypatch, caplog):
@@ -233,3 +334,26 @@ def test_cli_sigterm_after_watcher_consumed_the_marker_stays_planned(tmp_path, m
     bare, bare_flag = _handler()
     bare(signal.SIGTERM)
     assert bare_flag[0] is True
+
+
+@pytest.mark.asyncio
+async def test_restart_task_failure_releases_the_update_pause_flag(monkeypatch):
+    """HERMES-FORK-023: a pause whose restart task ends without stopping must not leave the watcher
+    deferring to it forever."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway import restart_when_idle
+
+    async def idle(_runner):
+        return True
+
+    monkeypatch.setattr(restart_when_idle, "await_idle", idle)
+    runner = SimpleNamespace(
+        _restart_task_started=False, _restart_force_event=None, _draining=False,
+        _restart_detached=False, _restart_via_service=True, _update_pause_pending=True,
+        stop=AsyncMock(side_effect=RuntimeError("stop failed")))
+    assert restart_when_idle.request_restart(runner, detached=False, via_service=True)
+    with pytest.raises(RuntimeError):
+        await runner._restart_task
+    assert runner._update_pause_pending is False

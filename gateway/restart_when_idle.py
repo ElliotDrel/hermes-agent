@@ -162,7 +162,11 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
             except Exception:
                 logger.error("Failed to launch detached gateway restart helper", exc_info=True)
         await asyncio.sleep(0.05)
-        await runner.stop(restart=True, detached_restart=detached, service_restart=via_service)
+        try:
+            await runner.stop(restart=True, detached_restart=detached, service_restart=via_service)
+        finally:
+            # A pause that never reached an exit must not keep the planned-stop watcher deferring.
+            runner._update_pause_pending = False
 
     from contextvars import Context
     # NOT in _background_tasks (``_stop_impl`` cancels those, #12875); strong ref on the runner.

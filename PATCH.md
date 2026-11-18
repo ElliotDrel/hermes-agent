@@ -6,10 +6,25 @@ Base: official stable v0.23.2, `ae2a81ccc00e9b7c06301523e5bb09608397149c`.
 ## HERMES-FORK-023: Native Windows update drain
 
 Windows updates use the normal restart exit budget, including its after-turn wait.
-The socket pause is attempted before the planned-stop marker; the marker is only
-the fallback when no valid ACK arrives. Otherwise the marker invokes direct stop
-and bypasses normal agent draining. The existing drain reporter shows active work
-while waiting. Native timeout, forced-stop fallback, install and restart remain native.
+Upstream's marker-first crash custody (#92091) is kept: the planned-stop marker and
+crash-ledger hook precede the socket pause. A gateway that accepts a non-forced pause
+sets `_update_pause_pending`, and the planned-stop watcher defers to that
+restart-when-idle wait; it also fires only on a marker seen on two consecutive ticks,
+so the ACK lands first. The fire is a loop-thread callback that re-checks the flag
+(loop FIFO runs the earlier-queued pause request first) and, if it declines, the
+watcher keeps polling. `restart_when_idle._run_restart` clears the flag in a `finally`
+around `stop()`; a failure before that point (e.g. in the idle wait) is not covered.
+Old/unreachable gateways still stop via the marker. The
+existing drain reporter shows active work while waiting. Native timeout, forced-stop
+fallback, install and restart remain native.
+
+Touchpoints: hermes_cli/update_cmd_windows.py, gateway/run.py
+(`_run_planned_stop_watcher`), gateway/run_bootstrap.py (`_pause_for_update_handler`).
+v0.23.2 verification: 53 passed, 0 failed (4 POSIX-only skipped) across
+test_planned_stop_watcher, test_windows_update_drain, test_control_socket_pause,
+test_restart_drain, test_update_concurrent_quarantine and the Windows cold-start
+lifecycle suite (incl. the loop-recheck and flag-release tests). The live Windows e2e
+test_pause_custody was not run.
 
 ## HERMES-FORK-001: Rebase preparation with native installation
 
