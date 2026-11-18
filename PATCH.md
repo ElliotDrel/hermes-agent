@@ -403,15 +403,6 @@ or force tool yields. Explicit hard-stop cancellation keeps the native clear pol
 
 ## HERMES-FORK-027: Compaction recovery and canonical usage continuity
 
-An accepted pruning-only transcript rewrite now arms the existing next-provider
-recovery verdict after commit. Below-threshold provider prompt usage can rearm the
-per-pressure-episode attempt budget; equal/above-threshold and missing usage cannot.
-No summary success is fabricated: structural backoff and fallback-quality streaks
-remain distinct. Preserve the pruning backoff across the native boundary callback's
-session-state rebind. Unchanged/equal-copy, aborted, empty, growing/rejected, cancelled,
-lock-skipped and failed-commit attempts never arm a new recovery verdict.
-Attempt caps, rough-estimate deferral and failure guards remain native. Do not change configured context budgets.
-
 Usage anchors fingerprint the canonical content selected by the existing
 substitute_api_content wire helper (valid nonempty string sidecar on user/assistant,
 otherwise content), not both display and wire copies. Clean finalization/SQLite
@@ -420,6 +411,26 @@ also rejects earlier rewrites/reordering even when the last priced row survives.
 Persist/restore retain that digest; legacy last-row-only anchors fail closed until
 the next real provider reading. No provider payload, cache key, schema, role/order,
 clean display storage, transcript migration or old-history rewrite is introduced.
+
+Dropped on v0.23.2: the earlier pruning-only rearm (delta b: `_finish_compaction_boundary`
+`elif` plus `pruning_backoff`). It is unreachable for any in-tree engine: stock `compress()`
+returns the unpruned list and `_candidate_rejected` returns first. Dead code without E2E
+proof is not wired in; reopen if a context engine that prunes without progress is adopted.
+
+Touchpoints: `agent/usage_anchor.py` (`message_fingerprint` projects a copy through
+`substitute_api_content`; `api_content` dropped from `_FINGERPRINT_KEYS`).
+Upstream v0.23.2 already carries the priced-prefix digest (`base_prefix_fp`,
+`_priced_prefix_fingerprint`) and persistence, so only the fingerprint delta is ported.
+Approval: Elliot granted a change-specific manual override on 2026-11-17 (T3
+session) to re-port this settled behavior onto v0.23.2 after a per-intent
+assessment of model-facing effect, failure mode and rollback. Residual risk: the
+fingerprint change only affects local token accounting and alters no provider payload
+bytes. The fingerprint shape change invalidates every persisted `_usage_anchor` once: the
+match fails closed, so each session pays one re-price or one missed compaction trigger until
+the next real provider reading re-anchors it. No code handles this. Rollback: revert this commit.
+v0.23.2 verification: test_compaction_recovery_anchors (14), test_usage_anchor, anti_thrash,
+infinite_compaction_loop, turn_context_compaction, split_turn, mid_turn_compaction: 70 passed
+in total, 0 failed.
 
 ## HERMES-FORK-028: Inert pinned staging and explicit user activation
 

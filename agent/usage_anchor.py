@@ -28,14 +28,20 @@ USAGE_ANCHOR_MODEL_CONFIG_KEY = "_usage_anchor"
 # Identity of a priced message = the provider-visible fields that round-trip the session DB
 # byte-for-byte. Display/persistence metadata (timestamps, row ids, display kinds) is rewritten
 # on reload and would only ever fail the match closed.
-_FINGERPRINT_KEYS = ("role", "content", "api_content", "tool_call_id", "tool_calls")
+_FINGERPRINT_KEYS = ("role", "content", "tool_call_id", "tool_calls")
 
 
 def message_fingerprint(msg: Any) -> Optional[str]:
     """Stable digest of one transcript message over its provider-visible, persisted fields."""
     if not isinstance(msg, dict):
         return None
-    payload = {k: msg.get(k) for k in _FINGERPRINT_KEYS if msg.get(k) is not None}
+    # Share the wire substitution rule, including role/type/empty-sidecar guards.
+    # Clean display content may change during finalization without changing wire bytes.
+    from agent.turn_context import substitute_api_content
+
+    projected = msg.copy()
+    substitute_api_content(projected)
+    payload = {k: projected.get(k) for k in _FINGERPRINT_KEYS if projected.get(k) is not None}
     try:
         raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True, separators=(",", ":"))
     except (TypeError, ValueError):
