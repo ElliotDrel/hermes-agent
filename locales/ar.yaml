@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "تعيين عنوان الجلسة أو عرضه"
         arg_name: "عنوان الجلسة. اتركه فارغًا لعرض الحالي."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "اسم الجلسة المراد استئنافها. اتركه فارغًا لعرض الجلسات."
       usage:

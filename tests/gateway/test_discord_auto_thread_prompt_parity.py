@@ -54,6 +54,15 @@ async def test_auto_thread_first_turn_pins_the_threads_topic(monkeypatch: pytest
     adapter._discord_history_backfill = lambda: False
     adapter._auto_create_thread = AsyncMock(return_value=thread)
     adapter.handle_message = AsyncMock()
+
+    async def confirmed_edit(_adapter, _thread_id: int, name: str, expected: str | None) -> bool:
+        # The confirmed transport (thread_rename.rename_once) has its own suite; only the edit matters here.
+        if expected is not None and thread.name != expected:
+            raise RuntimeError("The thread name changed")
+        await thread.edit(name=name)
+        return True
+
+    monkeypatch.setattr("plugins.platforms.discord.thread_rename.rename_once", confirmed_edit)
     runner = object.__new__(gateway_run.GatewayRunner)
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
 

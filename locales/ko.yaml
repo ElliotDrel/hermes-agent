@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "세션 제목 설정 또는 보기"
         arg_name: "세션 제목. 비워 두면 현재 제목을 보여줘요."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "재개할 세션 이름. 비워 두면 세션 목록을 보여줘요."
       usage:

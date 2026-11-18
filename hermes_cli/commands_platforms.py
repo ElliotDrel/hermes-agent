@@ -413,7 +413,10 @@ _SLACK_VIA_HERMES_ONLY = frozenset({
     # Recovery-only, after a restart lost a turn: `/hermes discard` reaches it.
     "discard",
     # One-time answer to the low-disk prompt; `/hermes autoprune on` reaches it.
-    "autoprune"})
+    "autoprune",
+    # Discord-thread-only (refuses elsewhere), so a native Slack slash would be dead weight and
+    # would clamp `usage` out of the Telegram-parity set (HERMES-FORK-012).
+    "rename"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

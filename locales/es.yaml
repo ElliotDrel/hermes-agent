@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "Establecer o mostrar el título de la sesión"
         arg_name: "Título de la sesión. Déjalo vacío para mostrar el actual."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Nombre de la sesión a reanudar. Déjalo vacío para listar las sesiones."
       usage:

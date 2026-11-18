@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "Socraigh nó taispeáin teideal an tseisiúin"
         arg_name: "Teideal an tseisiúin. Fág folamh chun an ceann reatha a thaispeáint."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Ainm an tseisiúin le hatosú. Fág folamh chun seisiúin a liostú."
       usage:

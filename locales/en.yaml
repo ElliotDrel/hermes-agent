@@ -1186,6 +1186,9 @@ platform:
       title:
         description: "Set or show the session title"
         arg_name: "Session title. Leave empty to show current."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Session name to resume. Leave empty to list sessions."
       usage:

@@ -24,7 +24,7 @@ class _TurnObserved(BaseException):
 async def test_gateway_titles_original_request_without_changing_model_input(tmp_path, monkeypatch, skills):
     question = "Why does my connection pool exhaust after a deployment?"
     names = [skills] if isinstance(skills, str) else skills
-    payloads = {name: f"# {name}\n" + (f"Follow {name} procedures.\n" * 100) for name in names}
+    payloads = {name: f"# {name}\n" + (f"Follow {name} procedures.\n" * (title_generator.MAX_TITLE_INPUT_CHARS // 20)) for name in names}
     monkeypatch.setattr("agent.skill_commands._load_skill_payload", lambda name, **kw: (
         {"name": name, "content": payloads[name]}, tmp_path / name, name,
     ))

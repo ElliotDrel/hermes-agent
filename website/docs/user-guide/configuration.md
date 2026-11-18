@@ -3116,6 +3116,7 @@ discord:
 - `free_response_channels` — comma-separated list of channel IDs where the bot responds to every message without requiring a mention.
 - `auto_thread` — when `true` (default), mentions in channels automatically create a thread for the conversation, keeping channels clean (similar to Slack threading).
 - `free_response_auto_thread` — when `true`, channels in `free_response_channels` also auto-create a thread per top-level message. Default `false`: free-response channels reply inline. Requires `auto_thread: true`.
+- `discord.rename_manual_threads` — when `true`, threads a user created (not Hermes) also get a semantic title once the first title is generated. Default `false`. A human rename made while the title is generating always wins.
 
 ## Security
 

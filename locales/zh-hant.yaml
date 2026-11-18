@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "設定或顯示工作階段標題"
         arg_name: "工作階段標題。留空可顯示目前標題。"
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "要恢復的工作階段名稱。留空可列出工作階段。"
       usage:

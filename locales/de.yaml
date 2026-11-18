@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "Sitzungstitel festlegen oder anzeigen"
         arg_name: "Sitzungstitel. Leer lassen, um den aktuellen anzuzeigen."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Name der fortzusetzenden Sitzung. Leer lassen, um Sitzungen aufzulisten."
       usage:

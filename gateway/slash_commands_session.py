@@ -1122,6 +1122,142 @@ class GatewaySessionCommandsMixin:
             logger.debug("Failed to rename Telegram topic from /title", exc_info=True)
         return t("gateway.title.set_to", title=sanitized)
 
+    async def _handle_rename_command(self, event: MessageEvent) -> str:
+        """A single pending operation owns this thread until its terminal result."""
+        source = event.source
+        if source.platform != Platform.DISCORD or source.chat_type != "thread":
+            return "`/rename` can only be used inside a Discord thread."
+        adapter = self._delivery_adapter_for(source)
+        key = (id(adapter), str(source.thread_id or source.chat_id))
+        pending = self.__dict__.setdefault("_pending_rename_commands", set())
+        if key in pending:
+            return "A rename is already pending for this thread. No additional rename was sent; wait for its result before retrying."
+        native_key = None
+        # Shared by automatic native titling, not just duplicate slash requests.
+        if adapter is not None and callable(getattr(adapter, "claim_thread_rename", None)):
+            if not adapter.claim_thread_rename(key[1]):
+                return "A rename is already pending for this thread; wait for its result before retrying."
+            native_key = key[1]
+        pending.add(key)
+        try:
+            return await self._rename_thread_command(event, adapter)
+        finally:
+            pending.discard(key)
+            if native_key is not None:
+                adapter.release_thread_rename(native_key)
+
+    async def _rename_thread_command(self, event: MessageEvent, adapter) -> str:
+        from hermes_state import SessionDB
+        from plugins.platforms.discord.thread_rename import validate_thread_name
+        import math
+
+        source = event.source
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+        if not adapter or not callable(getattr(adapter, "get_thread_name", None)):
+            return "This Discord adapter cannot confirm thread names; no rename was sent."
+        parts = str(event.text or "").split(maxsplit=1)
+        requested = parts[1].strip() if len(parts) > 1 else ""
+        confirmed = False
+        candidate = requested
+        try:
+            # Acknowledge before validation, DB work or auxiliary generation.
+            thread_id = str(source.thread_id or source.chat_id)
+            visible = await adapter.get_thread_name(thread_id)
+            from gateway.run import _non_conversational_metadata
+            action = (f"Requested title: **{requested[:100]}**"
+                      + (" ← 100-character cutoff" if len(requested) > 100 else "")
+                      + f"\nRequested title length: {len(requested)} characters."
+                      if requested else "Generating new title…")
+            notice = await adapter.send(
+                source.chat_id, f"Current title: **{visible}**\n{action}",
+                reply_to=event.message_id,
+                metadata=_non_conversational_metadata(
+                    {"force_proactive_send": True}, platform=source.platform))
+            if notice is not None and getattr(notice, "success", True) is False:
+                return "Rename not completed: could not deliver the rename acknowledgement. No rename was sent."
+            if requested:
+                validate_thread_name(requested)
+            entry = await self.async_session_store.get_or_create_session(source)
+            session_id = entry.session_id
+            previous = await self._session_db.get_session(session_id)
+            if not previous:
+                return "The current session was not found; no rename was sent."
+            old_title, old_source = previous.get("title"), previous.get("title_source")
+            candidate = requested
+            if not candidate:
+                history = await self._session_db.get_messages(session_id, include_compacted=True)
+                from agent.title_generator import format_regenerated_title_context, generate_regenerated_title
+                if not format_regenerated_title_context(history):
+                    return "There is not enough conversation context to generate a title yet."
+                candidate = await asyncio.to_thread(generate_regenerated_title, history, old_title or visible)
+                if not candidate:
+                    return "I could not generate a usable title."
+                candidate = SessionDB.sanitize_title(candidate)
+            validate_thread_name(candidate)
+            # Recheck both state and route after asynchronous generation/read I/O.
+            current = await self._session_db.get_session(session_id)
+            active = await self.async_session_store.get_or_create_session(source)
+            if (active.session_id != session_id or not current
+                    or (current.get("title"), current.get("title_source")) != (old_title, old_source)):
+                return "The session or saved title changed while preparing the rename; leaving the newer decision alone."
+            if not await self._session_db.validate_session_title(session_id, candidate):
+                return "The current session could not be renamed; no rename was sent."
+            # Even equality must go through a fresh visible-name check in the adapter.
+            renamed = await adapter.rename_thread(
+                thread_id, candidate, only_if_current_name=visible, raise_on_error=True)
+            if not renamed:
+                return "Discord did not confirm the rename. The saved title was not changed."
+            confirmed = True
+            active = await self.async_session_store.get_or_create_session(source)
+            if active.session_id != session_id:
+                return f"Discord confirmed **{candidate}**, but the active session changed; its saved title was left alone."
+            # to_thread cannot be cancelled. Keep ownership until its CAS settles.
+            commit = asyncio.create_task(self._session_db.set_session_title_if_current(
+                session_id, candidate, expected_title=old_title, expected_source=old_source))
+            try:
+                saved = await asyncio.shield(commit)
+            except asyncio.CancelledError:
+                # Repeated /stop/shutdown cancellation must not detach this worker.
+                while not commit.done():
+                    try:
+                        await asyncio.shield(commit)
+                    except asyncio.CancelledError:
+                        continue
+                if not commit.cancelled():
+                    commit.exception()  # Consume a failed worker, then propagate cancellation.
+                raise
+            active = await self.async_session_store.get_or_create_session(source)
+            if active.session_id != session_id:
+                return f"Discord confirmed **{candidate}**, but the active session changed during synchronization; the new session was not retitled."
+            if not saved:
+                return f"Discord confirmed **{candidate}**, but a newer saved-title decision was preserved. Use `/rename` to reconcile if needed."
+            if visible == candidate:
+                return f"Discord is already named **{candidate}** (freshly confirmed). The saved title is synchronized."
+            prior = f"Discord title **{visible}**"
+            if old_title != visible:
+                prior += f" (previous internal title: **{old_title or 'Untitled Conversation'}**)"
+            return f"Renamed this thread from {prior} to **{candidate}**; visible name confirmed and saved title synchronized."
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if confirmed:
+                return (f"Discord confirmed **{candidate}**, but saved-title synchronization failed: {exc}. "
+                        "Check `/title` and use `/rename` to reconcile; no delayed rename retry remains.")
+            retry = getattr(exc, "retry_after", None)
+            if retry is not None:
+                return (f"Discord rate-limited the rename. Retry `/rename` in about {math.ceil(float(retry))} seconds. "
+                        "The saved title was not changed; no delayed rename retry remains.")
+            status = getattr(exc, "status", None)
+            if status:
+                hint = " Check the bot's Manage Threads permission." if status == 403 else ""
+                return f"Discord rejected the operation with HTTP {status}.{hint} The saved title was not changed; no delayed retry remains."
+            detail = str(exc).rstrip(".")
+            if candidate and len(candidate) > 100:
+                detail += (f"\nFirst 100 characters: **{candidate[:100]}** ← cutoff"
+                           f"\nFull title length: {len(candidate)} characters (maximum 100)")
+            return f"Rename not completed: {detail}. The saved title was not changed; no delayed retry remains."
+
     # -------------------------------------------------------------- /resume, /sessions
 
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:

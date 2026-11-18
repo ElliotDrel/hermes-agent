@@ -1152,6 +1152,9 @@ platform:
       title:
         description: "Munkamenet címének beállítása/mutatása"
         arg_name: "Munkamenet címe. Üresen hagyva a jelenlegit mutatja."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "A folytatandó munkamenet neve. Üresen hagyva listázza a munkameneteket."
       usage:

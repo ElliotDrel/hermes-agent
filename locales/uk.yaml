@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "Встановити або показати назву сеансу"
         arg_name: "Назва сеансу. Залиште порожнім, щоб показати поточну."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Назва сеансу для відновлення. Залиште порожнім, щоб показати список сеансів."
       usage:

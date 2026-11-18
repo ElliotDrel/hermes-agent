@@ -1334,6 +1334,9 @@ platform:
       title:
         description: "Définir ou afficher le titre de la session"
         arg_name: "Titre de la session. Laissez vide pour afficher le titre actuel."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Nom de la session à reprendre. Laissez vide pour lister les sessions."
       usage:

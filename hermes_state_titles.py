@@ -93,18 +93,26 @@ class SessionTitlesMixin:
             SELECT 1 FROM ancestors WHERE id = ? AND id != ? LIMIT 1
             """, (descendant_id, ancestor_id, descendant_id)).fetchone() is not None
 
-    def _set_session_title(self, session_id: str, title: str, *, source: str) -> bool:
+    def _set_session_title(self, session_id: str, title: str, *, source: str,
+                           expected_state: Optional[tuple] = None, validate_only: bool = False) -> bool:
         """Write a title, enforcing provenance precedence. A ``user`` write always lands;
         ``derived``/``llm`` land only when the row is untitled or holds strictly lower
         authority (derived upgrades to llm exactly once, nothing overwrites a user name,
         re-running the titler on an llm row is a no-op). No writer may move a hidden
         canonical Bot Chat off its title. Read and write are one compare-and-swap
-        transaction, so a manual ``/title`` racing an in-flight generation is not clobbered."""
+        transaction, so a manual ``/title`` racing an in-flight generation is not clobbered.
+        HERMES-FORK-012: ``expected_state`` (title, source) additionally requires an un-ended row to
+        still hold that state; ``validate_only`` runs every native check and writes nothing."""
         return bool(self._execute_write(
-            lambda conn: self._set_session_title_in_transaction(conn, session_id, title, source=source)
+            lambda conn: self._set_session_title_in_transaction(
+                conn, session_id, title, source=source,
+                expected_state=expected_state, validate_only=validate_only)
         ))
 
-    def _set_session_title_in_transaction(self, conn, session_id: str, title: str, *, source: str):
+    def _set_session_title_in_transaction(
+        self, conn, session_id: str, title: str, *, source: str,
+        expected_state: Optional[tuple] = None, validate_only: bool = False,
+    ):
         """Reuse title rules within an authority-owned transaction; never commit here."""
         title = self.sanitize_title(title)
         is_user = source == self.TITLE_SOURCE_USER
@@ -112,9 +120,14 @@ class SessionTitlesMixin:
         affected = []
 
         current = conn.execute(
-            "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
+            "SELECT title, title_source, hidden, ended_at FROM sessions WHERE id = ?", (session_id,),
         ).fetchone()
         if current is None:
+            return []
+        if expected_state is not None and (
+            current["ended_at"] is not None
+            or (current["title"], current["title_source"]) != expected_state
+        ):
             return []
         # The canonical Bot Chat's NAME is its identity (Bot Mode resolves it by
         # exact-title lookup on every open), so a rename orphans the conversation. Hidden
@@ -130,9 +143,11 @@ class SessionTitlesMixin:
         if not is_user and current["title"] is not None and self._title_rank(current["title_source"]) >= new_rank:
             return []
         if title:
-            cleared = self._resolve_title_conflict(conn, session_id, title)
+            cleared = self._resolve_title_conflict(conn, session_id, title, dry_run=validate_only)
             if cleared:
                 affected.append(cleared)
+        if validate_only:
+            return [*affected, session_id]
         # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
         # the SELECT and here loses instead of being overwritten.
         changed = conn.execute(
@@ -141,11 +156,14 @@ class SessionTitlesMixin:
         ).rowcount
         return [*affected, session_id] if changed else affected
 
-    def _resolve_title_conflict(self, conn, session_id: str, title: str) -> Optional[str]:
+    def _resolve_title_conflict(
+        self, conn, session_id: str, title: str, *, dry_run: bool = False,
+    ) -> Optional[str]:
         """Free ``title`` for ``session_id`` inside the caller's write transaction, or raise
         ValueError when another session legitimately holds it. The one place the uniqueness
         rule lives, shared by renames and the API server's create-with-title. Returns the id
-        whose title was cleared (an affected row for mutation receipts), else None."""
+        whose title was cleared (an affected row for mutation receipts), else None. ``dry_run``
+        reports the same outcome (or raises) without clearing anything."""
         conflict = conn.execute(
             f"SELECT id, archived, auto_archived, hidden, {self._EMPTY_SESSION_WHERE} AS ghost "
             "FROM sessions WHERE title = ? AND id != ?", (title, session_id),
@@ -156,7 +174,8 @@ class SessionTitlesMixin:
         # A hidden compressed ancestor holding the title cannot be freed by the
         # user, so transfer it onto the tip (uniqueness + lineage kept).
         if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
-            conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
+            if not dry_run:
+                conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
             return conflict_id
         # A deliberately archived Bot Chat is a retired registry entry, not a live identity
         # (same predicate the title lookup skips). Retire its name in the same title
@@ -171,10 +190,11 @@ class SessionTitlesMixin:
                 "SELECT end_reason FROM sessions WHERE id = ?",
                 (self._compression_tip_on(conn, conflict_id),)).fetchone()[0])
         if retired or (conflict["ghost"] and not conflict["hidden"]):
-            conn.execute(
-                "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
-                (conflict_id,),
-            )
+            if not dry_run:
+                conn.execute(
+                    "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                    (conflict_id,),
+                )
             return conflict_id
         raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
 
@@ -182,6 +202,15 @@ class SessionTitlesMixin:
         """Set a title on the user's behalf (``user`` provenance). Empty clears it. Raises
         ValueError on conflict or validation failure."""
         return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER)
+
+    def validate_session_title(self, session_id: str, title: str) -> bool:
+        """Check native title constraints without changing title or lineage state."""
+        return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER, validate_only=True)
+
+    def set_session_title_if_current(self, session_id: str, title: str, *, expected_title, expected_source) -> bool:
+        """Commit a confirmed visible rename without clobbering a newer decision."""
+        return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER,
+                                       expected_state=(expected_title, expected_source))
 
     def set_auto_title(self, session_id: str, title: str, *, source: str) -> bool:
         """Set an automatic title; False (untouched) when a higher-authority title holds the row."""

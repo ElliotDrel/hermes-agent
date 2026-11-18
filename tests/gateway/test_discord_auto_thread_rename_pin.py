@@ -49,6 +49,16 @@ def conversation(monkeypatch: pytest.MonkeyPatch) -> Conversation:
     adapter._text_batch_delay_seconds = 0
     adapter._discord_history_backfill = lambda: False
     adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    async def confirmed_edit(_adapter, _thread_id: int, name: str, expected: str | None) -> bool:
+        # The confirmed single-attempt transport (thread_rename.rename_once) is exercised by
+        # tests/plugins/test_discord_thread_rename.py; here only its edit step and guard matter.
+        if expected is not None and thread.name != expected:
+            raise RuntimeError("The thread name changed")
+        await thread.edit(name=name)
+        return True
+
+    monkeypatch.setattr("plugins.platforms.discord.thread_rename.rename_once", confirmed_edit)
     adapter.handle_message = AsyncMock()
     runner = object.__new__(gateway_run.GatewayRunner)
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})

@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "セッションのタイトルを設定または表示します"
         arg_name: "セッションのタイトル。空欄で現在のタイトルを表示します。"
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "再開するセッション名。空欄でセッション一覧を表示します。"
       usage:

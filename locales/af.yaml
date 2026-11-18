@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "Stel of wys die sessietitel"
         arg_name: "Sessietitel. Laat leeg om die huidige te wys."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Sessienaam om te hervat. Laat leeg om sessies te lys."
       usage:

@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "设置或查看会话标题"
         arg_name: "会话标题。留空则查看当前标题。"
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "要恢复的会话名称。留空则列出会话。"
       usage:

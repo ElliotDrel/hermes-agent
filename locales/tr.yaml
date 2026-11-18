@@ -1135,6 +1135,9 @@ platform:
       title:
         description: "Oturum başlığını ayarla veya göster"
         arg_name: "Oturum başlığı. Geçerli başlığı görmek için boş bırakın."
+      rename:
+        description: "Generate or set this thread's title"
+        arg_name: "Optional replacement title. Leave empty to generate one."
       resume:
         arg_name: "Devam edilecek oturum adı. Oturumları listelemek için boş bırakın."
       usage:

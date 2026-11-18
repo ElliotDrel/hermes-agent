@@ -430,13 +430,10 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
 
 
 @pytest.mark.asyncio
-async def test_rename_thread_edits_only_when_current_name_matches(adapter):
-    thread = SimpleNamespace(
-        id=999,
-        name="raw user prompt",
-        edit=AsyncMock(),
-    )
-    adapter._client.get_channel = lambda _id: thread
+async def test_rename_thread_passes_the_current_name_guard_to_the_confirmed_transport(adapter, monkeypatch):
+    from plugins.platforms.discord import thread_rename
+    transport = AsyncMock(return_value=True)
+    monkeypatch.setattr(thread_rename, "rename_once", transport)
 
     result = await adapter.rename_thread(
         "999",
@@ -445,10 +442,18 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     )
 
     assert result is True
-    thread.edit.assert_awaited_once_with(
-        name="Semantic Session Title",
-        reason="Hermes semantic session title",
-    )
+    transport.assert_awaited_once_with(adapter, 999, "Semantic Session Title", "raw user prompt")
+
+
+@pytest.mark.asyncio
+async def test_guarded_rename_refusal_is_best_effort_unless_requested(adapter, monkeypatch):
+    """A human rename wins: the title lane gets False, /rename gets the real cause."""
+    from plugins.platforms.discord import thread_rename
+    monkeypatch.setattr(thread_rename, "rename_once", AsyncMock(side_effect=RuntimeError("changed")))
+
+    assert await adapter.rename_thread("999", "Semantic", only_if_current_name="raw") is False
+    with pytest.raises(RuntimeError, match="changed"):
+        await adapter.rename_thread("999", "Semantic", only_if_current_name="raw", raise_on_error=True)
 
 
 # ------------------------------------------------------------------

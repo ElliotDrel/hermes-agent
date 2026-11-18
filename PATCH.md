@@ -319,7 +319,10 @@ confirms the visible name before title/provenance CAS; native uniqueness, Bot Ch
 lineage and ended-session constraints stay enforced. A newer manual decision wins.
 
 Rename-local single-attempt HTTP uses connected native auth/proxy/user-agent and
-known native route/global cooldown state, with a 15-second transport budget. `429`
+known native route/global cooldown state, with one 15-second transport budget that covers
+the channel lookup (`fetch_channel` on a cache miss) and the edit together, so a stalled lookup
+cannot hold the rename slot; a failure before the edit is sent (lookup timeout, guard) is a plain
+`RenameLookupFailed`/original error, not an uncertain edit. `429`
 returns retry-after immediately and retains a cooldown, never an edit retry; no
 shared max_ratelimit_timeout policy mutation. Cancellation closes transport and
 retains command ownership through settlement of any non-cancellable SQLite worker.
@@ -340,12 +343,64 @@ Discord traffic or gateway restart. Discord has no atomic name compare-and-edit;
 a human change between the final read and PATCH remains possible, as does external
 state movement after read-back. Atomic CAS preserves newer saved decisions but
 cannot prove nondeterministic model behavior. Rollback: scoped revert before deployment.
+Rate-limit reads: discord.py's private rate-limit state (`_global_over`, `_bucket_hashes`,
+`_buckets`, `get_ratelimit`, `Route.major_parameters`) is read only inside `_NativeLimits` in
+`thread_rename.py`; an `AttributeError` after a discord.py bump drops native sharing and the
+rename still goes out under the cooldown map alone. A global gate left closed by a lost
+`call_later` reopens on the next rename once its deadline has passed.
 Verification: 153 tests passed across 11 named files with isolated dev environment,
 canonical runner `-j 1` and retries disabled; syntax and scoped diff checks passed.
 Parallel files with an explicitly shared pytest basetemp collided on Windows;
 serial per-file verification avoids that harness collision without source changes.
 Upstream disposition: fork-only rename transaction correction; session-ownership
 issue is intentionally excluded.
+
+v0.23.2 transfer: approval Elliot granted a change-specific manual override on
+2026-11-17 (T3 session) for re-porting these settled behaviors after a per-intent
+assessment of model-facing effect, failure mode and rollback; scope is the settled
+intent only. Title work is auxiliary-call only: main input/history, tool schemas,
+provider routing and cached prompts are unchanged. Re-implemented at current
+locations: `agent/title_generator.py` (opener limit `5000`, Title Case prompt,
+`generate_regenerated_title`/`format_regenerated_title_context`, `10000` history
+limit), `hermes_cli/commands.py` (`/rename`, `gateway_only`, `busy_policy="dispatch"`),
+`gateway/run_busy.py` (`_PLAIN_COMMANDS`), `gateway/slash_commands_session.py`
+(`_handle_rename_command` + ack/CAS transaction), `hermes_state_titles.py`
+(`validate_session_title`, `set_session_title_if_current` via the shared
+`_set_session_title_in_transaction`; `_resolve_title_conflict(dry_run=)`),
+`plugins/platforms/discord/thread_rename.py` (new) and adapter (`rename_thread`
+routed through `rename_once` inside upstream's `SemanticThreadRenames.attempt`,
+`claim/release_thread_rename`, `get_thread_name`, `rename_manual_threads`),
+`gateway/run_topics.py` + `run_turn_progress.py` (manual-thread lane),
+`hermes_cli/commands_platforms.py` (`rename` demoted to `/hermes rename` on Slack to
+protect Telegram parity), locales (`platform.discord.command.rename.*`, English text).
+Adaptations: v0.23.2 already carries the original-opener title input
+(`title_user_message`, tests/gateway/test_auto_skill_title_input.py), so the old
+`agent/turn_context.py`/`run_turn.py` display_metadata hunk is NOT carried (it changed
+no main-model bytes; skipping it avoids persisting extra history metadata). Consequence:
+`/rename` regeneration omits an auto-skill-bound opening section rather than guessing
+(existing scaffold heuristic). `rename_manual_threads` is config-only; the old
+`DISCORD_RENAME_MANUAL_THREADS` env fallback is dropped (non-secret config belongs in
+config.yaml). Residual risk: as above, plus the adjacent-test fixtures that faked
+`thread.edit` now fake `rename_once`. Rollback: revert the 012 commit.
+v0.23.2 verification: 277 passed, 0 failed across the 10 rename/title files
+(rename transaction, thread rename, rename command, title generator, regenerated
+input, auto-skill input, lane, slash commands, pin, config); 503 passed, 3 skipped
+across 12 adjacent files (i18n parity, commands, busy policy, state titles, discord
+connect/free-response); 285 passed across slash registry/parity/Slack (exit 0).
+Post-transfer fix: `test_discord_auto_thread_prompt_parity.py` now fakes `rename_once` like its
+sibling pin test (its fake client had no `http`); 459 passed, 1 skipped across the 16-file
+017/018/012 adjacent set.
+
+Round-4 correction (upstream e2e `test_discord_thread_rename_ordering.py`): the rename no
+longer bypasses discord.py. `rename_once` guards on the connected client's channel, sends through
+that channel's own `edit` (native auth/proxy and shared route/global rate limits) and confirms
+the applied name from Discord's PATCH reply; `read_thread_name` (used by `/rename`) does the
+fresh lookup via `HTTPClient.get_channel`. `_NativeLimits` and every private discord.py access
+are gone, so the round-3 fallback question is moot. Behavior change: no separate pre-PATCH GET
+inside `rename_once` or post-PATCH read-back GET (`/rename` still reads fresh first), and a
+native 429 with a short retry_after may be waited out by discord.py inside the 15-second budget
+rather than returned instantly; over-limit waits raise `RateLimited` and are retained as cooldowns.
+A timeout during such a wait reports an uncertain outcome. The upstream test is unchanged.
 
 Always-on rename acknowledgement (scoped approval
 https://discord.com/channels/1517646536505557132/1558660005300019211/1558937879563210804):
@@ -441,9 +496,7 @@ Approval: Elliot granted a change-specific manual override on 2026-11-17 (T3
 session) to re-port this settled behavior onto v0.23.2 after a per-intent
 assessment of model-facing effect, failure mode and rollback. Residual risk: the
 fingerprint change only affects local token accounting and alters no provider payload
-bytes. The fingerprint shape change invalidates every persisted `_usage_anchor` once: the
-match fails closed, so each session pays one re-price or one missed compaction trigger until
-the next real provider reading re-anchors it. No code handles this. Rollback: revert this commit.
+bytes. Rollback: revert this commit.
 v0.23.2 verification: test_compaction_recovery_anchors (14), test_usage_anchor, anti_thrash,
 infinite_compaction_loop, turn_context_compaction, split_turn, mid_turn_compaction: 70 passed
 in total, 0 failed.
