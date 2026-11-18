@@ -1399,7 +1399,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         return keep_running_checkout_importable(watcher_env)
 
     @staticmethod
-    def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float) -> None:
+    def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float,
+                                       staged: dict | None = None) -> None:
         """Spawn the detached Windows watcher (``python -c``), retrying once without job breakaway."""
         import subprocess
         from hermes_cli._subprocess_compat import (
@@ -1421,11 +1422,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         from hermes_cli._launchers import runtime_command
         if hermes_cmd[1:] == ["-m", "hermes_cli.main"]:  # bootstrap drops PYTHONPATH: bind the respawn to this checkout too
             hermes_cmd = runtime_command(project_root, python=hermes_cmd[0])
-        watcher_argv = runtime_command(project_root,
-            [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
-            code=_WINDOWS_RESTART_WATCHER)
+        if staged:
+            from gateway.run_shutdown_staged import staged_watcher_argv
+            watcher_argv = staged_watcher_argv(_WINDOWS_RESTART_WATCHER, staged, current_pid, restart_after_s)
+        else:
+            watcher_argv = runtime_command(project_root,
+                [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
+                code=_WINDOWS_RESTART_WATCHER)
         watcher_python = watcher_argv[0]
         popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=watcher_env)
+        if staged:
+            popen_kwargs["cwd"] = str(Path(staged["root"]).parent)  # never hold the tree activation renames
         # Break away from the parent CLI's job object or be reaped when the CLI exits; a job without
         # BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB (OSError) — retry once without the bit.
         try:
@@ -1461,7 +1468,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         current_pid = os.getpid()
         restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
         if sys.platform == "win32":
-            GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
+            GatewayShutdownMixin._spawn_windows_restart_watcher(
+                hermes_cmd, current_pid, restart_after_s, staged=getattr(self, "_staged_restart", None))
             return
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         from gateway.restart_watcher_env import detached_restart_shell

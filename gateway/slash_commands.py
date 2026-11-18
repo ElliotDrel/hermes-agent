@@ -559,6 +559,24 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
+        import subprocess
+        from hermes_cli.update_pin_stage import restart_candidate
+        try:
+            # Validation shells out to git and probes the owner: never on the loop that serves it.
+            staged = await asyncio.to_thread(
+                restart_candidate, Path(__file__).resolve().parent.parent)
+        except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+            return f"Staged activation refused; gateway unchanged: {exc}"
+        # Validation yields; another explicit restart may have won admission meanwhile.
+        if self._restart_requested or self._draining:
+            count = self._running_agent_count()
+            return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
+        if staged:
+            if (not event.allow_gateway_control or getattr(event, "internal", False)
+                    or getattr(event.source, "is_bot", False) or event.get_command() != "restart"):
+                return "Staged activation requires an explicit authorized user /restart."
+            self._staged_restart = staged
+
         async def _write_marker(name: str, build, label: str) -> None:
             try:
                 await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)

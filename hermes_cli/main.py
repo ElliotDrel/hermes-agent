@@ -2192,6 +2192,9 @@ def cmd_update(args):
     from hermes_cli.update_owning_install import retarget_to_owning_install
 
     retarget_to_owning_install(PROJECT_ROOT)
+    if getattr(args, "stage", None) or getattr(args, "activate_stage", None):
+        from hermes_cli.update_pin_stage import run_stage_command
+        return run_stage_command(args, PROJECT_ROOT)
     if _update_preflight_handled(args):
         return
     gateway_mode = getattr(args, "gateway", False)

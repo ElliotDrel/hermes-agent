@@ -571,19 +571,33 @@ in total, 0 failed.
 
 `hermes update --stage SHA --branch live` prepares exact published source and a
 separate relocatable environment without changing active HEAD/refs/dependencies,
-profile configuration or gateway lifecycle. Reuse native managed uv, locked sync,
-profile update lock, receipts, holder classification and rename retry. Install
-locked dependencies with `--no-install-project --no-editable`; Hermes forbids
-non-Nix wheels. The existing relative checkout binding and native module launcher
-survive whole-tree promotion. Rebuild the three declared Hermes console entrypoints
-from CPython's bundled installer stub, bound to the final install path;
-ACP/editor paths and installer checks remain present without building a project wheel.
-Restore declared enabled plugin/lazy/tool dependencies
-in the candidate only; conflicts refuse preparation.
+profile configuration, PM install state or gateway lifecycle. Reuse native PM
+(`pm.build_environment`: pinned toolchain, locked `all` extra, `no_install_project`;
+Hermes forbids non-Nix wheels), profile update lock, receipts, holder classification
+and rename retry. A relative checkout `.pth` survives whole-tree promotion.
+
+v0.23.2 shape (supersedes the managed-uv/console-stub design): module
+`hermes_cli/update_pin_stage.py` plus sibling `update_pin_stage_env.py`. The name
+`update_stage` is upstream's desktop progress helper and is never modified or
+shadowed. PM keys dependency state by checkout path, so no generation can be built
+at the candidate path and moved: activation commits the PM generation and
+launchers at the final path in the promoted interpreter (`pm.sync_venv`,
+generation collection, `publish_launchers`) as the last step before launch; a
+failed sync commits nothing and rolls the trees back. A pre-PM install's first
+generation carries the retained previous tree's extras; afterwards PM's ledger owns
+them. Plugin dependencies are PM's discovered selection; a conflict fails the sync
+(no plugin is disabled) and is only seen at activation, not staging. The marker is
+`.<install>.pin-stage.json` (schema 1, same fields as before): the pre-v0.23.2
+loaded `/restart` handler reads `.staged-update.json` and would run
+`-m hermes_cli.update_stage --activate-stage`, which upstream's helper ignores,
+stranding a drained gateway. The legacy name is still read, so an old-staged pin
+activates. Old loaded code cannot stage this lock anyway (its Python 3.11 `uv sync
+--locked` is refused by the 3.14-only lock), so a candidate is staged by running
+`-m hermes_cli.update_pin_stage --stage` from a reviewed checkout (see the user guide).
 
 Explicit user `/restart` captures the validated pin and uses native drain/Windows
 watcher. Activation refuses changed/dirty revisions or live holders, retains the
-previous installation, rolls back promotion/import failures and starts the fresh
+previous installation, rolls back promotion/import/dependency-publication failures and starts the fresh
 native gateway. All post-promotion readiness/import work runs in the fresh promoted
 interpreter, polling exact live PID/code_sha rather than trusting native CLI exit
 status or stale status. Receipt dependencies load before relocation; stage/activate
@@ -625,6 +639,48 @@ restart, promotion, paid request, model payload/history or runtime mutation.
 A corrected candidate cannot change already-loaded preflight code; user-operated
 native stop then pinned candidate activation is a recovery route, not a repeated
 first-install bootstrap. Future loaded `/restart` uses the corrected path.
+
+Review fixes. Every activation outcome that leaves the old install in place ends with its
+gateway running (`update_pin_stage_recovery.recover_gateway`): this includes failing to take the
+update lock (a concurrent updater) and the watcher firing at its drain deadline while the gateway
+is still exiting (activation then waits up to 60 s for it to leave, else the gateway would never be
+restarted). Once `activate()` returns the tree is promoted: the marker is consumed best-effort
+(missing/locked tolerated) and a failure before launch never "recovers" the old tree; a marker
+that outlives its candidate directory is removed by `/restart` with an explicit message, never a
+permanent refusal. If `pm.sync_venv` committed and a later publication step failed (exit 75), the
+rollback re-syncs PM to the restored previous tree from the candidate's interpreter and fails
+truthfully (naming `hermes update`) when that cannot be done. Staging re-declares the installed
+tree's other git remotes (e.g. `upstream`, push URLs included) in the candidate, read-only on the
+install. Promotion replaces the install with a fresh single-branch clone, so local stashes, other
+local branches and ignored build outputs of the old tree remain only in `.previous-<token>`.
+
+Touchpoints: hermes_cli/update_pin_stage.py + update_pin_stage_env.py + update_pin_stage_recovery.py, hermes_cli/main.py
+(`cmd_update` hook), hermes_cli/subcommands/update.py (`--stage`), update_cmd_windows.py
+(`project_root` scan arguments), gateway_supervised_restart.py (own-PID preflight),
+gateway/slash_commands.py (`/restart`), gateway/run_shutdown.py + run_shutdown_staged.py
+(watcher), website/docs/user-guide/staged-fork-updates.md.
+
+v0.23.2 re-port. Authorization: Elliot's change-specific manual override, granted
+2026-11-18 (T3 session) after the re-port assessment, to carry the settled 001/016/028
+behavior onto stable v0.23.2. Residual protected risk: the restart/activation path
+now also depends on PM's explicit sync and launcher publication running at the final
+path under an update lock (a failed sync commits nothing; an interrupted one is
+PM's own recoverable transaction), and a plugin-dependency conflict is found at
+activation, not staging. No model-facing payload, history or prompt path is touched.
+Rollback: revert the 028 commit before deployment; after activation retain both
+generations (`.previous-<token>`) rather than renaming a possibly live tree.
+Verification (Windows host, canonical runner): `test_update_pin_stage` 7 passed
+(real Git/uv/relocation/promotion from the executing candidate interpreter, rollback
+on swap and on dependency-publication failure, marker-name isolation, extras carry),
+run under a short scratch root (the fixture moves to the drive root when `tmp_path` is deep,
+since the cloned candidate plus venv exceed Windows MAX_PATH under a long TMPDIR),
+`test_staged_restart` 5 passed (incl. real named-pipe owner preflight and the
+candidate-rooted watcher argv). A real `pm.build_environment` build of a fixture
+project (isolated home, real PM toolchain) produced a relocatable environment whose
+fresh-interpreter probe imported candidate code. Not exercised: `pm.sync_venv` and
+launcher publication on a full Hermes tree (no disposable Hermes install with a PM
+store), an end-to-end activation from the candidate venv of a full lock, and live
+Discord/gateway restart.
 
 ## HERMES-FORK-030: Truthful delegated process completion ownership
 

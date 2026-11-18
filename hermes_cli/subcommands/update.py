@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -115,6 +116,13 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser.add_argument(
         "--no-gateway-restart", action="store_true", default=False,
         help="Update code and dependencies but defer the fleet restart. Use for updates "
-             "running inside a gateway cgroup, then restart gateways separately.",
+             "running inside a gateway cgroup, then restart gateways separately. "
+             "This is NOT inert staging: use --stage SHA for no-live-change preparation.",
     )
+    stage_mode = update_parser.add_mutually_exclusive_group()
+    stage_mode.add_argument(
+        "--stage", metavar="SHA",
+        help="Prepare the exact published SHA and a separate dependency environment without touching "
+             "the active gateway (Windows detached install; pair with --branch, default live).")
+    stage_mode.add_argument("--activate-stage", metavar="TOKEN", help=argparse.SUPPRESS)
     update_parser.set_defaults(func=cmd_update)
