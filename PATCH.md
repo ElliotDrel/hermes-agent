@@ -92,6 +92,23 @@ path translation. This prevents backslashes such as \d and \( becoming slashes.
 Literal backslash-n remains distinct from a regex newline; multiline parsing is
 selected when ripgrep requires it, without a false newline-intent advisory.
 
+Touchpoints: `tools/file_operations_search.py` (glob/`-name`/`--include` and
+exclusion-glob args use `_escape_shell_arg(..., translate_path=False)`;
+`_pattern_needs_multiline`; the multiline note only when `_pattern_has_regex_newline`).
+Regex patterns already use `translate_path=False` upstream (v0.23.2), so no
+`file_operations.py` change or new quoting helper is carried. Search-command bytes
+only; no model-facing schema, prompt or history change.
+Approval: Elliot granted a change-specific manual override on 2026-11-17 (T3
+session) to re-port this settled behavior onto v0.23.2 after a per-intent
+assessment of model-facing effect, failure mode and rollback. Residual risk: a
+literal backslash-n pattern now runs under `--multiline`, which changes match
+spans for such patterns only. Rollback: revert this commit.
+v0.23.2 verification: `test_search_pattern_backslash_windows.py` (6 passed) plus
+auto_multiline, error_guard, pattern_arguments, zero_match_and_multipath,
+native_rg, macos_protected_search, engine_selection and hidden_dirs suites pass;
+the one failure (`test_search_error_guard` grep-fallback hard error) is
+pre-existing on upstream ae2a81ccc0.
+
 ## HERMES-FORK-007: Provider duration metadata for quota footers
 
 `AccountUsageWindow.duration_seconds` carries the provider-reported window length:

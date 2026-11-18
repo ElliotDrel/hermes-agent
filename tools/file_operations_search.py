@@ -388,6 +388,17 @@ def _pattern_has_regex_newline(pattern: str) -> bool:
     return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
 
 
+def _pattern_needs_multiline(pattern: str) -> bool:
+    """True when ripgrep needs multiline parsing, including literal ``\\n``.
+
+    ``_pattern_has_regex_newline`` answers whether a regex intends to match a
+    line break. Ripgrep also rejects a literal backslash-n sequence in its
+    line-oriented parser. Multiline mode preserves that literal meaning while
+    making the pattern parseable.
+    """
+    return _pattern_has_regex_newline(pattern) or "\\n" in pattern
+
+
 def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
     """Return True for rg's hard error when multiline mode is required."""
     return bool(error) and "literal \"\\n\" is not allowed" in error and "--multiline" in error
@@ -775,7 +786,7 @@ class SearchMixin:
         """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
         out: list[str] = []
         for item in self._macos_search_exclusions(path):
-            out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
+            out.extend(["--glob", self._escape_shell_arg(f"!{item}/**", translate_path=False)])
         return out
 
     def _path_exists_probe(self, path: str) -> ExecuteResult:
@@ -871,7 +882,7 @@ class SearchMixin:
         globs = []
         for dirname in sorted(SEARCH_PRUNE_DIR_NAMES):
             for prefix in ("", "**/"):
-                globs.extend(("--glob", self._escape_shell_arg(f"!{prefix}{dirname}/**")))
+                globs.extend(("--glob", self._escape_shell_arg(f"!{prefix}{dirname}/**", translate_path=False)))
         return " ".join(globs)
 
     # (rg flags, message template) probes for a 0-match content search, in order.
@@ -896,7 +907,7 @@ class SearchMixin:
             return None
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = f" --glob {self._escape_shell_arg(file_glob, translate_path=False)}" if file_glob else ""
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -1038,7 +1049,7 @@ class SearchMixin:
             return [], None
 
         escaped_path = self._escape_shell_arg(path)
-        escaped_pattern = self._escape_shell_arg(pattern)
+        escaped_pattern = self._escape_shell_arg(pattern, translate_path=False)
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
         cmd = (
@@ -1146,7 +1157,7 @@ class SearchMixin:
         )
         base = (f"find -H {' '.join(q_roots)}{protected_prune}{hidden_prune} "
                 f"\\( -type f -o \\( -type d{root_exemptions} \\) \\) "
-                f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
+                f"! -name '.*' -name {self._escape_shell_arg(search_pattern, translate_path=False)}")
         # find's stderr is not piped into sort/head, so ``find: '<dir>': Permission
         # denied`` lines reach the merged output without using up result rows.
         if order == "modified":
@@ -1201,11 +1212,11 @@ class SearchMixin:
             scoped_common = posixpath.commonpath(absolute_roots)
             command_roots = [posixpath.relpath(root, scoped_common) for root in absolute_roots]
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
+                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**', translate_path=False)}"
                 for _r, _rel, absolute in effective_exclusions]
         else:
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
+                f"--glob {self._escape_shell_arg(f'!{relative}/**', translate_path=False)}"
                 for _r, relative, _abs in effective_exclusions]
         exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
@@ -1221,7 +1232,7 @@ class SearchMixin:
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern, translate_path=False)}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
                                       merge_stderr=True,
@@ -1350,14 +1361,14 @@ class SearchMixin:
         if output_mode not in ("files_only", "count"):
             cmd_parts.extend(["--max-columns", "2000", "--max-columns-preview"])
         # A regex \n hard-errors in line-oriented mode; enable -U up front and say so.
-        multiline = _pattern_has_regex_newline(pattern)
+        multiline = _pattern_needs_multiline(pattern)
         if multiline:
             cmd_parts.append("--multiline")
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         cmd_parts.extend(self._rg_exclusion_globs(path))
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob, translate_path=False)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         # Quoting protects shell syntax, not rg's option parser (also on native argv).
@@ -1367,7 +1378,7 @@ class SearchMixin:
         ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
-        ) if multiline else None
+        ) if multiline and _pattern_has_regex_newline(pattern) else None
         return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
@@ -1377,7 +1388,7 @@ class SearchMixin:
         if context > 0:
             parts.extend(["-C", str(context)])
         if file_glob:
-            parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            parts.extend(["--include", self._escape_shell_arg(file_glob, translate_path=False)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         # Shared by ordinary recursion and find -exec's pruned search.
@@ -1429,7 +1440,7 @@ class SearchMixin:
             find_parts.extend([self._prune_expr(protected_paths), "-o"])
         find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])
         if file_glob:
-            find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
+            find_parts.extend(["-name", self._escape_shell_arg(file_glob, translate_path=False)])
         # stderr stays attached (``_exec`` merges it into stdout): find's
         # ``Permission denied`` lines must reach the parser so an unreadable
         # subtree beside a readable match is reported, not silently dropped.
