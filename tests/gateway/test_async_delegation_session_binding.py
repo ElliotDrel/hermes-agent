@@ -102,7 +102,8 @@ class TestGatewayPinningFailsClosed:
         current = self._entry("sess_current")
         pinned = self._entry("sess_live")
         runner = self._make_runner(
-            {"sess_live": {"id": "sess_live", "ended_at": None}},
+            {"sess_live": {"id": "sess_live", "ended_at": None},
+             "sess_current": {"id": "sess_current", "ended_at": None, "source": "discord"}},
             switched_entry=pinned,
         )
 

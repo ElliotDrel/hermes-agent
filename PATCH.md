@@ -627,6 +627,10 @@ Touchpoints: gateway/run_notifications.py, tools/process_registry.py,
 process_registry_notifications.py, terminal_tool_background.py and gateway/tools tests.
 Import conflict adaptation retains the fork's local delivery-target helper.
 Additional adaptation protects current former-worker routes and truthful launch receipts.
+A current route whose row is missing stays retryable and one with unreadable provenance is
+terminal for parent/sibling completions; own/descendant completions still deliver
+(the stock relay-followup test helper therefore supplies the chat's current human row)
+(completion_current_route_history 17 and async_delegation_session_binding 84 pass).
 328 tests passed, zero failed/skipped, exit 0 in 310.0s across 12 named files via
 `scripts/run_tests.sh -j 1 --basetemp=<isolated-worktree-scratch>/pytest-final --tb=short`:
 async_delegation_session_binding, background_process_notifications, completion_owner_retry,
@@ -643,6 +647,21 @@ Upstream remains a pinned unmerged salvage; #131597 was not imported.
 v0.23.2 transfer: the six salvaged #132827 commits are upstream (dc29b0d2e9, 38c82c81fb,
 0b86710cef, a6d1c24946, a481580f25, 9fd8de912a) and are not carried. Only the
 fork-only current-route protection and truthful-receipt adaptations remain active.
+
+v0.23.2 re-port (2026-11-17): Elliot granted a change-specific manual override on
+2026-11-17 (T3 session) for re-porting this settled behavior; scope is the settled
+intent only (commits 496866cebc and ef7f73edd8, nothing else). Touchpoints now:
+gateway/run_notifications_ownership.py (`_lookup_completion_owner` refuses to switch
+away from a former-worker current route; upstream moved it out of run_notifications.py),
+tools/terminal_tool_background.py (`notification_suppressed`, live-policy `subagent_note`,
+`heartbeat_ignored`, heartbeat armed only when the policy surfaces), tools/terminal_tool.py
+(promoted-note receipt no longer promises delivery under suppression). Residual risk and
+rollback as above: revert the 030 commit. v0.23.2 verification: 202 passed, 0 failed,
+exit 0 across 11 files (async_delegation_session_binding, background_process_notifications,
+completion_owner_retry, completion_current_route_history, completion_admission,
+completion_delivery, completion_session_boundary, completion_ownership_proof,
+terminal_child_notification_state, terminal_watcher_arming, subagent_process_handoff);
+the old gateway/agent runtime_notification_bridge suite does not exist on v0.23.2.
 
 Parent integrated concurrent live schema/progress fixes (intent 029 remains schema;
 this intent is 030), then independently verified 356 passing tests across those 12

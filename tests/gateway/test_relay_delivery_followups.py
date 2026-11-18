@@ -62,6 +62,9 @@ def _entry(session_id, session_key="agent:main:slack:dm:U1"):
 
 
 def _runner_with_rows(rows, *, switched_entry=None):
+    # HERMES-FORK-030: a current route is only switched to when it is provably a human conversation,
+    # so the chat's current session needs a readable human row (a missing one stays retryable).
+    rows = {"sess_current": {"id": "sess_current", "source": "slack", "model_config": None}, **rows}
     runner = object.__new__(GatewayRunner)
     db = MagicMock()
     db.get_session = AsyncMock(side_effect=lambda session_id: rows.get(session_id))

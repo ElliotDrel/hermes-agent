@@ -115,9 +115,11 @@ class GatewayNotificationOwnershipMixin:
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
         """Nonmutating delegation proof shared by preflight and route resolution.
 
-        A current route is an explicit ownership boundary, not a route to repair.
-        Generic parent pointers also describe compression and branches; only
-        ``_delegate_from`` authorizes walking out of an execution transcript.
+        A current route is an explicit ownership boundary, not a route to repair:
+        accept it before parsing historic delegate metadata, and refuse switching
+        away from a former worker route. Generic parent pointers also describe
+        compression and branches; only ``_delegate_from`` authorizes walking out
+        of an execution transcript.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = cast(Any, self)._session_db
@@ -162,6 +164,31 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, None
             if "_delegate_from" not in config:
                 verdict = "terminal" if row.get("source") == "subagent" else "deliver"
+                if verdict == "deliver" and current_session_id and session_id != current_session_id:
+                    # A human route may already be using a former execution row.
+                    # Do not "repair" it by switching away and closing its history.
+                    try:
+                        current = await session_db.get_session(current_session_id)
+                    except Exception:
+                        return "retry", session_id, None
+                    # A route whose row or provenance cannot be read is not provably a human
+                    # conversation: parent/sibling completions must not switch away from it. A
+                    # missing row may be transient lineage uncertainty, so it stays retryable
+                    # (never consumed, never retargeted); unreadable provenance is terminal.
+                    if current is None:
+                        return "retry", session_id, None
+                    current_config = current.get("model_config")
+                    try:
+                        if isinstance(current_config, str):
+                            current_config = json.loads(current_config)
+                    except (TypeError, ValueError):
+                        return "terminal", session_id, None
+                    if current_config is not None and not isinstance(current_config, dict):
+                        return "terminal", session_id, None
+                    if current.get("source") == "subagent" or (
+                        isinstance(current_config, dict) and "_delegate_from" in current_config
+                    ):
+                        return "terminal", session_id, None
                 return verdict, session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:
