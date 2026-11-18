@@ -82,6 +82,7 @@ class _Snowflake:
 
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+DEFAULT_THREAD_ARCHIVE_MINUTES = 10080  # HERMES-FORK-013: seven days
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -4464,7 +4465,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         )
         async def slash_thread(
             interaction: discord.Interaction, name: str, message: str = "",
-            auto_archive_duration: int = 1440,
+            auto_archive_duration: int = DEFAULT_THREAD_ARCHIVE_MINUTES,
         ):
             # defer() happens inside the handler *after* the auth gate.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
@@ -4749,7 +4750,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
 
     async def _handle_thread_create_slash(
         self, interaction: discord.Interaction, name: str, message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = DEFAULT_THREAD_ARCHIVE_MINUTES,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
@@ -5279,7 +5280,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
 
     async def _create_thread(
         self, interaction: discord.Interaction, *, name: str, message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = DEFAULT_THREAD_ARCHIVE_MINUTES,
     ) -> dict[str, Any]:
         """Create a thread in the current channel; falls back to seed message + create_thread on rejection (e.g. permissions)."""
         name = (name or "").strip()
@@ -5349,6 +5350,14 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             thread_name = thread_name[:77] + "..."
         return thread_name
 
+    def _auto_thread_archive_duration(self) -> int:
+        """``discord.auto_thread_archive_duration`` (minutes); invalid values fall back to seven days."""
+        try:
+            duration = int(self.config.extra.get("auto_thread_archive_duration", DEFAULT_THREAD_ARCHIVE_MINUTES))
+        except (TypeError, ValueError):
+            return DEFAULT_THREAD_ARCHIVE_MINUTES
+        return duration if duration in VALID_THREAD_AUTO_ARCHIVE_MINUTES else DEFAULT_THREAD_ARCHIVE_MINUTES
+
     @staticmethod
     def _stamp_auto_thread_name(thread: Any, thread_name: str) -> Any:
         """Remember the placeholder name so the semantic rename can verify it wasn't changed by a human."""
@@ -5377,7 +5386,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         last_fallback_error: Exception | None = None
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=self._auto_thread_archive_duration())
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
@@ -5389,7 +5398,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 seed_msg = None
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
-                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
+                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=self._auto_thread_archive_duration(), reason=reason)
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
@@ -5497,7 +5506,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(name=thread_name, auto_archive_duration=self._auto_thread_archive_duration(), reason=reason)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5510,7 +5519,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 return None
             seed_msg = await send(t("platform.discord.thread.handoff_seed", name=thread_name))
             thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
+                name=thread_name, auto_archive_duration=self._auto_thread_archive_duration(), reason=reason,
             )
             return str(thread.id)
         except Exception as fallback_error:
@@ -7140,6 +7149,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
     seeded_extra = {}
+    if "auto_thread_archive_duration" in discord_cfg:
+        seeded_extra["auto_thread_archive_duration"] = discord_cfg["auto_thread_archive_duration"]
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools

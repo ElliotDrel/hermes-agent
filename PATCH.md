@@ -313,9 +313,22 @@ Syntax and diff checks pass; no live Discord test, activation or restart.
 
 ## HERMES-FORK-013: Seven-day manual threads
 
-Manual /thread and Discord-tool creation default to `10080` minutes. Auto, update and
-handoff threads use validated discord.auto_thread_archive_duration (native `1440`
-when unset/invalid). Preserve shared public-thread creation and requester membership.
+Manual /thread and Discord-tool creation default to `10080` minutes. Auto and
+handoff threads use `discord.auto_thread_archive_duration` (config.yaml, bridged into
+adapter `extra` by `_apply_yaml_config`), validated against Discord's 60/1440/4320/10080
+and falling back to `10080` when unset/invalid. Preserve shared public-thread creation
+and requester membership.
+Touchpoints: `plugins/platforms/discord/adapter.py` (`DEFAULT_THREAD_ARCHIVE_MINUTES`,
+`_auto_thread_archive_duration`, slash/`_create_thread` defaults, auto and handoff
+creation), `tools/discord_tool.py` (create_thread default and schema description).
+Documented in `website/docs/user-guide/messaging/discord.md` (`discord.auto_thread_archive_duration`).
+Protected-boundary approval: Elliot, T3 session, 2026-11-17, change-specific manual
+override (tool schema description/default 1440 -> 10080, config reader, defaults).
+Residual risk: the discord tool description text changes the cached prefix once at
+activation, and the model may now pick 10080 by default. Rollback: revert this commit.
+v0.23.2 verification: 90 passed, 0 failed across the five Discord slash/tool/yaml/
+auto-thread suites (serial per-file runner); the 1440 literals were at adapter
+4468/4753/5283/5384/5396/5504/5517 and discord_tool 379/520/610.
 
 ## HERMES-FORK-003: Convergent Discord command synchronization
 

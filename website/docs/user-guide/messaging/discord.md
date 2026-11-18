@@ -374,6 +374,7 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
+  auto_thread_archive_duration: 10080 # Auto/handoff thread auto-archive minutes: 60, 1440, 4320 or 10080 (default: 10080)
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
@@ -468,6 +469,12 @@ Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
+
+#### `discord.auto_thread_archive_duration`
+
+**Type:** integer (minutes) — **Default:** `10080` (seven days)
+
+How long an auto-created or handoff thread stays idle before Discord archives it. Valid values are Discord's own `60`, `1440`, `4320` and `10080`; anything else falls back to `10080`. Manual `/thread` and Discord-tool thread creation also default to seven days.
 
 #### `discord.reactions`
 

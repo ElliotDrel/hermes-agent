@@ -280,7 +280,7 @@ class TestCreateThread:
         # Verify the API call
         mock_req.assert_called_once_with(
             "POST", "/channels/11/threads", "test-token",
-            body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
+            body={"name": "New Thread", "auto_archive_duration": 10080, "type": 11},
         )
 
     @patch("tools.discord_tool._discord_request")
@@ -293,7 +293,7 @@ class TestCreateThread:
         assert result["success"] is True
         mock_req.assert_called_once_with(
             "POST", "/channels/11/messages/1001/threads", "test-token",
-            body={"name": "Discussion", "auto_archive_duration": 1440},
+            body={"name": "Discussion", "auto_archive_duration": 10080},
         )
 
 
@@ -844,3 +844,12 @@ class TestSnowflakeValidation:
             action="fetch_messages", channel_id="11", before="1001", after="999"))
         assert "error" not in data
         assert mock_req.call_args.kwargs["params"] == {"limit": "50", "before": "1001", "after": "999"}
+
+
+def test_create_thread_schema_default_matches_handler_default():
+    """HERMES-FORK-013: the advertised and executed default archive durations agree."""
+    from tools.discord_tool import _HANDLER_DEFAULTS, _SCHEMA_PROPERTIES
+    prop = _SCHEMA_PROPERTIES["auto_archive_duration"]
+    assert 10080 in prop["enum"]
+    assert f"default {_HANDLER_DEFAULTS['auto_archive_duration']}" in prop["description"]
+    assert _HANDLER_DEFAULTS["auto_archive_duration"] == 10080

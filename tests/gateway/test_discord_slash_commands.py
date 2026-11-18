@@ -644,3 +644,43 @@ def test_build_slash_event_routes_guild_profile_like_messages(adapter, monkeypat
     assert thread_event.source.guild_id == "1"
     assert thread_event.source.parent_chat_id == "100"
     assert thread_event.source.profile == "work"
+
+
+@pytest.mark.asyncio
+async def test_manual_thread_default_is_seven_days(adapter):
+    """HERMES-FORK-013: /thread without an explicit duration retains seven days."""
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()), edit_original_response=AsyncMock())
+    adapter._create_thread = AsyncMock(return_value={"success": True, "thread_id": "555"})
+    adapter._dispatch_thread_session = AsyncMock()
+    await adapter._handle_thread_create_slash(interaction, name="Planning")
+    assert adapter._create_thread.await_args.kwargs["auto_archive_duration"] == 10080
+
+
+@pytest.mark.parametrize("value", [None, "invalid", 17, 0])
+def test_invalid_auto_archive_duration_falls_back_to_seven_days(adapter, value):
+    adapter.config.extra["auto_thread_archive_duration"] = value
+    assert adapter._auto_thread_archive_duration() == 10080
+
+
+def test_auto_archive_duration_default_and_configured(adapter):
+    assert adapter._auto_thread_archive_duration() == 10080
+    adapter.config.extra["auto_thread_archive_duration"] = 4320
+    assert adapter._auto_thread_archive_duration() == 4320
+
+
+def test_yaml_auto_thread_archive_duration_reaches_adapter(adapter):
+    """config.yaml discord.auto_thread_archive_duration -> extra -> thread creation."""
+    from plugins.platforms.discord.adapter import _apply_yaml_config
+    seeded = _apply_yaml_config({}, {"auto_thread_archive_duration": 1440})
+    adapter.config.extra.update(seeded)
+    assert adapter._auto_thread_archive_duration() == 1440
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_uses_configured_archive_duration(adapter):
+    parent = SimpleNamespace(create_thread=AsyncMock(return_value=SimpleNamespace(id=7)))
+    adapter._client.get_channel = lambda _id: parent
+    adapter.config.extra["auto_thread_archive_duration"] = 4320
+    assert await adapter.create_handoff_thread("100", "plan") == "7"
+    assert parent.create_thread.await_args.kwargs["auto_archive_duration"] == 4320
