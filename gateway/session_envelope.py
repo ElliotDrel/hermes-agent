@@ -125,6 +125,9 @@ def _event_clause(runner, event, provenance, fresh_roles):
     if not isinstance(event.message_type, MessageType):
         return 'message_type'
     # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
+    ids = event.absorbed_message_ids
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        return 'absorbed_message_ids'
     if event.get_command():
         return 'command'
     if event.internal:
@@ -254,6 +257,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     # its fingerprint. Explicit context (including an empty skill list) is exact.
     envelope['event'].update({name: deepcopy(getattr(event, name)) for name in _CONTEXT_FIELDS
                               if getattr(event, name) is not None})
+    if len(event.absorbed_message_ids) > 1:  # absent for a single message: older admissions keep their fingerprint
+        envelope['event']['absorbed_message_ids'] = list(event.absorbed_message_ids)
     if event.inherit_channel_pin is True:  # synthetic goal/resume turn reuses the session's pins (#126109)
         envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):

@@ -570,3 +570,113 @@ async def test_stored_cursor_cannot_widen_scan_window_or_leak_into_threads(adapt
         pass
     assert not isinstance(channel.seen_after[-1], dt.datetime)  # newer cursor narrows (discord.Object)
     assert thread.seen_after[-1] == window_floor
+
+
+def _merged_backfill_adapter(adapter, monkeypatch, messages):
+    async def fake_candidates(_channels):
+        for message in messages:
+            yield message
+
+    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", fake_candidates)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+
+
+def _mentioned(adapter, message_id):
+    bot_user = adapter._client.user
+    return make_message(message_id=message_id, content=f"<@{bot_user.id}> go", mentions=[bot_user])
+
+
+@pytest.mark.asyncio
+async def test_merged_turn_killed_mid_run_is_not_redispatched_out_of_order(adapter, monkeypatch):
+    """A merged turn A+B+C dies mid-run: the head holds the claim, so every absorbed id must hold it
+    too. Otherwise the reconnect scan skips A but dispatches B and C as new turns ahead of it."""
+    a, b, c = (_mentioned(adapter, mid) for mid in (201, 202, 203))
+    event = MessageEvent(text="a b c", message_type=MessageType.TEXT, raw_message=a, message_id="203",
+                         absorbed_message_ids=["201", "202", "203"])
+    adapter._record_discord_processing_start(event, emoji_ack=False)  # then the gateway dies
+
+    _merged_backfill_adapter(adapter, monkeypatch, [a, b, c])
+    await adapter._run_missed_message_backfill()
+    assert adapter._handle_message.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_message_folded_into_running_turn_gets_the_turns_claim(adapter, monkeypatch):
+    """A steer folded into a turn that already started is absorbed late: it needs the claim as well."""
+    from gateway.receipt_drops import bind_adapter, join_event
+
+    a, b = _mentioned(adapter, 211), _mentioned(adapter, 212)
+    running = MessageEvent(text="a", message_type=MessageType.TEXT, raw_message=a, message_id="211")
+    adapter._record_discord_processing_start(running, emoji_ack=False)
+    joined = MessageEvent(text="b", message_type=MessageType.TEXT, raw_message=b, message_id="212")
+    bind_adapter(joined, adapter)
+    running.absorb_turn_input(joined)
+    join_event(joined)
+    await asyncio.gather(*adapter.__dict__.get("_joined_ledger_tasks", ()))
+
+    _merged_backfill_adapter(adapter, monkeypatch, [a, b])
+    await adapter._run_missed_message_backfill()
+    assert adapter._handle_message.await_count == 0
+
+    adapter._record_discord_processing_complete(running, ProcessingOutcome.SUCCESS)
+    assert adapter._discord_message_is_persistently_complete("212") is True
+
+
+@pytest.mark.asyncio
+async def test_completion_before_a_delayed_steer_claim_leaves_the_steered_id_responded(adapter):
+    """The turn completes before a steered message's detached claim worker runs: the late claim
+    must not turn the answered id back into an in-flight one that expiry would re-dispatch."""
+    from gateway.receipt_drops import bind_adapter, join_event
+
+    a, b = _mentioned(adapter, 221), _mentioned(adapter, 222)
+    running = MessageEvent(text="a", message_type=MessageType.TEXT, raw_message=a, message_id="221")
+    adapter._record_discord_processing_start(running, emoji_ack=False)
+    joined = MessageEvent(text="b", message_type=MessageType.TEXT, raw_message=b, message_id="222")
+    bind_adapter(joined, adapter)
+    running.absorb_turn_input(joined)
+
+    adapter._record_discord_processing_complete(running, ProcessingOutcome.SUCCESS)  # B's worker has not run
+    join_event(joined)
+    await asyncio.gather(*adapter.__dict__.get("_joined_ledger_tasks", ()))
+
+    assert adapter._discord_message_is_persistently_complete("222") is True
+    assert adapter._discord_message_has_active_claim("222") is False
+
+
+@pytest.mark.asyncio
+async def test_restored_envelope_claims_its_own_head_id_too(adapter):
+    """A restored envelope has no live message: its head id still needs the turn's claim, and its
+    completion must reach every carried id."""
+    from gateway.config import Platform
+    from gateway.platforms.event import SessionSource
+
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="channel", user_id="42")
+    event = MessageEvent(text="a b", message_type=MessageType.TEXT, source=source, message_id="302",
+                         absorbed_message_ids=["301", "302"])
+    assert event.raw_message is None
+    adapter._record_discord_processing_start(event, emoji_ack=False)
+    assert adapter._discord_message_has_active_claim("301") is True
+    assert adapter._discord_message_has_active_claim("302") is True
+
+    adapter._record_discord_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert adapter._discord_message_is_persistently_complete("301") is True
+    assert adapter._discord_message_is_persistently_complete("302") is True
+
+
+@pytest.mark.asyncio
+async def test_ids_owned_by_an_unresolved_durable_envelope_are_not_backfilled(adapter, tmp_path):
+    """A merged A+B queued behind an unknown turn holds no ledger claim, yet it will run both ids:
+    the scan must not admit B separately (A+B, then B again)."""
+    from hermes_state import SessionDB
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="test")
+    epoch = begin_runtime_epoch(db, instance_id="current")
+    envelope = {"native_text_v1": {"event": {"message_id": "402", "absorbed_message_ids": ["401", "402"]}}}
+    admit_session_input(db, epoch=epoch, principal_id="messaging:x", session_id="s", request_id="401", payload=envelope)
+    adapter.gateway_runner = SimpleNamespace(session_authority=SimpleNamespace(db=db, profile_id=str(tmp_path)))
+
+    assert await adapter._should_backfill_discord_message(_mentioned(adapter, 402)) is False
+    assert await adapter._should_backfill_discord_message(_mentioned(adapter, 401)) is False
+    assert await adapter._should_backfill_discord_message(_mentioned(adapter, 403)) is True

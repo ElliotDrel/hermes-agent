@@ -19,6 +19,7 @@ import logging
 import time
 
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.receipt_drops import notify_dropped
 from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
@@ -152,8 +153,9 @@ async def _commit(adapter, session_key, burst, previous):
         # Durable: this task is what the chat's next burst, a command barrier and /restart wait on, so
         # it ends once the row is committed, not when its FIFO position is fixed behind a capture.
         await dispatch_shared_busy(adapter, burst.head, session_key, durable=True)
-    except Exception:
-        if not _serial(adapter):
+    except (Exception, asyncio.CancelledError) as exc:
+        notify_dropped(adapter, burst.head.source, burst.head.message_ids())  # never queued: clear its waiting marks
+        if isinstance(exc, asyncio.CancelledError) or not _serial(adapter):
             raise  # every absorbed caller sees it (``_settle``)
         # No caller waits on a serial reader's burst: log it as its receive loop would have.
         logger.exception('[%s] Busy burst for %s was not queued', adapter.name, session_key)
@@ -211,5 +213,6 @@ def discard_busy_burst(adapter, session_key):
     burst = adapter.__dict__.get('_shared_bursts', {}).pop(session_key, None)
     if burst is not None:
         burst.timer.cancel()
+        notify_dropped(adapter, burst.head.source, burst.head.message_ids())
         settle_busy_arrival(burst.head, discarded=True)
         burst.done.done() or burst.done.set_result(None)

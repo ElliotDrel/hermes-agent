@@ -124,3 +124,16 @@ refreshes reported as incomplete.
 which upstream deleted when it moved marker handling into `venv_sync.py`. Elliot
 approved retirement during the November 2026 v0.23.2 transfer; reopen only if a
 failed backend refresh is observed reporting success.
+
+## 018 (design 1): Fixed Discord composition window
+
+**Intent:** Make busy Discord messages from one sender run as one turn, with visible
+acknowledgement, without losing any of them.
+**Previous design:** A fixed 30-second composition window reserved one FIFO position and
+grouped same-sender text, sealed by re-fetching each message for edits; a waiting reaction sat
+on the last message only; later parts hardened ownership, capacity refusal and graceful-restart
+draining around that window.
+**Retired because:** Stable v0.23.2's durable authority FIFO already provides truthful
+admission, capacity refusal and restart persistence, and the fixed window delayed answers by up
+to 30 seconds. Elliot replaced it on 2026-11-17 with receipt acknowledgement and merged-message
+identity (active 018); stable's configurable burst debounce is kept as is.

@@ -53,7 +53,7 @@ function persistedImageRefs(text: string) {
 // Current gateways persist the authored text; this heals rows written before that fix. Only
 // the note is model-facing — the `[Replying to: …]` pointer next to it is kept.
 const DISCORD_TRIGGERING_NOTE_RE =
-  /(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n*/
+  /(^|\n)\[Triggering message id: `[^`\n]*`(?: \(merged \d+ messages\))? — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n*/
 
 /**
  * Backend history projection authorizes/sanitizes public commentary before it

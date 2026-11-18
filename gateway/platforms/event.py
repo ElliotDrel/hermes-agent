@@ -137,6 +137,10 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Provider ids of every message this turn input carries, oldest first, the head's own included.
+    # Empty = just ``message_id``. Appended by ``absorb_turn_input`` so a merged burst keeps each
+    # message's identity (per-message reactions, reply to the latest). Appended for positional compat.
+    absorbed_message_ids: list[str] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -166,8 +170,23 @@ class MessageEvent:
         actor: ``user_id`` "" exports none, so a narrowed approval binds to approvers and admins only
         instead of to the first sender while it carries the second sender's text."""
         self.absorb_reply_expected(other)
+        self.absorb_message_ids(other)
         if self.sender_id() != other.sender_id():
             self.user_id = self.user_name = ""
+
+    def message_ids(self) -> list[str]:
+        """Every provider message id this turn input carries, oldest first."""
+        if self.absorbed_message_ids:
+            return list(self.absorbed_message_ids)
+        return [str(self.message_id)] if self.message_id else []
+
+    def absorb_message_ids(self, other: "MessageEvent") -> None:
+        """Append *other*'s ids (ordered, deduped). A fresh list: events copied from this one never
+        share it."""
+        merged = self.message_ids()
+        merged.extend(mid for mid in other.message_ids() if mid not in merged)
+        if len(merged) > 1:
+            self.absorbed_message_ids = merged
 
     def sender_id(self) -> Optional[str]:
         """Who sent this input: ``user_id``, else the source's (a shared observed-group source has

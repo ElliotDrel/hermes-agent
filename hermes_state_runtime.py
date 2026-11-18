@@ -250,6 +250,15 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         return [_row(row) for row in conn.execute(sql, (session_id,))]
 
 
+def pending_native_admissions(db) -> list[dict]:
+    """Every unresolved (queued, started or unknown) admission that carries a native messaging
+    envelope, across the store's sessions: the inputs a restored FIFO still owes a turn."""
+    with db._read_ctx() as conn:
+        sql = ("SELECT * FROM session_admissions WHERE status IN ('queued','started','unknown') "
+               "AND payload_json LIKE '%native_text_v1%' ORDER BY seq")
+        return [_row(row) for row in conn.execute(sql)]
+
+
 _ADMISSION_STATUSES = ('queued', 'started', 'unknown', 'terminal')  # the table's status CHECK
 
 

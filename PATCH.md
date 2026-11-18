@@ -219,70 +219,83 @@ no such field, so duck-typed contexts in stock tests keep stock (uncomposed) beh
 initial send is only freed by `settle()`, which the pending-send test asserts.
 This remains fork-specific progress behavior, not a stock-upstream defect.
 
-## HERMES-FORK-018: Fixed Discord composition window
+## HERMES-FORK-018: Discord receipt acknowledgement and merged-message identity
 
-Ordinary busy queue-mode Discord text reserves one FIFO position and groups
-compatible same-sender messages for a fixed 30 seconds. Each physical message
-is fetched once at seal to include edits; edits cannot become control commands.
-The current answer is delivered before waiting for the next composition window.
-Media, other senders, explicit commands and other transports stay separate.
-Only the final queued message receives the waiting reaction, removed on admission.
+Every accepted Discord message is acknowledged the moment it arrives, before its
+attachments download: ⏳ when its conversation is busy (it queues or merges), 👀 when
+idle. A turn marks every message it carries 👀 at start (⏳ removed) and ✅/❌ at its
+end. Gated on the existing `reactions` setting. Reaction calls are detached tasks,
+serialized per message and bounded (10s), so a Discord 429, failure or hang never
+delays admission, the turn or delivery and never raises into them. A message dropped
+before it ran (`/stop`, `/new`, held-burst or text-debounce discard, a replaced pending
+slot, stale-lock heal, full queue, refused/fenced admission, any exit before dispatch such
+as a failed attachment download or mention-only drop, burst commit failure) loses its mark
+through `gateway/receipt_drops.py` (events bind their adapter; marks exist only if
+reactions were enabled when set, so drop paths read no config). A message folded into an
+already running turn (steer) switches ⏳ to 👀 at once. Marks not recorded in memory
+(restart, 1024-cap eviction, a timed-out call) get an idempotent ⏳ removal at start and end.
+Graceful shutdown waits (5s) for pending reactions before cancelling tasks. The recovery
+column `emoji_ack` now means "the 👀 was scheduled" (the call is detached; its result is
+unknown).
 
-Accepted-input ownership repair (approved specifically in
-https://discord.com/channels/1517646536505557132/1558581315274805291/1558648435417284670):
-joins require the FIFO owner or its explicitly selected drain capability, cannot
-cross an already queued boundary, and stop/reset revokes that capability before
-any asynchronous teardown. Capacity refuses admission with a resend notice; the
-Discord ingress receipt reports actual acceptance instead of unconditional success.
-Sealing retains the owner's original physical ID/raw message; existing Discord
-recovery processing hooks account for every member. Waiting-marker removal commits
-success only after transport success, serializes concurrent drains and retains one
-bounded retry at completion. Preserve fixed deadlines, seal-time edits, sender,
-command/media/security boundaries and prior history/system/cache prefixes.
+`MessageEvent.absorbed_message_ids` (ordered, deduped, head included, set only when
+more than one) is appended by `absorb_turn_input`, so every merge site carries it, and
+is persisted in the durable ingress envelope only when more than one (single messages
+keep their fingerprint; old rows load with none). Discord replies anchor to the latest
+id unless `reply_anchor_override` exists. The model-facing triggering line names the
+latest id and, only for merged turns, appends "(merged N messages)". Recovery rows of
+every absorbed id are marked with the turn's outcome. Stable's configurable busy
+debounce is unchanged; the fixed 30s composition window, `discord_composition.py` and
+the post-window ⏳ are not ported (see PATCH-ARCHIVE.md).
 
-Graceful restart now finishes previously accepted FIFO follow-ups within the native
-restart after-turn/drain budget instead of dequeuing and discarding them merely
-because `_draining` is true. New human ingress is refused with a resend notice,
-including busy/sentinel paths; explicit stop/reset still revokes the selected owner.
-The native timeout phase closes successor execution before its first await.
-Interrupted workers leave the queue untouched; delivery/seal cancellation returns
-an unstarted selected physical event ahead of its promoted successor. Adapter
-completion/finally cannot redrain residuals through the cold refusal gate and
-mistakenly account them as completed. No DB, service, text-only executable replay,
-provider payload rewrite or history migration is introduced.
+Approval: Elliot, 2026-11-17, T3 session, change-specific manual override after
+assessment (protected: merged-message identity and the model-facing triggering line).
+Old part-B (truthful admission, restart drain, review gaps) is not ported: v0.23.2's
+durable authority FIFO already provides acceptance receipts, queue-full refusal and
+restart persistence; nothing turn-control was left missing.
 
-Touchpoints: run_busy.py, run_agent_cache.py, run_turn.py, run_inbound.py,
-run_shutdown.py, platforms/base.py, discord_composition.py, Discord adapter
-processing/admission; composition, input-ownership and restart-pending regressions.
-Combined review preserves the first physical message ID/raw object for ledger
-accounting while reply_anchor_override at seal targets the last physical member
-(native reply behavior). Inline busy/control admission and real debounce storage
-now stamp acceptance; failed dispatch, denied admission, pause/drain and full FIFO
-remain refusals. A debounce path that cannot store the event returns False.
-The combined 26-file verification in 017 passes all 372 tests. The unchanged
-external-drain watcher additionally passed 16 tests (3.8s) on an isolated rerun;
-a broader run hit its known Windows WinError 32 marker-removal race (387 passed,
-1 failed). No watcher source or assertions changed. The /update busy-bypass
-expectation in test_session_race_guard.py fails identically on unchanged captured
-ac297a4c4c (8 passed, 1 failed): maintained 001 deliberately rejects mid-turn update;
-no unrelated behavior/test rewrite is included. Prior independent-branch evidence
-is superseded by the combined checks above. No production lifecycle commands,
-live traffic, remote integration or publishing were performed.
-Rollback the intent-scoped source/test/doc commits; do not rewrite old history.
-Fork-specific; no upstream report, push, staging or live activation in this task.
+Residual risk: reaction 429s are cosmetic (marks may lag or be missing). The
+triggering line changes model-facing bytes once per merged turn. Still uncovered: shutdown
+clears of the pending slot (`run_shutdown`, adapter `cancel_background_tasks`) keep ⏳ on
+purpose, since those inputs are flushed to disk and recovered after restart, where the
+recovered turn clears it; runner-level unauthorized refusals after dispatch (Discord
+pre-filters; an idle one ends ✅/❌ through the processing hooks). A mark of a message that is
+never processed stays until the 1024-entry cap evicts it. A paused-FIFO row stays ⏳ by design. Upstream
+burst merging needs the same kind, so a standalone TEXT followed by PHOTO messages
+still runs as separate turns (unchanged, turn-control). Restored events also issue one
+best-effort ⏳ removal. Each mark keeps its target (the live message, else the channel to build a
+partial message in: the parent channel for an auto-thread starter), captured before a clear drops the
+state; an event's `raw_message` is used only for its own id, never for a merged-in message.
+Recovery claim for merged ids: processing start upserts a `processing` row for every id the
+turn carries (the head's channel/thread/parent columns, or the restored source's), and a steer
+folded into a running turn (`receipt_drops.join_event` -> adapter `on_event_joined_turn`, written
+off-loop) does the same, so the reconnect scan skips B and C while the head's claim is live instead
+of dispatching them ahead of it. Every claim and completion write is one monotonic upsert over every carried id, head
+included (a restored envelope has no live message, so its source supplies the columns); status
+only moves processing, then failed/cancelled, then responded, so a steer's delayed claim that lands
+after the turn completed cannot undo it. The reconnect scan also skips ids owned by an unresolved
+durable envelope (queued, started or unknown, absorbed ids included; one profile-scoped read per
+scan, `receipt_drops.pending_envelope_message_ids`): the FIFO runs them, so a second admission would
+run the merged input and then its member again. This closes an inherited upstream gap (the same
+duplicate existed for any queued message). Residual: the scan snapshot is read once, so an
+envelope admitted after it started is covered only by the dedup/claim guards already in place.
+Rollback: revert the 018 commit. Fork-specific; no upstream report.
 
-Guarantee boundary: accepted FIFO executes before a graceful restart when it fits
-the existing budgets. Residual Discord work at timeout uses the existing optional
-missed-message history recovery with physical IDs and current ingress/security
-checks, not shutdown_flush text as an executable event. Recovery requires enabled
-backfill, a healthy ledger, eligible configured channels/threads, readable retained
-Discord history within the scan window/limits and remaining attempts. Fresh active
-claims may defer recovery for ten minutes; offline recovery does not preserve the
-old process's composition grouping or promise globally identical FIFO across lanes.
-Arbitrary crash persistence, disabled/unavailable backfill and deleted/inaccessible
-messages are not guaranteed; no durable queue subsystem was added. Two failed marker
-removals retain reaction ownership but exhaust retries; no sweeper is added.
-Deterministic fake-transport/model-boundary tests do not prove live/model behavior.
+Touchpoints: gateway/platforms/event.py, platforms/base.py (anchor, legacy debounce),
+session_envelope.py, session_ingress.py, session_ingress_burst.py, run_inbound.py,
+receipt_drops.py (new), hermes_state_runtime.py (pending_native_admissions), plugins/platforms/discord/adapter_reactions.py, adapter.py,
+tui_gateway/session_history.py and apps/desktop hydration.ts (legacy-note heal regex
+accepts the merge count; TS unverified, no node_modules in the candidate).
+
+Verification (v0.23.2 candidate, scripts/run_tests.sh -j 1): new
+test_discord_receipt_reactions.py 12 passed (7 original failed on unchanged ae2a81ccc0; the
+5 added for the drop, dispatch-guard, shutdown, unrecorded-mark and steer-join fixes failed
+before them), test_discord_reactions.py 4 passed. 138 adjacent busy/burst/ingress/authority/
+queue/discord/017/005 files (run in two chunks; Windows 0xc0000142 child crashes are
+environmental): 1270 passed, 28 failed. All 28 fail identically on ae2a81ccc0
+(feishu 24, serial-reader 2, attachment-receipts 1, session_authority 1). The tui server file
+times out at the runner's 300s here; its 16 triggering-note/history tests pass (24 base-failing
+tests there are pre-existing). No live Discord, push, staging or restart.
 
 ## HERMES-FORK-021: Scoped Discord session messages
 
@@ -401,11 +414,6 @@ Discord traffic or gateway restart. Discord has no atomic name compare-and-edit;
 a human change between the final read and PATCH remains possible, as does external
 state movement after read-back. Atomic CAS preserves newer saved decisions but
 cannot prove nondeterministic model behavior. Rollback: scoped revert before deployment.
-Rate-limit reads: discord.py's private rate-limit state (`_global_over`, `_bucket_hashes`,
-`_buckets`, `get_ratelimit`, `Route.major_parameters`) is read only inside `_NativeLimits` in
-`thread_rename.py`; an `AttributeError` after a discord.py bump drops native sharing and the
-rename still goes out under the cooldown map alone. A global gate left closed by a lost
-`call_later` reopens on the next rename once its deadline has passed.
 Verification: 153 tests passed across 11 named files with isolated dev environment,
 canonical runner `-j 1` and retries disabled; syntax and scoped diff checks passed.
 Parallel files with an explicitly shared pytest basetemp collided on Windows;
@@ -523,7 +531,7 @@ into an already-sent prefix. Finalizer admission closes atomically with its drai
 late events retry/wake normally. Gateway mixed leftover handoffs retain typed human
 markers/display kind and a separate FIFO position; runtime-only handoffs use shared
 active admission before the existing FIFO fallback, never borrowing human authority.
-Human FIFO, Discord's 30-second composition, explicit approvals/control, peer
+Human FIFO, Discord's busy-message debounce, explicit approvals/control, peer
 assignments, claims/dedup and owner/continuation lookup remain existing mechanisms.
 Close admission on exceptional exits while retaining accepted work. Promote
 startup-pending notifications when the parent is ready; refund refused claims.

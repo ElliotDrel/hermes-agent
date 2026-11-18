@@ -12,6 +12,7 @@ Uses discord.py library for:
 
 import asyncio
 import datetime as dt
+import functools
 import hashlib
 import inspect
 import json
@@ -2096,6 +2097,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                         task.cancel()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
+        await self._settle_reactions()  # a graceful restart must not cancel the final ✅/❌
         await super().cancel_background_tasks()
 
     def _text_batch_flush_deadline_seconds(self) -> float:
@@ -2472,7 +2474,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return
         max_dispatches = self._missed_message_backfill_max_dispatches()
         counts = dict(scanned=0, missed=0, dispatched=0)
+        self._scan_envelope_ids = None
         try:
+            self._scan_envelope_ids = await self._pending_envelope_message_ids()
             async for message in self._iter_missed_message_backfill_candidates(channels):
                 counts["scanned"] += 1
                 message_id = str(getattr(message, "id", ""))
@@ -2514,6 +2518,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         except Exception as exc:  # pragma: no cover - defensive logging
             await self._finish_recovery_scan(scan_id, "failed", counts, error=str(exc))
             logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
+        finally:
+            self._scan_envelope_ids = None
 
     def _in_bot_thread(self, message: Any) -> bool:
         """Thread the bot already joined skips the mention check — unless
@@ -2678,8 +2684,25 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return False
         if self._discord_message_attempts_exhausted(str(getattr(message, "id", ""))):
             return False
+        if str(getattr(message, "id", "")) in await self._pending_envelope_message_ids():
+            return False  # a durable envelope owns it; its FIFO runs it, so a second admission would duplicate
         # A success reaction is only an ack, not evidence the substantive response completed.
         return not await self._message_has_non_down_bot_response(message)
+
+    async def _pending_envelope_message_ids(self) -> set[str]:
+        """Ids carried by this profile's unresolved durable envelopes; one read per scan."""
+        scan = self.__dict__.get("_scan_envelope_ids")
+        if scan is not None:
+            return scan
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return set()
+        from gateway.receipt_drops import pending_envelope_message_ids
+        from gateway.session_authorities import authority_for_home
+        authority = authority_for_home(runner, self._discord_recovery_store._hermes_home)
+        if authority is None:
+            return set()
+        return await asyncio.to_thread(pending_envelope_message_ids, authority)
 
     def _is_down_notice_content(self, content: str) -> bool:
         """Recognize only explicit Hermes/gateway outage notices."""
@@ -2801,52 +2824,83 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             )
         self._with_discord_recovery_db(_op)
 
-    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+    # Ledger status order: processing < failed/cancelled < responded. A write never moves a row down,
+    # so a delayed claim (steer joined late, restored envelope) cannot undo a completion that
+    # already committed, whichever order the two writers run in.
+    _CLAIM_SQL = """
+        INSERT INTO discord_messages
+            (message_id, channel_id, thread_id, parent_channel_id, author_id, created_at, status, emoji_ack, replied, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(message_id) DO UPDATE SET
+            channel_id=COALESCE(discord_messages.channel_id, excluded.channel_id),
+            thread_id=COALESCE(discord_messages.thread_id, excluded.thread_id),
+            parent_channel_id=COALESCE(discord_messages.parent_channel_id, excluded.parent_channel_id),
+            author_id=COALESCE(discord_messages.author_id, excluded.author_id),
+            created_at=COALESCE(discord_messages.created_at, excluded.created_at),
+            status=CASE
+                WHEN discord_messages.status='responded' THEN 'responded'
+                WHEN excluded.status='processing' AND discord_messages.status IN ('failed', 'cancelled')
+                    THEN discord_messages.status
+                ELSE excluded.status END,
+            emoji_ack=CASE WHEN excluded.status='processing' THEN excluded.emoji_ack ELSE discord_messages.emoji_ack END,
+            replied=CASE WHEN excluded.status='responded' THEN 1 ELSE discord_messages.replied END,
+            updated_at=excluded.updated_at
+    """
+
+    def _write_event_claims(self, event: MessageEvent, status: str, *, emoji_ack: bool = False) -> None:
+        """Upsert one ledger row per id *event* carries, the head included, under the monotonic status
+        rule. A live head records its author and creation time; every other id (merged, steered, or a
+        restored envelope with no live message) takes the head's channel columns, else the source's."""
         if not self._missed_message_backfill_enabled():
             return
         message = event.raw_message
-        self._record_discord_message_seen(message, status="processing")
-        message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
-        if not message_id:
+        head = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
+        ids = list(dict.fromkeys(mid for mid in (head, *event.message_ids()) if mid))
+        if not ids:
             return
+        if message is not None:
+            channel_id, thread_id, parent_id = self._message_channel_ids(message)
+        else:
+            channel_id, thread_id, parent_id = str(event.source.chat_id or ""), event.source.thread_id, None
+        author_id = str(getattr(getattr(message, "author", None), "id", "") or "") or None
+        created_at = getattr(message, "created_at", None)
+        created_text = created_at.isoformat() if hasattr(created_at, "isoformat") else None
         now = self._utc_now_iso()
+        rows = [
+            (mid, channel_id, thread_id, parent_id,
+             author_id if mid == head else None, created_text if mid == head else None,
+             status, 1 if emoji_ack else 0, 1 if status == "responded" else 0, now)
+            for mid in ids
+        ]
+        self._with_discord_recovery_db(lambda conn: conn.executemany(self._CLAIM_SQL, rows))
 
-        def _op(conn):
-            conn.execute(
-                "UPDATE discord_messages SET status='processing', emoji_ack=?, updated_at=? WHERE message_id=?",
-                (1 if emoji_ack else 0, now, message_id),
-            )
-        self._with_discord_recovery_db(_op)
+    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        self._write_event_claims(event, "processing", emoji_ack=emoji_ack)
+
+    def on_event_joined_turn(self, event: MessageEvent) -> None:
+        """*event* was folded into a turn that already started (steer): its ids need the turn's claim
+        too. The write runs off the loop; a missing loop (sync caller) writes inline."""
+        write = functools.partial(self._write_event_claims, event, "processing", emoji_ack=self._reactions_enabled())
+        try:
+            task = asyncio.get_running_loop().create_task(asyncio.to_thread(write))
+        except RuntimeError:
+            write()
+            return
+        tasks = self.__dict__.setdefault("_joined_ledger_tasks", set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        if not self._missed_message_backfill_enabled():
-            return
-        message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
-        if not message_id:
-            return
-        now = self._utc_now_iso()
-        if outcome == ProcessingOutcome.SUCCESS:
-            # SUCCESS means the base delivered the final (or the stream already had). Attribute it
-            # to the inbound id here: streamed/edited finals, fresh-final sends and media-only replies
-            # carry no reply anchor (reply_to_mode "off" never does), so the send-path ledger writer
-            # cannot mark the row and backfill would re-dispatch it on every reconnect (#113631).
-            def _complete(conn):
-                conn.execute(
-                    "UPDATE discord_messages SET status='responded', replied=1, updated_at=? WHERE message_id=?",
-                    (now, message_id),
-                )
-            self._with_discord_recovery_db(_complete)
-            return
-        status = "cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed"
-
-        def _op(conn):
-            conn.execute(
-                "UPDATE discord_messages "
-                "SET status=CASE WHEN status='responded' THEN status ELSE ? END, "
-                "updated_at=? WHERE message_id=?",
-                (status, now, message_id),
-            )
-        self._with_discord_recovery_db(_op)
+        # A merged turn answers every message it absorbed: none may stay re-dispatchable by backfill.
+        # SUCCESS means the base delivered the final (or the stream already had). Attribute it to
+        # every carried id here: streamed/edited finals, fresh-final sends and media-only replies
+        # carry no reply anchor (reply_to_mode "off" never does), so the send-path ledger writer
+        # cannot mark the row and backfill would re-dispatch it on every reconnect (#113631). An
+        # upsert, because a steered id's own claim may not have landed yet.
+        status = {
+            ProcessingOutcome.SUCCESS: "responded", ProcessingOutcome.CANCELLED: "cancelled",
+        }.get(outcome, "failed")
+        self._write_event_claims(event, status)
 
     async def _record_response_async(
         self, reply_to, result: SendResult, content: str, final: bool, metadata: Optional[dict[str, Any]] = None,
@@ -6087,6 +6141,13 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
     async def _handle_message(
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
+        """``_handle_message_dispatch``; a receipt mark it leaves on a message it never dispatched is cleared."""
+        return await self._guard_receipt(
+            message, lambda: self._handle_message_dispatch(message, role_authorized, recovered=recovered))
+
+    async def _handle_message_dispatch(
+        self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
+    ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
         if is_discord_draft_message(getattr(message, "content", "")):
             logger.debug("[%s] Ignoring explicitly marked Discord draft message %s", self.name, getattr(message, "id", "unknown"))
@@ -6253,6 +6314,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 self._semantic_thread_initial_name(effective_channel) if is_thread else None
             ),
         )
+        if msg_type != MessageType.COMMAND and not recovered:
+            self._acknowledge_receipt(message, source)  # before the attachment downloads: ack on receipt
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
         event_text, media_text_inlined = inline_document_text(normalized_content, pending_text_injection, media_text_inlined)
@@ -6311,10 +6374,12 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         )
         if is_automated_message(message) and self._is_bot_tag_debounce_continuation(message):
             event._bot_tag_debounce = True  # type: ignore[attr-defined]
+        self._bind_receipt(message, event)
 
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             await self._threads.mark_async(thread_id)
+        self._receipt_dispatched(message)  # from here the event's own drop paths clear its mark
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)

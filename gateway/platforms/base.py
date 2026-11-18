@@ -24,6 +24,7 @@ from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
+from gateway.receipt_drops import drop_event
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.file_safety import is_project_env_basename
@@ -182,6 +183,8 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    if platform == "discord" and getattr(event, "absorbed_message_ids", None):
+        return event.absorbed_message_ids[-1]  # a merged burst answers its latest message
     return getattr(event, "message_id", None)
 
 
@@ -1709,6 +1712,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_turn_input(event)
             return
+    drop_event(existing)  # the slot's earlier input is replaced, never run
     pending_messages[session_key] = event
 
 
@@ -2442,6 +2446,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
         if self._drop_unresolved(event):
+            drop_event(event)
             return
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
@@ -3718,6 +3723,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             state.event.absorb_reply_expected(event)
+            state.event.absorb_message_ids(event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
@@ -3762,6 +3768,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None:
             state.cancel_timer()
+            drop_event(state.event)
         from gateway.session_ingress_burst import discard_busy_burst
         discard_busy_burst(self, session_key)
 
@@ -3790,7 +3797,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             return False
         logger.warning("[%s] Healing stale session lock for %s (owner task done/absent)", self.name, session_key)
         self._active_sessions.pop(session_key, None)
-        self._pending_messages.pop(session_key, None)
+        drop_event(self._pending_messages.pop(session_key, None))
         self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
@@ -3847,7 +3854,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
         if discard_pending:
-            self._pending_messages.pop(session_key, None)
+            drop_event(self._pending_messages.pop(session_key, None))
             self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)
@@ -3879,12 +3886,14 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.error("[%s] Dropping inbound message: no gateway message handler is installed on this "
                              "adapter. The adapter is connected and can send, but every inbound message is "
                              "discarded.", self.name)
+            drop_event(event)
             return
 
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
         # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
         if self._drop_unresolved(event):
+            drop_event(event)
             return
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         # Explicitly routed events already name their destination; recovering a
@@ -3896,6 +3905,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
+            drop_event(event)
             return
         from gateway.session_ingress_burst import burst_gate
         behind_burst = await burst_gate(self, event, session_key)  # a serial reader's command waits too

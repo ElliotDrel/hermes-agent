@@ -53,12 +53,22 @@ _RELAY_MEDIA_PREFIX = "relay_media_"
 _UNKNOWN_ATTACHMENT_NAME = "(original filename unknown)"
 
 
-def discord_triggering_note(message_id: Any) -> str:
-    """Model-facing routing note for a Discord turn (rides the API-bound user message only)."""
+def discord_triggering_note(message_id: Any, merged_count: int = 1) -> str:
+    """Model-facing routing note for a Discord turn (rides the API-bound user message only).
+    ``merged_count`` > 1 names how many messages the turn merged; *message_id* is then the latest."""
+    merged = f" (merged {merged_count} messages)" if merged_count > 1 else ""
     return (
-        f"[Triggering message id: `{message_id}` — use as `message_id` for reply/react/pin "
+        f"[Triggering message id: `{message_id}`{merged} — use as `message_id` for reply/react/pin "
         f"via the discord tools.]"
     )
+
+
+def event_triggering_note(event: Any) -> str:
+    """The note for *event*: its latest merged message id, with the merge count when more than one."""
+    ids = getattr(event, "absorbed_message_ids", None) or []
+    if len(ids) > 1:
+        return discord_triggering_note(ids[-1], len(ids))
+    return discord_triggering_note(event.message_id)
 
 
 def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
@@ -70,7 +80,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     message_id = getattr(event, "message_id", None)
     if not message_id or not isinstance(message_text, str):
         return message_text
-    prefix = f"{discord_triggering_note(message_id)}\n\n"
+    prefix = f"{event_triggering_note(event)}\n\n"
     return message_text.removeprefix(prefix)
 
 
@@ -731,6 +741,9 @@ class GatewayInboundMixin(
                 # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.
                 with suppress(RuntimeStoreError):
                     await authority.cancel_queued(actor, ref, row['admission_id'])
+                    from gateway.receipt_drops import notify_dropped, payload_message_ids
+                    source = authority.sessions[sid].source  # the cancelled input never runs: clear its waiting marks
+                    notify_dropped(self._adapter_for_source(source), source, payload_message_ids(row['payload']))
         handle = authority._handle(ref)
         if handle.execution_state == 'running':
             # Settled meanwhile (stale_generation): there is no claimed turn left to stop.
@@ -1696,7 +1709,7 @@ class GatewayInboundMixin(
         ):
             from gateway.session import _discord_tools_loaded as _disc_tools_loaded
             if _disc_tools_loaded():
-                message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
+                message_text = f"{event_triggering_note(event)}\n\n{message_text}"
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

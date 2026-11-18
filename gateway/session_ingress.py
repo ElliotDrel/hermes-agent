@@ -51,6 +51,8 @@ async def admit_message(authority, event):
         if committed is not None and not committed.done():
             committed.set_result(None)  # the row is durable (any status): a barrier may go on
     except RuntimeStoreError as exc:
+        if exc.reason != 'admission_conflict':  # a re-sent id's earlier admission still owns its marks
+            _clear_waiting(authority, event)
         if exc.reason == 'stale_generation' and exc.field == 'route':
             return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
         if exc.reason == 'invalid_params' and exc.field:
@@ -109,6 +111,7 @@ async def admit_message(authority, event):
         row = get_session_admission(authority.db, admission_id=receipt.admission_id)
         if row is not None and row['status'] == 'terminal':
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
+            _clear_waiting(authority, event)
             return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '
                     'queued for moved, so it was dropped. Send it again to continue.')
         if row is not None:
@@ -117,6 +120,13 @@ async def admit_message(authority, event):
     finally:
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
+
+
+def _clear_waiting(authority, event):
+    """*event* was refused, fenced or dropped before it ran: its adapter clears the waiting marks."""
+    from gateway.receipt_drops import notify_dropped
+    resolve = getattr(authority.runner, '_adapter_for_source', None)
+    notify_dropped(resolve(event.source) if resolve else None, event.source, event.message_ids())
 
 
 def _marker_adopters(authority):
@@ -607,6 +617,8 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     except asyncio.CancelledError:
         if not accepted.done():
             task.cancel()  # cancelled before commit: the input was never ACKed
+            from gateway.receipt_drops import notify_dropped
+            notify_dropped(adapter, event.source, event.message_ids())
         raise
     if task.done():
         task.result()  # refused, consumed or answered inline before any durable acceptance

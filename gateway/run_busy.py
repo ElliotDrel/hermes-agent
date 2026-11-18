@@ -843,6 +843,8 @@ class GatewayBusySessionMixin:
         running = turn.running_event()  # a drained queued follow-up's event, else the opener's
         if running is not None and running is not event:
             running.absorb_turn_input(event)
+            from gateway.receipt_drops import join_event
+            join_event(event)  # its messages are now being handled by the started turn
         if turn.event is not None and turn.event is not event:
             turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:
