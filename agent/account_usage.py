@@ -33,6 +33,9 @@ class AccountUsageWindow:
     # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
     # never imply the account itself is out of quota.
     scope: str = "account"
+    # Provider-reported window length (Codex ``limit_window_seconds``; Anthropic's named
+    # five_hour/seven_day windows), for consumers that classify windows by duration, not label.
+    duration_seconds: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -266,10 +269,13 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 def _usage_windows(
     source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
-    model_scoped: frozenset[str] | set[str] = frozenset(),
+    model_scoped: frozenset[str] | set[str] = frozenset(), duration_key: Optional[str] = None,
+    fixed_durations: Optional[dict[str, int]] = None,
 ) -> list[AccountUsageWindow]:
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
-    ``model_scoped`` keys build windows that cap only a model family, never the account."""
+    ``model_scoped`` keys build windows that cap only a model family, never the account.
+    ``duration_key`` reads a provider-reported length from the window; ``fixed_durations`` maps keys
+    whose payload name already fixes the length (Anthropic ``five_hour``)."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
@@ -282,8 +288,16 @@ def _usage_windows(
         windows.append(AccountUsageWindow(
             label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
             scope="model" if key in model_scoped else "account",
+            duration_seconds=_window_duration(window, duration_key, (fixed_durations or {}).get(key)),
         ))
     return windows
+
+
+def _window_duration(window: dict, duration_key: Optional[str], fixed: Optional[int]) -> Optional[int]:
+    seconds = window.get(duration_key) if duration_key else None
+    if _is_num(seconds) and not isinstance(seconds, bool) and seconds > 0:
+        return int(seconds)
+    return fixed
 
 
 # Published Codex quota windows by ``limit_window_seconds``: 5h session and 7-day weekly.
@@ -349,7 +363,8 @@ def _fetch_codex_account_usage_impl(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
         )
     rate_limit = payload.get("rate_limit") or {}
-    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
+    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at",
+                             duration_key="limit_window_seconds")
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
@@ -519,6 +534,7 @@ def _fetch_anthropic_account_usage(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
+        fixed_durations={"five_hour": 18_000, "seven_day": 604_800},
     )
     details: list[str] = []
     extra = payload.get("extra_usage") or {}

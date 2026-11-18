@@ -165,6 +165,10 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
                       "Opus week": "model", "Sonnet week": "model"}
     percents = {w.label: w.used_percent for w in snapshot.windows}
     assert percents["Opus week"] == 100.0 and percents["Current session"] == 30.0
+    # HERMES-FORK-007: account-wide windows carry their named durations; model caps carry none.
+    durations = {w.label: w.duration_seconds for w in snapshot.windows}
+    assert durations == {"Current session": 18_000, "Current week": 604_800,
+                         "Opus week": None, "Sonnet week": None}
 
 
 def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):

@@ -161,6 +161,23 @@ def test_codex_window_labels_follow_duration_with_positional_fallback(monkeypatc
     assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
 
 
+def test_codex_windows_expose_provider_duration_seconds(monkeypatch):
+    """HERMES-FORK-007: duration_seconds mirrors limit_window_seconds; labels stay upstream's."""
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 4, "limit_window_seconds": 604800},
+        "secondary_window": {"used_percent": 21, "limit_window_seconds": 12345},
+        "extra_window": {"used_percent": 1, "limit_window_seconds": 18000},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [(w.label, w.duration_seconds) for w in snapshot.windows] == [
+        ("Weekly", 604800), ("Weekly", 12345)]
+    # Absent / non-numeric durations stay None rather than being inferred from position.
+    payload = {"rate_limit": {"primary_window": {"used_percent": 4},
+                              "secondary_window": {"used_percent": 2, "limit_window_seconds": "n/a"}}}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [w.duration_seconds for w in snapshot.windows] == [None, None]
+
+
 def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, codex_usage_payload):
     """#79695: the decoded body rides along untouched (unknown fields included), from the single GET."""
     codex_usage_payload["future_field"] = {"nested": [1, 2]}

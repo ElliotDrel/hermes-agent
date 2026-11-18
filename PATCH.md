@@ -77,11 +77,16 @@ selected when ripgrep requires it, without a false newline-intent advisory.
 
 ## HERMES-FORK-007: Provider duration metadata for quota footers
 
-Expose provider-reported Codex window durations to the existing workspace footer,
-label recognized five-hour and weekly windows, and retain unknown fallback labels.
-Anthropic's named account-wide five_hour/seven_day windows supply 18,000/604,800
-seconds explicitly. Model-specific caps remain distinct and cannot masquerade as
-account-wide quota. No provider request or authentication path changes.
+`AccountUsageWindow.duration_seconds` carries the provider-reported window length:
+Codex `limit_window_seconds` and Anthropic's named account-wide five_hour/seven_day
+windows (18,000/604,800 seconds). Upstream labels (Session/Weekly/"Current session")
+are unchanged; Opus/Sonnet `scope=model` windows stay distinct with no duration, so
+they cannot masquerade as account-wide quota. Absent/non-numeric durations stay None.
+Touchpoints: `agent/account_usage.py` (`_usage_windows`, `_window_duration`).
+No provider request or authentication path changes. Note: the workspace footer plugin
+currently classifies from the raw wham/usage payload's `limit_window_seconds` itself
+and does not read this field; it is available for consumers of the snapshot.
+v0.23.2 verification: 26 passed across the three account_usage suites.
 
 ## HERMES-FORK-017: One Discord progress message
 
