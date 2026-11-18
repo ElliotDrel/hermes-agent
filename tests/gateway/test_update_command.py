@@ -1,6 +1,7 @@
 """Tests for /update gateway slash command.
 
-Tests both the _handle_update_command handler (spawns update process) and
+Tests both the _handle_update_command handler (prepares the explicit skill turn;
+/update never spawns the updater in this fork) and
 the _send_update_notification startup hook (sends results after restart).
 """
 
@@ -56,10 +57,9 @@ class TestHandleUpdateCommand:
         fake_root.mkdir()
 
         with patch("gateway.run._hermes_home", tmp_path), \
-             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)):
-            result = await runner._handle_update_command(event)
-
-        assert "Not a git repository" in result
+             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
+             pytest.raises(ValueError, match="Not a git repository"):
+            await runner._handle_update_command(event)
 
 
     @pytest.mark.asyncio
@@ -90,76 +90,6 @@ class TestHandleUpdateCommand:
         with patch("shutil.which", return_value=None), \
              patch("importlib.util.find_spec", side_effect=ImportError):
             assert _resolve_hermes_bin() is None
-
-
-    @pytest.mark.asyncio
-    async def test_writes_pending_marker(self, tmp_path):
-        """Writes .update_pending.json with correct platform and chat info."""
-        runner = _make_runner()
-        event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
-        event.message_id = "m-update"
-
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
-             patch("hermes_cli.config.detect_install_method", return_value="git"), \
-             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
-             patch("subprocess.Popen"):
-            await runner._handle_update_command(event)
-
-        pending_path = hermes_home / ".update_pending.json"
-        assert pending_path.exists()
-        data = json.loads(pending_path.read_text())
-        assert data["platform"] == "telegram"
-        assert data["chat_id"] == "99999"
-        assert data["chat_type"] == "dm"
-        assert data["message_id"] == "m-update"
-        assert "timestamp" in data
-        assert not (hermes_home / ".update_exit_code").exists()
-
-
-    @pytest.mark.asyncio
-    @pytest.mark.platforms("linux")
-    async def test_fallback_when_no_setsid(self, tmp_path):
-        """Falls back to start_new_session=True when setsid is not available."""
-        runner = _make_runner()
-        event = _make_event()
-
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
-        mock_popen = MagicMock()
-
-        def which_no_setsid(x):
-            if x == "hermes":
-                return "/usr/bin/hermes"
-            if x == "setsid":
-                return None
-            return None
-
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
-             patch("hermes_cli.config.detect_install_method", return_value="git"), \
-             patch("shutil.which", side_effect=which_no_setsid), \
-             patch("subprocess.Popen", mock_popen):
-            await runner._handle_update_command(event)
-
-        # Verify plain bash -c fallback (no nohup, no setsid)
-        call_args = mock_popen.call_args[0][0]
-        assert call_args[0] == "bash"
-        assert "nohup" not in call_args[2]
-        assert ".update_exit_code" in call_args[2]
-        # start_new_session=True should be in kwargs
-        call_kwargs = mock_popen.call_args[1]
-        assert call_kwargs.get("start_new_session") is True
 
 
 # ---------------------------------------------------------------------------
@@ -200,13 +130,13 @@ class TestUpdateCommandPlatformGate:
         event = _make_event(platform=Platform.DISCORD)
         monkeypatch.setenv("HERMES_MANAGED", "")
 
-        with patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
-
         # The gate must NOT have rejected us — anything other than the
-        # ``platform_not_messaging`` rejection string is acceptable here.
-        # Later steps may legitimately return success ("Starting Hermes
-        # update…") or fail for environment reasons.
+        # ``platform_not_messaging`` rejection is acceptable here. Later steps may
+        # legitimately refuse for environment reasons (no git checkout, no skill).
+        try:
+            result = await runner._handle_update_command(event)
+        except ValueError as exc:
+            result = str(exc)
         assert "only available from messaging platforms" not in result
 
 
@@ -589,9 +519,11 @@ class TestUpdateCommandInstallMethodRefusal:
                    return_value=method), \
              patch("hermes_cli.config.recommended_update_command_for_method",
                    return_value=f"steward-update --{method}"), \
-             patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+             patch("subprocess.Popen", mock_popen), \
+             pytest.raises(ValueError) as refusal:
+            await runner._handle_update_command(event)
 
+        result = str(refusal.value)
         assert f"does not apply to this install ({method})" in result
         assert f"Update with: steward-update --{method}" in result
         # No update attempt: nothing spawned, no pending marker written.

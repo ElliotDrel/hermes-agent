@@ -1373,73 +1373,33 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_collect_and_upload)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
-        """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
-        restart it may trigger; marker files let this or the next gateway process notify the user."""
-        import json
-        from gateway.approval_actor import opener_authority
-        from gateway.run import _hermes_home, _resolve_hermes_bin
-        from hermes_cli.config import is_managed, format_managed_message
+        """Prepare only through the explicit user skill turn; never arm installation (HERMES-FORK-001)."""
+        from hermes_cli.fork_update_entry import PENDING_MARKERS, build_update_invocation, update_refusal
+        if (not event.allow_gateway_control or getattr(event, "internal", False)
+                or getattr(event.source, "is_bot", False) or event.get_command() != "update"):
+            raise ValueError("Update requires an explicit authorized user /update command.")
+        if event.get_command_args().strip() not in {"", "stable"}:
+            raise ValueError("Usage: /update [stable]")
+        from gateway.run import _hermes_home
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
         # allow_update_command=True are also allowed.
         src = event.source
         if src.platform not in self._UPDATE_ALLOWED_PLATFORMS:
-            try:
-                from gateway.platform_registry import platform_registry
-                entry = platform_registry.get(src.platform.value)
-                if not entry or not entry.allow_update_command:
-                    return t("gateway.update.platform_not_messaging")
-            except Exception:
-                return t("gateway.update.platform_not_messaging")
-        if is_managed():
-            return f"✗ {format_managed_message(t('gateway.update.managed_action'))}"
-
-        project_root = Path(project_root_str())
-
-        # Not a git-managed install (docker/nix/desktop-app/source): refuse
-        # with the steward's own update mechanism instead of git-pulling a
-        # tree `hermes update` does not own.
-        try:
-            from hermes_cli.config import (
-                detect_install_method,
-                recommended_update_command_for_method,
-            )
-
-            method = detect_install_method(project_root)
-            if method not in {"git", "unknown"}:
-                return t("gateway.update.not_applicable", method=method,
-                         command=recommended_update_command_for_method(method))
-        except Exception:
-            pass  # config unreadable — fall through to the .git check below
-
-        git_dir = project_root / '.git'
-
-        if not git_dir.exists():
-            return t("gateway.update.not_git_repo")
-        hermes_cmd = _resolve_hermes_bin()
-        if not hermes_cmd:
-            return t("gateway.update.hermes_cmd_not_found")
-        if self._update_in_flight():  # before any write: the marker names who answers its prompts
-            return t("gateway.update.already_running")
-        pending_path = _hermes_home / ".update_pending.json"
-        output_path = _hermes_home / ".update_output.txt"
-        exit_code_path = _hermes_home / ".update_exit_code"
-        pending = {
-            "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
-            "user_id": src.user_id, "session_key": self._session_key_for_source(src),
-            "timestamp": datetime.now().isoformat(), "authority": opener_authority(event)}  # who answers its prompts
-        # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
-        # requester's own profile bot, not the default profile's adapter for the same platform.
-        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
-                                          ("profile", getattr(src, "profile", None))) if v})
-        _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
-        _tmp_pending.replace(pending_path)
-        exit_code_path.unlink(missing_ok=True)
-        try:
-            _spawn_detached_update(hermes_cmd, output_path, exit_code_path)
-        except Exception as e:
-            pending_path.unlink(missing_ok=True)
-            exit_code_path.unlink(missing_ok=True)
-            return t("gateway.update.start_failed", error=e)
-        self._schedule_update_notification_watch()
-        return t("gateway.update.starting")
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(src.platform.value)
+            if not entry or not entry.allow_update_command:
+                raise ValueError(t("gateway.update.platform_not_messaging"))
+        refusal = update_refusal(Path(project_root_str()), _hermes_home)
+        if refusal:
+            raise ValueError(refusal)
+        markers = PENDING_MARKERS
+        prompt = await self._run_in_executor_with_context(
+            lambda: build_update_invocation(event.text, args=event.get_command_args(),
+                                             task_id=self._session_key_for_source(src),
+                                             platform=src.platform.value))
+        # Skill discovery yields. Recheck before returning so a native run that appeared meanwhile
+        # is never answered by this turn.
+        if self._is_session_running(self._session_key_for_source(src)) or any(
+                (_hermes_home / name).exists() for name in markers):
+            raise ValueError("An update or session became busy; retry when it finishes.")
+        return prompt

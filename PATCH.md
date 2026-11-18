@@ -45,6 +45,32 @@ installed and prepared revisions match; running revision is verified separately.
 Preparation reports through its invoking agent turn without arming the old
 install-pending marker/watcher. Ordinary native updates retain their reporting.
 
+Touchpoints: hermes_cli/fork_update_entry.py (skill user-turn text), hermes_cli/commands.py
+(`update`: `[stable]`, reject), gateway/slash_commands.py (`_handle_update_command`
+validates and renders, never spawns), gateway/run_inbound.py (`_hm_cmd_update` plus a
+final busy/estop recheck and no orphan-FIFO rescue for the rendered turn),
+gateway/run_busy.py (`update` leaves `_PLAIN_COMMANDS`).
+
+v0.23.2 re-port. Authorization: Elliot's change-specific manual override, granted
+2026-11-18 (T3 session), to re-port the settled behavior. Protected boundary: this
+rewrites one user message's text into the skill invocation, so message bytes and
+timing change for that turn only (no system prompt, tool schema, history or cache
+prefix change). Residual risk: v0.23.2's shared command-turn admission
+(`_admit_command_turn`) now also sees the rewritten turn; the explicit-update guards
+keep it out of orphan rescue and reject a busy session after the skill load yields.
+Rollback: revert the 001 commit. Upstream's `/update` spawn, its opener-authority
+marker and `_update_in_flight` are no longer reachable from `/update`; the marker
+readers stay for other writers and `/update` still refuses while a marker exists.
+Failure notice wording stays upstream's i18n text (not reworded).
+The stable/live choice comes from the handler's parsed `get_command_args()`, passed to
+`build_update_invocation(args=...)`; the literal text is never re-split, so `/Update stable`
+and `/update@bot stable` select stable exactly as the handler accepted them. The
+install/marker preflight is `fork_update_entry.update_refusal`, shared with the Discord slash.
+Verification: `test_fork_update_entry` (33), `test_update_command`, `test_prompt_opener_binding`
+(marker staged directly), `test_session_race_guard`, `test_commands`,
+`test_busy_policy_invariants`, `test_discord_slash_commands` pass; real native skill
+rendering and request assembly with a fake provider.
+
 ## HERMES-FORK-016: Per-run Discord update reporting
 
 Reuse the invoking thread; create one when invoked outside a thread. Stream native

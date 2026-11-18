@@ -206,7 +206,6 @@ async def test_start_command_is_noop_during_active_session():
     [
         ("/help", "_handle_help_command", "Help text"),
         ("/commands", "_handle_commands_command", "Commands text"),
-        ("/update", "_handle_update_command", "Update text"),
         ("/profile", "_handle_profile_command", "Profile text"),
     ],
 )

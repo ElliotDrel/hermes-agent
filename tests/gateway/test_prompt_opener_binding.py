@@ -42,6 +42,15 @@ def _runner(adapter):
     return runner
 
 
+def _write_update_marker(home, user_id):
+    from gateway.approval_actor import opener_authority
+
+    event = MessageEvent(text="/update", source=_source(user_id))
+    (home / ".update_pending.json").write_text(json.dumps({
+        "platform": "telegram", "chat_id": "-100", "user_id": user_id,
+        "authority": opener_authority(event)}), encoding="utf-8")
+
+
 async def _open_reasoning_picker(adapter):
     """Alice runs the admin-only bare /reasoning; returns the runner and a 'what got applied' probe."""
     runner = _runner(adapter)
@@ -106,19 +115,15 @@ async def test_admin_picker_answers_only_its_opener(platform, tapper, tmp_path, 
 @pytest.mark.parametrize("surface", ["typed", "telegram_button"])
 @pytest.mark.parametrize("sender", ["bob", "alice"])
 async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, monkeypatch):
-    """Alice's /update recorded her as the opener; only her reply (or an admin's) answers its prompt."""
+    """Alice's update run recorded her as the opener; only her reply (or an admin's) answers its prompt.
+
+    The fork's /update prepares a skill turn instead of spawning the updater, so the pending run
+    marker (still written by upstream's detached update flow) is staged directly.
+    """
     runner = _runner(MagicMock(send=AsyncMock()))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "checkout" / "gateway").mkdir(parents=True)
-    (tmp_path / "checkout" / ".git").mkdir()
-    runner._schedule_update_notification_watch = lambda: None
-    with patch("gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
-            patch("gateway.slash_commands._spawn_detached_update"), \
-            patch("gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
-            patch("hermes_cli.config.is_managed", return_value=False), \
-            patch("hermes_cli.config.detect_install_method", return_value="git"):
-        assert await runner._handle_update_command(MessageEvent(text="/update", source=_source("alice")))
+    _write_update_marker(tmp_path, "alice")
     key = runner._session_key_for_source(_source("alice"))
     runner._session_state(key).persistent.update_prompt_pending = True
     response = tmp_path / ".update_response"
@@ -146,7 +151,7 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
 
 @pytest.mark.asyncio
 async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, monkeypatch):
-    """Bob's /update while Alice's is still running is refused before it touches the marker, so
+    """Bob's /update while Alice's run is pending is refused before it touches the marker, so
     Alice stays the only one (besides admins) who answers the running update's prompt."""
     from gateway.approval_actor import update_prompt_refusal
 
@@ -155,15 +160,12 @@ async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, mon
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "checkout" / "gateway").mkdir(parents=True)
     (tmp_path / "checkout" / ".git").mkdir()
-    runner._schedule_update_notification_watch = lambda: None
+    _write_update_marker(tmp_path, "alice")
     with patch("gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
-            patch("gateway.slash_commands._spawn_detached_update") as spawn, \
-            patch("gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
             patch("hermes_cli.config.is_managed", return_value=False), \
-            patch("hermes_cli.config.detect_install_method", return_value="git"):
-        await runner._handle_update_command(MessageEvent(text="/update", source=_source("alice")))
-        reply = await runner._handle_update_command(MessageEvent(text="/update", source=_source("bob")))
-    assert spawn.call_count == 1 and "already running" in reply
+            patch("hermes_cli.config.detect_install_method", return_value="git"), \
+            pytest.raises(ValueError, match="already pending"):
+        await runner._handle_update_command(MessageEvent(text="/update", source=_source("bob")))
     assert json.loads((tmp_path / ".update_pending.json").read_text())["user_id"] == "alice"
     assert update_prompt_refusal("alice", extra={}) is None
     assert update_prompt_refusal("bob", extra={}) == "Alice"
