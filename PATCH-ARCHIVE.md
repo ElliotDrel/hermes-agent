@@ -137,3 +137,16 @@ draining around that window.
 admission, capacity refusal and restart persistence, and the fixed window delayed answers by up
 to 30 seconds. Elliot replaced it on 2026-11-17 with receipt acknowledgement and merged-message
 identity (active 018); stable's configurable burst debounce is kept as is.
+
+## 026: Runtime work notifications at the active parent boundary
+
+**Intent:** Deliver delegated-work completions and progress to a running parent agent
+without waiting for its turn to end.
+**Previous design:** Completions entered the running parent's steer buffer and its
+post-tool/pre-request drains (idle parents used the native wake path), with
+process-local provenance stamping, typed mixed-buffer parts, atomic finalizer admission
+and runtime-only handoffs that never borrowed human authority.
+**Retired because:** Elliot retired it on 2026-11-18. Stable v0.23.2 delivers delegated
+completions as durable FIFO `internal_notification` turns after the current turn; the
+accepted tradeoff is that a completion no longer steers a parent mid-turn. Reconsider
+only if that delay is observed to hurt real work.

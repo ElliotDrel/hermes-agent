@@ -125,9 +125,10 @@ Touchpoints: `gateway/response_metadata.py` (new: `transform_discord_response`,
 reconciliation using `delivery_response`/`delivery_transformed`);
 `gateway/run_turn_runner.py` (read-only telemetry keys on the turn result);
 `hermes_cli/plugins*.py` (hook registration); Discord adapter strips (`_keep`, reply
-preview). Not ported: fork commit b14784c1d4 (durable ctx/compaction metadata) wrote
-session meta and changed transform_llm_output payloads; v0.23.2 telemetry is read
-live instead. The progress-header percent change (39197b980c) belongs to 017.
+preview). Declined (Elliot, 2026-11-18): fork commit b14784c1d4 (durable
+compaction count) wrote session meta and changed transform_llm_output payloads;
+v0.23.2 telemetry is read live instead, so the footer's compaction count resets when
+the agent is rebuilt. The progress-header percent change (39197b980c) belongs to 017.
 When the body already streamed to a split or `__no_edit__` message, the display-only
 copy cannot be edited in: the turn is marked `already_sent` and that turn's footer is
 dropped rather than re-sending the whole body (review fix; queued lane shares it). A
@@ -225,8 +226,9 @@ progress line); gateway/session_state.py, turn_context.py, run.py, display_confi
 hermes_cli/config_defaults.py; plugins/platforms/discord/adapter.py (typed edit failure
 results: retryable/retry_after/error_kind).
 
-Not ported on v0.23.2 (turn lifecycle, not display; each needs a change-specific
-override): the exact-callback-owner mechanism (owner= on register/pop/fire, the
+Declined (Elliot, 2026-11-18): the held turn-lifecycle pieces below are not ported
+and not to be re-proposed without a new decision (turn lifecycle, not display): the
+exact-callback-owner mechanism (owner= on register/pop/fire, the
 _post_delivery_owner ContextVar, ownerless-slot isolation, stale-result slot rules);
 suppressing sibling post-delivery callbacks (background-review release, goals notices)
 when delivery is refused; terminal-owned deferred goals/background release in
@@ -565,31 +567,6 @@ application defaults. An API-populated default must not trigger delete/recreate.
 Explicit installation types, contexts and other managed fields remain compared.
 Native fingerprint persistence, pacing, `429` cooldown and timeout policy stay intact.
 
-## HERMES-FORK-026: Runtime work notifications at the active parent boundary
-
-Work completions/progress enter the running parent's existing steer
-buffer and its post-tool/pre-request drains; idle keeps the native wake path.
-No event bus, second inbox, child fanout, tool schema or system-prompt changes.
-The shared gateway notification admission stamps process-local provenance; plain
-internal flags/metadata cannot promote peers, plugin requests or handoffs. CLI's
-active monitor and TUI/Desktop's owner-checked poller use the same parent helper.
-API-server delegation remains a durable delivery with client-owned next turn.
-
-Typed mixed-buffer parts preserve order and distinct user/runtime markers. Runtime
-payloads never acquire OUT-OF-BAND USER authority (lookalike openers are quoted).
-Runtime-only rows are internal_notification, not compression's human-intent anchor;
-append-only persistence and cached prefixes stay native. No backwards insertion
-into an already-sent prefix. Finalizer admission closes atomically with its drain;
-late events retry/wake normally. Gateway mixed leftover handoffs retain typed human
-markers/display kind and a separate FIFO position; runtime-only handoffs use shared
-active admission before the existing FIFO fallback, never borrowing human authority.
-Human FIFO, Discord's busy-message debounce, explicit approvals/control, peer
-assignments, claims/dedup and owner/continuation lookup remain existing mechanisms.
-Close admission on exceptional exits while retaining accepted work. Promote
-startup-pending notifications when the parent is ready; refund refused claims.
-Native Codex app-server retains its existing wake policy. Do not cancel requests
-or force tool yields. Explicit hard-stop cancellation keeps the native clear policy.
-
 ## HERMES-FORK-027: Compaction recovery and canonical usage continuity
 
 Usage anchors fingerprint the canonical content selected by the existing
@@ -742,8 +719,9 @@ intent commits with original authors retained. Shared nonmutating delegate proof
 and compression ownership preflight distinguish terminal boundaries from transient
 lookup/rotation uncertainty. Suppress child-owned process noise before profile-scoped
 batching and watch admission; read live ownership so explicit handoff still delivers.
-Real delegation/closeout results are exempt. Preserve 026's active-parent steer
-buffer and native idle wake, claims, retries, user boundaries and generation/CAS gates.
+Real delegation/closeout results are exempt. Preserve upstream's durable
+`internal_notification` delivery (026 is retired), claims, retries, user boundaries and
+generation/CAS gates.
 
 The terminal result now reports armed notification intent separately from current
 child-policy suppression; it no longer claims notification is disabled while a
