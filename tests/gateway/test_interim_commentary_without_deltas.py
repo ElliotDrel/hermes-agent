@@ -63,6 +63,7 @@ def _turn_runner(
         user_config={},
         interim_assistant_messages_enabled=True,
         scheduled_heartbeat=False,
+        progress_compositor_mode="off",
         resolve_display_setting=lambda *_a, **_kw: None,
         source=SimpleNamespace(platform=platform, chat_id="42"),
         _status_thread_metadata=None,

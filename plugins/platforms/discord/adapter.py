@@ -313,7 +313,7 @@ from gateway.platforms.helpers import (
 from gateway.platforms.helpers import cancel_task, inline_document_text
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice, classify_send_error,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
@@ -3386,7 +3386,14 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return result
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            # Typed so an editable-progress consumer can back off on 429/transient and stop on permanent.
+            error_kind = "rate_limited" if self._is_discord_rate_limit(e) else classify_send_error(e, str(e))
+            return SendResult(
+                success=False, error=str(e),
+                retryable=error_kind in {"rate_limited", "transient"},
+                retry_after=self._extract_discord_retry_after(e) if error_kind == "rate_limited" else None,
+                error_kind=error_kind,
+            )
 
     @staticmethod
     def _is_reply_reference_rejected(err: Exception) -> bool:

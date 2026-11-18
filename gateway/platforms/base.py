@@ -437,7 +437,7 @@ if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
-from gateway.platforms.base_post_delivery import run_post_delivery_callback
+from gateway.platforms.base_post_delivery import delivery_confirmed, run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
 from gateway.platforms.base_exec_approval import (
@@ -4301,10 +4301,19 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return footer_onto_photo_caption(self, _ExtractedResponse(text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract), _IMAGE_EXTS)  # #74547
 
-    async def _fire_post_delivery_callback(self, session_key: str, generation: int | None) -> None:
-        """Run the turn's post-delivery slot; ``generation`` is read as its handler returns (#100061)."""
-        await run_post_delivery_callback(self.pop_post_delivery_callback(
-            session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+    async def _fire_post_delivery_callback(
+        self, session_key: str, generation: int | None, *, delivered: bool | None = None,
+    ) -> None:
+        """Run the turn's post-delivery slot; ``generation`` is read as its handler returns (#100061).
+
+        ``delivered`` reports whether a final payload was confirmed delivered, for presentation
+        callbacks that must keep temporary progress when nothing reached the chat."""
+        token = delivery_confirmed.set(delivered)
+        try:
+            await run_post_delivery_callback(self.pop_post_delivery_callback(
+                session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        finally:
+            delivery_confirmed.reset(token)
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -4430,7 +4439,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
-                await self._fire_post_delivery_callback(session_key, generation)  # done before the follow-up starts
+                await self._fire_post_delivery_callback(  # done before the follow-up starts
+                    session_key, generation,
+                    delivered=delivery_succeeded or bool(getattr(event, "_streamed_final_response", None)))
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4451,7 +4462,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
-            await self._fire_post_delivery_callback(session_key, getattr(interrupt_event, "_hermes_run_generation", None) if generation is None else generation)
+            await self._fire_post_delivery_callback(
+                session_key, getattr(interrupt_event, "_hermes_run_generation", None) if generation is None else generation,
+                delivered=delivery_succeeded or bool(getattr(event, "_streamed_final_response", None)))
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1, event=event)
             # Flush any timer that missed the in-band drain, then reconcile ownership.

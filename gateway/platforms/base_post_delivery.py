@@ -5,8 +5,16 @@ session authority's drain, which settles every turn no adapter task brackets (``
 """
 import asyncio
 import contextlib
+import contextvars
 import inspect
 from typing import Any
+
+
+# Whether the firing site confirmed that a final payload reached the chat (True), found none (False),
+# or does not know (None). Read only by presentation callbacks that delete temporary progress
+# (HERMES-FORK-017); firing, ordering and timing of every callback are unchanged.
+delivery_confirmed: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "hermes_post_delivery_confirmed", default=None)
 
 
 def turn_run_generation(event: Any) -> int | None:

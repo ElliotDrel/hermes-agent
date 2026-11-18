@@ -315,15 +315,15 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                 authority.pending_deliveries.pop(admission_id, None)
                 drop_producer_turn(authority, admission_id)
                 from gateway.session_ingress import fire_post_delivery
-                await fire_post_delivery(authority, admission_id)
+                await fire_post_delivery(authority, admission_id, delivered=False)  # no answer reaches the chat
             from gateway.session_ingress import waiter_replies
             waiter_replies(authority).pop(admission_id, None)
             # Taken on every exit, so a turn that never settled leaves no reset for a later one.
             reset = authority.deferred_resets.pop(live.route, None)
         await authority._run_deferred_reset(live.route, reset)
         from gateway.session_ingress import deliver_settled, fire_post_delivery
-        await deliver_settled(authority, admission_id)
-        await fire_post_delivery(authority, admission_id)
+        delivered = await deliver_settled(authority, admission_id)
+        await fire_post_delivery(authority, admission_id, delivered=delivered)
         await authority._resolve_settled_waiter(admission_id, response)
         return True
     finally:

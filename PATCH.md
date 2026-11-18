@@ -128,73 +128,95 @@ v0.23.2 verification: 26 passed across the three account_usage suites.
 
 ## HERMES-FORK-017: One Discord progress message
 
-Opt-in display.platforms.discord.progress_compositor: single_message acknowledges
-each turn before execution and edits one owned temporary message. The top header
-refreshes every minute with elapsed minutes, iterations, action and available
-context usage. Percentage uses last_total_tokens / threshold_tokens.
-Missing usage is omitted; missing trigger omits percentage;
-valid values above 100% remain visible. No budget or compression-policy change.
-Canonical activity is append-only: repeated
-tools, interim output, compression start/completion/recovery, and accepted steering
-stay chronological. Fitting is pure: render the newest contiguous tail, report
-hidden tool/message counts, and clip oversized entries without rewriting history.
-Tool previews retain command/code arguments and file/URL targets. Embedded
-preview line breaks are replaced with spaces before the display length limit,
-so each tool event occupies one logical line without changing executable input.
-Discord client soft wrapping remains native. This is presentation-only.
-Only explicit tool_preview_length settings impose a per-preview cap. Shared Discord limits,
-secret redaction, bounded transport, backoff and one-message ownership remain.
+Opt-in display.platforms.discord.progress_compositor: single_message (config.yaml only,
+Discord only; a global value never replaces Slack cards or other transports) shows each
+turn's progress in one owned temporary message. It is posted concurrently with the turn
+(never gating the worker or pre-agent compression) and edited in place. The top header
+refreshes every minute with elapsed minutes, iterations, action and available context
+usage. Percentage is last_total_tokens / threshold_tokens read from the live compressor,
+the same effective compaction trigger the 005 delivery footer uses. Missing usage is
+omitted; missing trigger omits percentage; values above 100% stay visible.
+Canonical activity is append-only: repeated tools, interim output, compression
+start/completion/recovery, and accepted steering stay chronological. Fitting is pure:
+render the newest contiguous tail, report hidden tool/message counts, clip oversized
+entries without rewriting history. Tool previews retain command/code arguments and
+file/URL targets; embedded line breaks become spaces; only an explicit
+tool_preview_length caps a preview. Shared Discord limits, secret redaction, bounded
+transport, typed edit-failure backoff and one-message ownership remain.
 
-Single-message progress is temporary regardless of the legacy cleanup flag.
-Ordinary turns delete it only after confirmed terminal delivery, including error
-replies; refused/empty delivery and incomplete/cancelled ordinary turns retain it.
-Scheduled heartbeats show normal progress by default and delete their own progress
-on completion, including intentional silence. display.heartbeat_progress (with
-normal per-platform overrides) can hide execution and pre-agent compression
-progress, including hold-expiry notices, without hiding actionable failures or
-material final results. Close the owned compositor before deletion; do not reuse
-closed pre-agent messages across queued successors, even within one generation.
-Refused queued delivery must not fire delivery callbacks. Exact-turn presentation
-owners coexist within one run generation; refused/interrupted/cancelled/incomplete
-predecessors retain their own obligations and never lend UI to a successor.
-Register ownership before every terminal return, including the interrupt recursion
-cap. Capture immutable terminal ownership before adapter delivery; finish bounded
-confirmed predecessor cleanup before spawning a drain successor. Remove an owned
-ID only after transport-confirmed deletion. Two attempts per ID within the existing
-25-second budget are terminal: exhaustion retains ownership, not a success claim;
-no sweeper, retry service or automatic replay is added.
-Final delivery, queue admission/grouping, model inputs, history/cache and compression
-policy stay native; progress metadata is nonconversational. Other transports retain
-native rendering.
+Single-message progress is temporary regardless of cleanup_progress. Ordinary turns delete
+it only after confirmed terminal delivery (a delivered error reply counts); refused or
+empty delivery and interrupted/cancelled/incomplete turns keep it. Scheduled heartbeats
+show normal progress by default (display.heartbeat_progress, normal per-platform
+overrides) and delete their own progress on completion, including intentional silence;
+false hides execution and pre-agent compression progress, including hold-expiry notices,
+without hiding actionable failures. Each turn deletes only its own ID: two attempts per
+ID inside one 25-second budget, ID dropped only on transport-confirmed deletion,
+exhaustion retains the message (no sweeper or retry service). A predecessor's compositor
+is closed before a queued successor starts and is never lent to it. Other transports
+retain native rendering. This is presentation-only: progress metadata is
+nonconversational and no model input, history, cache, admission, FIFO, interrupt or
+compression policy changes. Delivery confirmation reaches cleanup through a ContextVar
+set around the unchanged callback firing; no callback fires, orders or times differently.
 
-Authorization: exact input/cleanup ownership override, preserving fixed-window
-grouping and seal-time edit cutoff:
-https://discord.com/channels/1517646536505557132/1558581315274805291/1558648435417284670.
-Residual protected risk: callback/guard timing changes turn lifecycle; deterministic
-checks cannot prove every concurrent transport/model behavior. Rollback reverts the
-scoped source/tests/contract commit; no historical user rows are rewritten.
-Touchpoints: platforms/base.py exact callback ownership and delivery-finally handoff;
-run_turn.py producer quiescence, progress registration, retained ownership and
-bounded deletion; run_turn_runner.py background-review ownership and pending
-status sends; run_goals.py terminal-owned deferred notices.
-Combined review repair: exact delivery never fires an ownerless same-generation
-slot; review release and deferred goals capture the immutable terminal owner.
-Chained callbacks retain only unsuccessful siblings, never replay successful ones.
-Before cleanup snapshots, await progress cancellation/overflow, stream completion,
-long-running sends and already scheduled cleanup-bearing status futures, including
-queued predecessors. Freeze compositor sharing before successor admission.
-Combined offline verification supersedes the separate-branch totals: 372 passed,
-zero failed, exit 0 across 26 named gateway files (120.9s), retries disabled, using
-scripts/run_tests.sh -j 1 --tb=short and
---basetemp=C:/Users/2supe/All Coding/Hermes-Agent/discord-ownership-combined/scratch/test-temp/verified.
-Worktree-owned .venv, HERMES_HOME and TMPDIR/TEMP/TMP; exact commands and output
-retained in worktree scratch/verified-command.txt and scratch/verified-output.txt.
-Coverage includes actual recursive turn orchestration, cancel-time late physical
-IDs and pending status, ownerless isolation, terminal goals/background release,
-bounded failure retention, model-boundary inputs/history prefixes, agent cache,
-stream/final/ledger invariants and native restart accepted FIFO. Python compile
-and path-scoped whitespace checks pass. Fake agents/transports only, no paid calls
-or live Discord validation; no push, staging, activation or gateway restart.
+Touchpoints: gateway/progress_compositor.py (new); gateway/run_turn_progress.py
+(start_progress_compositor, _composed_status, _send_composed_progress, tool-line,
+status-callback and emit branches); gateway/run_turn_runner.py (interim commentary joins
+the log; no stream consumer for commentary alone); gateway/run_turn.py (display mode,
+cleanup flag, concurrent start, heartbeat gating/cleanup, cap and queued registration,
+predecessor close); gateway/run_turn_bubble_cleanup.py (composed delete with retry,
+register gating); gateway/run_turn_hygiene.py (pre-agent compression breadcrumb, wait
+updater, hold-expiry; explicit HygieneTurnHoldExceeded re-raise because awaits leave no
+caller exception frame); gateway/platforms/base.py + base_post_delivery.py
+(delivery_confirmed ContextVar); gateway/run_busy.py + run_inbound.py (accepted-steer
+progress line); gateway/session_state.py, turn_context.py, run.py, display_config.py,
+hermes_cli/config_defaults.py; plugins/platforms/discord/adapter.py (typed edit failure
+results: retryable/retry_after/error_kind).
+
+Not ported on v0.23.2 (turn lifecycle, not display; each needs a change-specific
+override): the exact-callback-owner mechanism (owner= on register/pop/fire, the
+_post_delivery_owner ContextVar, ownerless-slot isolation, stale-result slot rules);
+suppressing sibling post-delivery callbacks (background-review release, goals notices)
+when delivery is refused; terminal-owned deferred goals/background release in
+run_goals.py and run_turn_runner.py; awaiting producer quiescence and predecessor cleanup
+before spawning a drain successor beyond upstream's existing bubble-cleanup handoff;
+refusing hygiene work for a turn displaced during the initial post (the post is now
+concurrent); an awaited acknowledgement before worker start. Adaptations: heartbeat
+turns keep upstream's quiet interim-assistant wiring (agent callback attachment is not
+display); /steer command acknowledgement text is unchanged upstream text.
+Prior authorization (exact input/cleanup ownership override) covered the pieces above,
+not this port: https://discord.com/channels/1517646536505557132/1558581315274805291/1558648435417284670.
+Heartbeat progress deletion and hold-expiry status edits run detached and bounded, never
+awaited on the turn: neither the running-session guard, the next turn's start nor result
+delivery waits on Discord transport (the compositor is closed synchronously and the
+turn's own IDs are fixed before the task starts). Ordinary-turn cleanup keeps upstream's
+post-delivery callback handoff.
+Rollback: revert the 017 commit; no stored rows change.
+v0.23.2 verification (offline, fake agents/transports, scripts/run_tests.sh -j 1): 49 gateway/config
+files, 670 passed; the only 2 failures, tests/hermes_cli/test_config.py EnvWriteDenylist
+near-miss writable cases (git_config_parameters, ld_preload), fail identically on
+upstream ae2a81ccc0. Plus 7 adjacent Discord/busy/response-metadata files, 67 passed.
+Post-transfer fix: `_progress_build_message` and `_run_agent_queued_followup` read the compositor
+attributes with `getattr` defaults (off/None), so partial turn contexts (Slack/queued fakes)
+stay untouched; test_slack.py and test_discord_triggering_note_persistence.py pass again.
+New/ported 017 suites: progress_compositor (38), composed_progress_lifecycle (27),
+compression_progress (17), exact_turn_progress_cleanup (9), progress_steer (7),
+discord_message_lifecycle (6), display_config (17), run_cleanup_progress (9),
+run_progress_topics (54, incl. the 005 footer cases). 005 agreement: tests assert the header
+percent equals last_total_tokens/threshold_tokens read from the same compressor
+fields as the footer. Python compile and path-scoped whitespace checks pass. No live
+Discord, paid calls, push, staging or restart.
+Review fixes: a transport timeout on an edit is retried with bounded backoff (editing stops
+only after three consecutive timeouts or a non-retryable error). A timed-out initial send is
+not cancelled (that orphaned a created message with no id): its single call is left to report,
+a late success is adopted as the owned message, and `settle()` waits for it (bounded) so cleanup
+learns the id; it is still never repeated. The session authority's drain
+(`fire_post_delivery`, `_run_own_post_delivery`) now reports its delivery verdict through
+`delivery_confirmed` (False when the reply failed/was refused, the turn was never committed, or
+it was cancelled; None when none was owed), so refused delivery keeps progress there as in the
+adapter path. Turn-context readers of `progress_compositor_mode` default to "off" when the context has
+no such field, so duck-typed contexts in stock tests keep stock (uncomposed) behavior; a timed-out
+initial send is only freed by `settle()`, which the pending-send test asserts.
 This remains fork-specific progress behavior, not a stock-upstream defect.
 
 ## HERMES-FORK-018: Fixed Discord composition window

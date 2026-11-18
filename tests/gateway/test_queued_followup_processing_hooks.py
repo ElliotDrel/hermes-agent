@@ -451,6 +451,7 @@ async def test_depth_limit_restores_events_without_media_merging(
         source=source, session_id="depth-media", session_key=SESSION_KEY,
         run_generation=None, _interrupt_depth=runner._MAX_INTERRUPT_DEPTH,
         history=[], _status_thread_metadata=None, result_holder=[result],
+        progress_compositor_mode="off", progress_compositor=None, scheduled_heartbeat=False,
     )
     returned = await runner._run_agent_queued_followup(
         turn_ctx, adapter, pending, pending_event, result, result, None)
@@ -475,6 +476,7 @@ async def test_depth_limit_keeps_eventless_followup_and_staged_completion():
         source=source, session_id="depth-eventless", session_key=SESSION_KEY,
         run_generation=None, _interrupt_depth=runner._MAX_INTERRUPT_DEPTH,
         history=[], _status_thread_metadata=None, result_holder=[result],
+        progress_compositor_mode="off", progress_compositor=None, scheduled_heartbeat=False,
     )
     await runner._run_agent_queued_followup(turn_ctx, adapter, "steer text", None, result, result, None)
     head = adapter._pending_messages[SESSION_KEY]

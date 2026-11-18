@@ -1376,7 +1376,7 @@ class SessionAuthority:
                 # never left to fire after a later settled turn with a stale entry.
                 self.deferred_resets.pop(live.route, None)
                 from gateway.session_ingress import fire_post_delivery
-                await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
+                await fire_post_delivery(self, admission_id, delivered=False)  # cancelled mid-turn: as an adapter task's finally
                 if isinstance(exc, ManagedExecutionUnknown):
                     return
                 raise

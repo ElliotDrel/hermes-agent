@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
+import math
 import queue
 import re
 import threading
@@ -252,7 +254,9 @@ class GatewayTurnProgressMixin:
         ):
             return
         # "new" mode: only report when tool changes
-        if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
+        # The single-message log is append-only: repeated tools stay chronological.
+        if (getattr(ctx, "progress_compositor_mode", "off") != "single_message"
+                and ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]):
             return
         ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
@@ -350,6 +354,8 @@ class GatewayTurnProgressMixin:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
+        if getattr(ctx, "progress_compositor_mode", "off") == "single_message":
+            return self._composed_tool_line(emoji, tool_name, preview, args)
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"
         code = code_full if verbose else code_short
@@ -381,10 +387,36 @@ class GatewayTurnProgressMixin:
             return t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview)
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
+    def _composed_tool_line(self, emoji: str, tool_name: str, preview: Optional[str], args: Optional[dict]) -> str:
+        """One logical, redacted line per tool event, sized by the shared message budget rather than
+        the legacy 40-character preview. Display text only; the executed arguments are untouched."""
+        ctx = self._ctx
+        from agent.display import build_tool_preview, redact_tool_args_for_display
+        from gateway.display_config import _configured_display_values
+        from gateway.run import _platform_config_key, _redact_gateway_user_facing_secrets
+        platform_key = _platform_config_key(ctx.source.platform)
+        # The platform's legacy default is not an explicit operator limit.
+        configured = _configured_display_values(ctx.user_config, platform_key, "tool_preview_length")
+        limit = max(ctx.resolve_display_setting(ctx.user_config, platform_key, "tool_preview_length", 0), 0) if configured else 0
+        safe_args = redact_tool_args_for_display(tool_name, args or {}) or {}
+        detail_key = {"terminal": "command", "execute_code": "code"}.get(tool_name)
+        detail = (str(safe_args.get(detail_key) or "") if detail_key else
+                  build_tool_preview(tool_name, safe_args, max_len=0) or "")
+        detail = detail or (json.dumps(safe_args, ensure_ascii=False, default=str) if safe_args else preview or "")
+        if ctx.progress_mode == "verbose" and args:
+            detail = json.dumps(safe_args, ensure_ascii=False, default=str)
+        detail = " ".join(detail.splitlines())  # one logical line per tool event
+        if limit and len(detail) > limit:
+            detail = detail[:limit] + "…"
+        return _redact_gateway_user_facing_secrets(f"{emoji} {tool_name}: {detail}".rstrip())
+
     def _progress_emit(self, msg: str) -> None:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
         stream bubble when the consumer accepts tool progress, else the progress queue."""
         ctx = self._ctx
+        if getattr(ctx, "progress_compositor_mode", "off") == "single_message":
+            ctx.progress_queue.put(("__tool__", msg))
+            return
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
         if msg == ctx.last_progress_msg[0]:
@@ -943,6 +975,9 @@ class GatewayTurnProgressMixin:
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
+        if getattr(ctx, "progress_compositor_mode", "off") == "single_message":
+            await self._send_composed_progress(adapter)
+            return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
@@ -995,6 +1030,122 @@ class GatewayTurnProgressMixin:
             except Exception as e:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
+
+    # ── single-message composed progress (display.platforms.discord.progress_compositor) ─────
+
+    def start_progress_compositor(self, adapter=None):
+        """Own the turn's one temporary message, inheriting a same-generation hygiene breadcrumb.
+
+        The initial send runs concurrently with the turn; it never delays the worker."""
+        from gateway.progress_compositor import ProgressCompositor
+
+        ctx = self._ctx
+        if ctx.progress_compositor is not None:
+            return ctx.progress_compositor
+        # Only the matching generation can inherit a pre-agent hygiene breadcrumb.
+        inherited = (self._runner._session_state(ctx.session_key).turn.progress_compositor
+                     if ctx.session_key else None)
+        if inherited is not None and inherited.generation == ctx.run_generation and not inherited.closed:
+            ctx.progress_compositor = inherited
+            ctx.progress_started_at = inherited.started_at
+            self._track_compositor_id(inherited)
+            return inherited
+        adapter = adapter or self._runner._delivery_adapter_for(ctx.source)
+        if adapter is None:
+            return None
+        compositor = ProgressCompositor(
+            adapter, ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+            session_key=ctx.session_key, generation=ctx.run_generation,
+        )
+        ctx.progress_compositor = compositor
+        compositor.start_nowait()
+        self._track_compositor_id(compositor)
+        return compositor
+
+    def _track_compositor_id(self, compositor) -> None:
+        """Record the owned message ID for cleanup once its (possibly still in flight) send lands."""
+        ctx = self._ctx
+        if not ctx._cleanup_progress:
+            return
+
+        def record(_task=None) -> None:
+            if compositor.message_id and compositor.message_id not in ctx._cleanup_msg_ids:
+                ctx._cleanup_msg_ids.append(compositor.message_id)
+
+        task = compositor._start_task
+        if task is not None and not task.done():
+            task.add_done_callback(record)
+        else:
+            record()
+
+    def _composed_status(self) -> str:
+        """Read existing telemetry only; never resolve context or call providers for display."""
+        ctx = self._ctx
+        from gateway.run import _redact_gateway_user_facing_secrets
+        elapsed = max(0, int((time.monotonic() - ctx.progress_started_at) // 60))
+        agent = ctx.agent_holder[0]
+        activity = self._runner._agent_activity_summary(agent)
+        iteration = activity.get("api_call_count", 0)
+        action = activity.get("current_tool") or activity.get("last_activity_desc") or "starting"
+        action = " ".join(_redact_gateway_user_facing_secrets(str(action)).split())[:64]
+        parts = [f"⏳ Working {elapsed}m", f"iteration {iteration}", action]
+        compressor = getattr(agent, "context_compressor", None)
+        # Match the delivery footer (HERMES-FORK-005): latest request total / effective compaction
+        # trigger, both read from the live compressor. Telemetry only; never the nominal window.
+        used = getattr(compressor, "last_total_tokens", None)
+        trigger = getattr(compressor, "threshold_tokens", None)
+
+        def valid_tokens(value) -> bool:
+            return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and value > 0 and value == int(value))
+
+        if valid_tokens(used):
+            detail = f"context {used / 1000:.1f}k"
+            if valid_tokens(trigger):
+                detail += f"/{trigger / 1000:.1f}k ({used / trigger:.0%})"
+            parts.append(detail)
+        return " · ".join(parts)
+
+    async def _send_composed_progress(self, adapter) -> None:
+        """Coalesce every safe source into edits of the owned temporary message."""
+        ctx = self._ctx
+        compositor = self.start_progress_compositor(adapter)
+        if compositor is None:
+            self._drain_progress_queue()
+            return
+        next_status_at = 0.0
+        try:
+            while ctx._run_still_current() and not compositor.closed:
+                if compositor.editing_disabled and not compositor.message_id:
+                    self._drain_progress_queue()  # the initial send failed: no message to edit
+                    return
+                changed = False
+                try:
+                    while True:
+                        raw = ctx.progress_queue.get_nowait()
+                        if not self._agent_interrupted():
+                            compositor.absorb(raw)
+                            changed = True
+                except queue.Empty:
+                    pass
+                now = time.monotonic()
+                if now >= next_status_at:
+                    # Only the header mutates; tool calls and milestones stay in the append-only log.
+                    compositor.publish_status(self._composed_status())
+                    next_status_at = now + 60.0
+                    changed = True
+                if changed or compositor.next_edit_after <= time.monotonic():
+                    await compositor.flush()
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            # Drain only normal completion. Interrupted turns keep the last visible breadcrumb without
+            # publishing tool events parsed after the interrupt.
+            if not self._agent_interrupted() and ctx._run_still_current():
+                with suppress(Exception):
+                    while True:
+                        compositor.absorb(ctx.progress_queue.get_nowait())
+            await compositor.flush(force=True)
+            return
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
@@ -1191,7 +1342,10 @@ class GatewayTurnProgressMixin:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
-        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run import (
+            _COMPRESSION_PROGRESS_STATUS_RE, _prepare_gateway_status_message, _redact_gateway_user_facing_secrets,
+            _send_or_update_status_coro,
+        )
         from gateway.run_status_filter import status_chat_type
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
@@ -1203,6 +1357,22 @@ class GatewayTurnProgressMixin:
         if not automatic_notices_allowed(ctx.source):
             logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
             return
+        composed = getattr(ctx, "progress_compositor_mode", "off") == "single_message" and ctx.progress_queue is not None
+        if composed and _COMPRESSION_PROGRESS_STATUS_RE.search(str(message or "")):
+            # Routine context milestones belong in the temporary log, not separate chat bubbles.
+            from agent.conversation_compression import COMPACTION_STATUS
+            compressor = getattr(ctx.agent_holder[0], "context_compressor", None)
+            count = getattr(compressor, "compression_count", 0)
+            text = _redact_gateway_user_facing_secrets(str(message))
+            if message == COMPACTION_STATUS:
+                ctx.progress_compression_count = count
+            elif event_type == "compacted" and ctx.progress_compression_count is not None:
+                savings = getattr(compressor, "_last_compression_savings_pct", None)
+                if count > ctx.progress_compression_count and isinstance(savings, (int, float)):
+                    text += f" (context saved {savings:.0f}%)"
+                ctx.progress_compression_count = None
+            ctx.progress_queue.put(("__interim__", text))
+            return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message, status_chat_type(ctx.source))
         if prepared is None:
             logger.debug(
@@ -1210,6 +1380,12 @@ class GatewayTurnProgressMixin:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        if composed:
+            # Keep upstream notification policy around display-only compositor output.
+            render_notification(lambda: ctx.progress_queue.put(("__interim__", prepared)),
+                                platform=ctx.source.platform, user_config=ctx.user_config,
+                                diagnostic=is_warning_status(event_type, message))
             return
         # Session keys identify lanes; generations distinguish turns in each lane.
         status_key = event_type

@@ -755,6 +755,7 @@ class GatewayBusySessionMixin:
                 )
             if steered:
                 self._fold_into_running_turn(running_agent, session_key, event)
+                self._publish_steer_progress(session_key, event, running_agent, steer_text)
             else:
                 effective_mode = "queue"
         elif (
@@ -769,6 +770,23 @@ class GatewayBusySessionMixin:
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
         )
+
+    def _publish_steer_progress(self, session_key: str, event: MessageEvent, agent: Any, text: str) -> None:
+        """Show accepted steering in the running turn's single progress message (HERMES-FORK-017).
+
+        Display only, after the steer was accepted and folded in: it feeds the compositor's queue and
+        touches neither the agent, the steer text, nor admission."""
+        if event.source.platform != Platform.DISCORD:
+            return
+        state = self._peek_session_state(session_key)
+        if state is None or state.turn.agent is not agent or state.turn.progress_queue is None:
+            return
+        # Bound untrusted, multiline user text so it cannot forge progress rows or consume the whole
+        # rolling window. The full payload still reaches the agent.
+        preview = " ".join(str(text).split())
+        if len(preview) > 120:
+            preview = preview[:119] + "…"
+        state.turn.progress_queue.put(("__steer__", f"⏩ Steer received: {preview}"))
 
     @staticmethod
     def _demote_interrupt(session_key: str, why: str) -> str:
@@ -1281,6 +1299,7 @@ class GatewayBusySessionMixin:
         if not accepted:
             return t("gateway.steer.rejected_empty")
         self._fold_into_running_turn(running_agent, quick_key, event)
+        self._publish_steer_progress(quick_key, event, running_agent, steer_text)
         # A pending clarify owns the turn: the agent is parked inside that tool, so no iteration
         # prep runs and the accepted steer cannot arrive until the prompt times out (#145161).
         # Released only once the steer is queued: the woken agent must find it at its next prep.

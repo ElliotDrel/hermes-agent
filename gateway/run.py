@@ -3814,6 +3814,8 @@ class GatewayRunner(
         wait_started: float = 0.0
         cleanup_deferred: bool = False
         history: Any = None
+        progress_compositor: Any = None  # HERMES-FORK-017: Discord single-message progress for the hold
+        progress_suppressed: bool = False  # scheduled heartbeat with display.heartbeat_progress off
 
     def _thread_metadata_for_source(
         self, source, reply_to_message_id: Optional[str] = None) -> Optional[dict[str, Any]]:
@@ -4170,6 +4172,7 @@ class GatewayRunner(
         _thinking_enabled: Any = None
         _native_slack_task_cards: Any = None
         needs_progress_queue: Any = None
+        progress_compositor_mode: Any = "off"
         _generic_status_phrase: Any = None
 
     @dataclasses.dataclass

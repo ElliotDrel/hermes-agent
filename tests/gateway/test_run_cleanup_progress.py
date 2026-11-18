@@ -472,3 +472,70 @@ async def test_cancelling_the_turn_during_the_sender_wait_starts_no_followup():
     assert events == []
     release.set()
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_streamed_final_delivery_cleans_composed_progress_without_duplicate_send():
+    """HERMES-FORK-017: a confirmed stream returns None from the handler but still completed delivery."""
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.session import build_session_key
+    from gateway.run_turn_bubble_cleanup import register_bubble_cleanup
+    from gateway.progress_compositor import ProgressCompositor
+    from gateway.turn_context import TurnContext
+
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="thread")
+    event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=source)
+    session_key = build_session_key(source)
+    compositor = ProgressCompositor(adapter, "123")
+    await compositor.start()
+    ctx = TurnContext(
+        source=source, session_key=session_key, _cleanup_progress=True, _cleanup_adapter=adapter,
+        progress_compositor_mode="single_message", progress_compositor=compositor,
+    )
+
+    async def handler(event):
+        register_bubble_cleanup({"final_response": "done", "completed": True}, ctx)
+        event._streamed_final_response = "final answer already sent"
+        return None
+
+    adapter.set_message_handler(handler)
+    sent_before = len(adapter.sent)
+    await adapter._process_message_background(event, session_key)
+    assert adapter.deleted == [{"chat_id": "123", "message_id": compositor.message_id}]
+    assert len(adapter.sent) == sent_before
+
+
+@pytest.mark.asyncio
+async def test_failed_final_delivery_preserves_composed_progress_breadcrumb():
+    """A refused final send must not delete the only visible progress; ordinary legacy cleanup is unchanged."""
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.session import build_session_key
+    from gateway.run_turn_bubble_cleanup import register_bubble_cleanup
+    from gateway.progress_compositor import ProgressCompositor
+    from gateway.turn_context import TurnContext
+
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="thread")
+    event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=source)
+    session_key = build_session_key(source)
+    compositor = ProgressCompositor(adapter, "123")
+    await compositor.start()
+    ctx = TurnContext(
+        source=source, session_key=session_key, _cleanup_progress=True, _cleanup_adapter=adapter,
+        progress_compositor_mode="single_message", progress_compositor=compositor,
+    )
+
+    async def refused_send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=False, error="simulated delivery failure")
+
+    async def handler(_event):
+        register_bubble_cleanup({"final_response": "done", "completed": True}, ctx)
+        return "final answer"
+
+    original_send = adapter.send
+    adapter.send = refused_send
+    adapter.set_message_handler(handler)
+    await adapter._process_message_background(event, session_key)
+    adapter.send = original_send
+    assert adapter.deleted == []

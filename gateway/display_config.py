@@ -25,6 +25,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
+    "heartbeat_progress": True,  # Scheduled heartbeats use normal progress; false hides progress chrome.
     "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
@@ -32,6 +33,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
     "cleanup_progress": False,
+    # Opt-in transport compositor. ``single_message`` owns one temporary bubble; ``off`` preserves
+    # every legacy progress/status lane exactly as-is.
+    "progress_compositor": "off",
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
@@ -202,12 +206,14 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "heartbeat_progress": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
+    "progress_compositor": _norm_choice(("off", "single_message")),
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),

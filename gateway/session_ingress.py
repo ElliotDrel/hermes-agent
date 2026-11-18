@@ -231,11 +231,12 @@ def _hand_back_post_delivery(authority, admission_id):
         slots.setdefault(route, entry)
 
 
-async def fire_post_delivery(authority, admission_id):
+async def fire_post_delivery(authority, admission_id, *, delivered=None):
     """Run a settled turn's post-delivery callbacks (background-review release, temp-bubble cleanup,
     a deferred /goal or /loop verdict) after its reply was sent, as ``_process_message_background``
     does after a messaging reply. Never run, they also pinned the whole turn (its agent, history
-    and result) in the adapter's slot until restart."""
+    and result) in the adapter's slot until restart. ``delivered`` is the firing site's verdict
+    (True/False, None when nothing was owed), as ``_fire_post_delivery_callback``'s."""
     if admission_id in authority.native_waiters:
         _hand_back_post_delivery(authority, admission_id)
         return
@@ -243,10 +244,14 @@ async def fire_post_delivery(authority, admission_id):
     if taken is None:
         return
     from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
-    from gateway.platforms.base_post_delivery import run_post_delivery_callback
+    from gateway.platforms.base_post_delivery import delivery_confirmed, run_post_delivery_callback
     callback = _split_post_delivery_entry(taken[2])[1]
-    with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
-        await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+    token = delivery_confirmed.set(delivered)
+    try:
+        with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
+            await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+    finally:
+        delivery_confirmed.reset(token)
 
 
 async def _release_turn_marker(authority, event):
@@ -467,7 +472,8 @@ async def _execution_scope(authority, home):
 
 async def deliver_settled(authority, admission_id):
     """Send a recovered no-waiter turn's reply after its terminal outcome committed. A send
-    failure cannot rewrite that outcome; it is logged, and inference never runs again."""
+    failure cannot rewrite that outcome; it is logged, and inference never runs again.
+    Returns whether the reply was delivered, or None when none was owed here."""
     held = _held_markers(authority).pop(admission_id, None)
     delivery = authority.pending_deliveries.get(admission_id)
     if delivery is not None and admission_id in authority.native_waiters:
@@ -488,7 +494,7 @@ async def deliver_settled(authority, admission_id):
             await _release_turn_marker(authority, held)
         # Settled with nothing (left) to send: its reply streamed, or it had none.
         await close_settled_turn(authority, admission_id)
-        return
+        return None
     adapter, event, session_key, response, home = delivery
     delivered = False
     try:
@@ -503,6 +509,7 @@ async def deliver_settled(authority, admission_id):
         await _release_turn_marker(authority, event)
         await close_producer_turn(
             authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
+    return delivered
 
 
 async def deliver_response(adapter, event, session_key, response):
@@ -523,18 +530,23 @@ async def deliver_response(adapter, event, session_key, response):
     return any(getattr(result, 'success', False) for result in results if result is not None)
 
 
-async def _run_own_post_delivery(adapter, session_key, event):
+async def _run_own_post_delivery(adapter, session_key, event, delivered=None):
     """A busy follow-up's observer is its turn's native waiter (``admit_message``), so the drain leaves
     the turn's post-delivery slot (temp-bubble cleanup, background-review release, a deferred /goal
     notice) on the adapter for it (``_take_post_delivery``): run it after the send, as
     ``_process_message_background`` does. Only by the turn's own generation: this task holds no
     session guard, and an unowned pop could run the callbacks of a turn another task still delivers."""
     from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
-    from gateway.platforms.base_post_delivery import run_post_delivery_callback, turn_run_generation
+    from gateway.platforms.base_post_delivery import (
+        delivery_confirmed, run_post_delivery_callback, turn_run_generation)
     generation, pop = turn_run_generation(event), getattr(adapter, 'pop_post_delivery_callback', None)
     if generation is not None and callable(pop):
-        await run_post_delivery_callback(
-            pop(session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        token = delivery_confirmed.set(delivered)
+        try:
+            await run_post_delivery_callback(
+                pop(session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        finally:
+            delivery_confirmed.reset(token)
 
 
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
@@ -578,7 +590,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)
             await adapter._release_turn_marker(event)
-            await _run_own_post_delivery(adapter, session_key, event)
+            await _run_own_post_delivery(adapter, session_key, event, delivered)
 
     token, commit_token = busy_acceptance.set(accepted), busy_commit.set(committed)
     try:

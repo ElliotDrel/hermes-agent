@@ -7,6 +7,7 @@ single-element lists so mutation stays visible to the outer body.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
@@ -77,6 +78,10 @@ class TurnContext:
     # finite viewer) apply in TurnRunner; a fresh agent's delegation.gateway_mode reads this session-shaped value.
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False
+    progress_compositor_mode: str = "off"
+    progress_compositor: Any = None
+    progress_started_at: float = field(default_factory=time.monotonic)
+    progress_compression_count: Optional[int] = None
     AIAgent: Any = None
     resolve_display_setting: Any = None
     result_holder: list = field(default_factory=lambda: [None])

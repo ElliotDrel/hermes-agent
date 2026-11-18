@@ -13,7 +13,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
-from contextlib import nullcontext, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
@@ -37,6 +37,57 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# Hold-expiry status edits run detached (HERMES-FORK-017); the set keeps them referenced until done.
+_pending_flushes: set = set()
+
+
+async def settle_hold_expiry_flushes() -> None:
+    """Wait for detached hold-expiry edits (tests and orderly shutdown; never the turn path)."""
+    pending = list(_pending_flushes)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _flush_done(task: "asyncio.Future") -> None:
+    _pending_flushes.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.debug("Hold-expiry progress edit failed", exc_info=task.exception())
+
+
+@asynccontextmanager
+async def hygiene_progress_updates(runner, attempt, hs):
+    """Refresh the compression breadcrumb (HERMES-FORK-017) while the inline summary wait runs.
+
+    A separate task owns every Discord edit, so a slow edit cannot extend the idle guard or the
+    configured hold, and it is cancelled however the wait ends. A no-op without a compositor."""
+    compositor = attempt.progress_compositor
+    if compositor is None:
+        yield
+        return
+
+    async def update_progress():
+        next_update = 60
+        while runner._is_session_run_current(compositor.session_key, compositor.generation):
+            waited = time.monotonic() - attempt.wait_started
+            if waited >= next_update and next_update < hs.max_turn_hold_seconds:
+                compositor.publish_status(f"⏳ Working {int(waited // 60)}m · iteration 0 · compacting context")
+                next_update += 60
+            await compositor.flush()
+            await asyncio.sleep(0.25)
+
+    progress_task = asyncio.create_task(update_progress())
+    try:
+        yield
+    finally:
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            # Presentation failures must never replace the guarded compression outcome.
+            logger.debug("Hygiene progress update failed: %s", type(exc).__name__)
 
 
 class GatewayTurnHygieneMixin:
@@ -414,10 +465,23 @@ class GatewayTurnHygieneMixin:
             "proceeding without compression this turn%s",
             session_entry.session_id, time.monotonic() - attempt.wait_started, _log_suffix,
         )
-        await self._hmwa_hygiene_notify(
-            source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
-        )
-        raise
+        compositor = attempt.progress_compositor
+        if compositor is not None:
+            if self._is_session_run_current(compositor.session_key, compositor.generation):
+                compositor.publish_activity("Compression still running; continuing with existing context")
+                compositor.publish_status("Compression still running; continuing with existing context")
+                # Fire-and-forget (already bounded by the transport timeout): the uncompressed turn
+                # must not wait on a display edit.
+                _flush = asyncio.ensure_future(compositor.flush())
+                _pending_flushes.add(_flush)
+                _flush.add_done_callback(_flush_done)
+        elif not attempt.progress_suppressed:
+            await self._hmwa_hygiene_notify(
+                source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
+            )
+        # The awaits above leave no active exception frame of the caller to re-raise.
+        from gateway.run import HygieneTurnHoldExceeded
+        raise HygieneTurnHoldExceeded
 
     async def _hmwa_hygiene_on_timeout(self, attempt, hs, session_entry, session_key, source):
         """``except asyncio.TimeoutError`` body: cancel at the commit fence, record the failure
@@ -594,6 +658,14 @@ class GatewayTurnHygieneMixin:
             attempt, _compressed, history, plan, session_entry=session_entry, source=source,
             _quick_key=_quick_key, run_generation=run_generation,
         )
+        compositor = attempt.progress_compositor
+        if compositor is not None and self._is_session_run_current(compositor.session_key, compositor.generation):
+            if _hyg_rotated or _hyg_in_place:
+                compositor.publish_activity(
+                    f"✓ Context compression complete: ~{plan.approx_tokens:,} → ~{_new_tokens:,} tokens"
+                )
+            else:
+                compositor.publish_activity("Context compression finished; kept existing context.")
         # Summary failure aborts the compressor (nothing dropped). Warn the user visibly — agent.log
         # is invisible on TG/Discord — so they know the chat is "frozen" and can /compress or /reset.
         _comp = getattr(attempt.agent, "context_compressor", None)
@@ -743,7 +815,8 @@ class GatewayTurnHygieneMixin:
             self._track_deferred_agent_worker(attempt.future, _hyg_agent)
             attempt.wait_started = time.monotonic()
             try:
-                _compressed = await self._hmwa_hygiene_wait_for_summary(attempt, hs, session_entry)
+                async with hygiene_progress_updates(self, attempt, hs):
+                    _compressed = await self._hmwa_hygiene_wait_for_summary(attempt, hs, session_entry)
             except HygieneTurnHoldExceeded:
                 _compressed = await self._hmwa_hygiene_on_turn_hold(attempt, hs, session_entry, session_key, source)
             except TimeoutError:
@@ -762,6 +835,36 @@ class GatewayTurnHygieneMixin:
             self._evict_cached_agent(session_key)
             if not attempt.cleanup_deferred:
                 await self._cleanup_agent_resources_off_loop(_hyg_agent, context="session hygiene")
+
+    def _hmwa_hygiene_start_progress(self, attempt, hs, event, source, session_key, run_generation):
+        """Own one Discord progress message for the compression hold; the turn's runner inherits the
+        same ID. Posted concurrently, so it never delays compression or the turn behind it."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        from gateway.display_config import resolve_display_setting
+        attempt.progress_suppressed = bool(getattr(event, "_heartbeat_session_id", None)) and not resolve_display_setting(
+            hs.data, source.platform.value, "heartbeat_progress", True,
+        )
+        if not (source.platform == Platform.DISCORD and session_key and not attempt.progress_suppressed
+                and self._is_session_run_current(session_key, run_generation)
+                and automatic_notices_allowed(source)
+                and resolve_display_setting(hs.data, "discord", "progress_compositor", "off") == "single_message"):
+            return
+        from gateway.progress_compositor import ProgressCompositor
+        from gateway.run import _non_conversational_metadata
+        adapter = self._delivery_adapter_for(source)
+        if adapter is None:
+            return
+        compositor = ProgressCompositor(
+            adapter, source.chat_id, reply_to=event.message_id,
+            # Presentation must not partition Discord backfill or enter reply context.
+            metadata=_non_conversational_metadata(attempt.meta, platform=source.platform),
+            session_key=session_key, generation=run_generation,
+        )
+        compositor.publish_status("⏳ Working 0m · iteration 0 · compacting context")
+        compositor.publish_activity("🗜️ Compacting context — preparing the conversation.")
+        self._session_state(session_key).turn.progress_compositor = compositor
+        attempt.progress_compositor = compositor
+        compositor.start_nowait()
 
     async def _hmwa_run_session_hygiene(
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
@@ -796,6 +899,10 @@ class GatewayTurnHygieneMixin:
                 # to user/assistant starved the compressor (tool results are the bulk of context).
                 _hyg_msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
                 if len(_hyg_msgs) >= 4:
+                    try:
+                        self._hmwa_hygiene_start_progress(attempt, hs, event, source, session_key, run_generation)
+                    except Exception:  # health: allow BLE001 -- display setup must never block compression
+                        logger.debug("Hygiene progress setup failed", exc_info=True)
                     await self._hmwa_hygiene_detached_attempt(
                         attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
                         source, session_entry, session_key, _quick_key, run_generation,

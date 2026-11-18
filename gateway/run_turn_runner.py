@@ -311,7 +311,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.
         want_interim_messages = (bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
                                  and not held and not _finite_viewer_turn())
-        if want_stream_deltas or want_interim_messages:
+        composed = getattr(ctx, "progress_compositor_mode", "off") == "single_message"  # commentary joins the one progress message
+        if want_stream_deltas or (want_interim_messages and not composed):
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
@@ -392,6 +393,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     stts.on_delta(text)
                     stts.on_delta(None)
             if unseen:
+                return
+            if composed and ctx.progress_queue is not None and not already_streamed and str(text or "").strip():
+                ctx.progress_queue.put(("__interim__", text))
                 return
             if stream_consumer is not None:
                 # The agent's own streaming may be feeding an execution observer rather than this
