@@ -575,8 +575,12 @@ Protected impact: model tool-schema bytes and cached definitions change. Project
 is permissive and drops branch correlations; original handlers enforce alternatives.
 Deterministic checks cannot prove every model behavior safe.
 
-Verification: exactly two end-to-end invariant tests in
-`tests/tools/test_root_union_schema_visibility.py`, without parametrization or a
+Root-union branches that are local `$ref`s are resolved against the root schema
+(`resolve_local_schema_ref`) before projection, so model exposure and the matching
+reversal see the referenced fields; one small regression test covers it (review fix).
+
+Verification: two end-to-end invariant tests (plus that one `$ref`-branch regression)
+in `tests/tools/test_root_union_schema_visibility.py`, without parametrization or a
 case-matrix loop. The schema-only WHOOP fixture passes through real MCP conversion,
 registry, cached/uncached model definitions and actual `tool_describe` dispatch:
 all five fields retain their server constraints, and raw server validation still
@@ -615,6 +619,30 @@ across `tests/tools/test_root_union_schema_visibility.py`,
 `tests/agent/test_tool_arg_coercion.py`. Only the established unchanged-base Windows
 exclusions remain: `test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime`
 and `test_windows_location_vars_passed_without_secrets`. No other suite was edited.
+
+**v0.23.2 re-port (2026-11-17).** Approval: Elliot granted a change-specific manual
+override on 2026-11-17 (T3 session) to re-port exactly this settled behavior onto
+v0.23.2 after a per-intent assessment of model-facing effect, failure mode and rollback.
+Residual risk unchanged (model tool-schema bytes for root-union tools; permissive
+projection; deterministic tests cannot prove model behavior). Rollback: revert this
+commit. Adaptation to upstream drift: `unrename_tool_args(params_schema, args,
+root_schema=None)` keeps its `$ref` support (`resolve_local_schema_ref` is applied at
+every walk level, to array `items` and to union arms, against the projected root);
+`coerce_tool_args` keeps its `$ref`-aware property resolution and `root_schema`
+threading. `_preserve_root_union_properties` returns the schema untouched when there
+is no non-empty root `anyOf`/`oneOf`, so upstream path refs such as
+`#/properties/limit/anyOf/0` still resolve; with a root union, root property fragments
+are normalized (a path ref through a root property's own union is the only unresolved
+edge). The sanitizer's single-tool path now calls `_normalize_schema_node`
+(sanitize + nullable-union collapse + ref-sibling strip) on the projection. The
+two-test contract gained one `$ref`'d object property (`ref item`) to prove renamed
+keys round-trip through the projection and `$defs`.
+v0.23.2 verification: 2 passed (`test_root_union_schema_visibility.py`); 92 passed in
+visibility, `test_tool_arg_coercion`, `test_model_tools`, `test_schema_boolean_required`,
+`test_schema_sanitizer`, plus 87 passed in `test_tool_search`/`test_registry`, and
+`test_mcp_tool` 102 passed. Failures, all identical on unchanged upstream ae2a81ccc0:
+`test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime` and two
+`test_mcp_tool` `TestBuildSafeEnv` cases ("Could not determine home directory").
 Retries off; worktree-local `.venv`, test home and TMPDIR/TEMP/TMP;
 `--basetemp=C:/Users/2supe/All Coding/Hermes-Agent/mcp-schema-visibility/.test-scratch/normalization-acceptance-final`
 and `--tb=short`. Python syntax and scoped whitespace checks passed.
