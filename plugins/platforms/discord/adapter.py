@@ -1178,6 +1178,7 @@ from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
 from plugins.platforms.discord.adapter_thread_cooldown import AutoThreadCooldown
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
+from plugins.platforms.discord.adapter_drafts import is_discord_draft_message
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, build_vault_code_view
@@ -5130,6 +5131,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 if msg.author == self._client.user:
                     from gateway.response_metadata import strip_response_metadata_footer
                     content = strip_response_metadata_footer(content)
+                if is_discord_draft_message(content):
+                    return None
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
@@ -6040,6 +6043,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
+        if is_discord_draft_message(getattr(message, "content", "")):
+            logger.debug("[%s] Ignoring explicitly marked Discord draft message %s", self.name, getattr(message, "id", "unknown"))
+            return False
         # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
         #
         # Config (discord.* in config.yaml or DISCORD_* env vars):
@@ -6246,6 +6252,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 if reply_to_text and getattr(message.reference.resolved, "author", None) == self._client.user:
                     from gateway.response_metadata import strip_response_metadata_footer
                     reply_to_text = strip_response_metadata_footer(reply_to_text) or None
+                if is_discord_draft_message(reply_to_text or ""):
+                    reply_to_text = None
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,

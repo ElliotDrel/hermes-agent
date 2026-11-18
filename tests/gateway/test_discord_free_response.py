@@ -666,6 +666,59 @@ async def test_metadata_footer_never_reenters_backfill_or_reply_preview(adapter,
     assert target.content == "answer" + footer
 
 
+@pytest.mark.parametrize("content", [
+    "draft", "Draft: later", "DRAFTS", "/draft", "/Drafts: later", "draft notes",
+])
+def test_draft_marker_matches_explicit_forms(content):
+    from plugins.platforms.discord.adapter_drafts import is_discord_draft_message
+
+    assert is_discord_draft_message(content)
+
+
+@pytest.mark.parametrize("content", ["drafting", "redraft", "/drafting", "draft-note", "draftsman", ""])
+def test_draft_marker_leaves_unrelated_words(content):
+    from plugins.platforms.discord.adapter_drafts import is_discord_draft_message
+
+    assert not is_discord_draft_message(content)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovered", [False, True])
+async def test_draft_message_never_reaches_dispatch(adapter, monkeypatch, recovered):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    channel = FakeHistoryChannel([], channel_id=123)
+    draft = make_message(channel=channel, content="/Draft: pick this up tomorrow")
+    keep = make_message(channel=channel, content="drafting a plan")
+
+    assert await adapter._handle_message(draft, recovered=recovered) is False
+    adapter.handle_message.assert_not_awaited()
+    await adapter._handle_message(keep, recovered=recovered)
+    assert adapter.handle_message.await_args.args[0].text == "drafting a plan"
+
+
+@pytest.mark.asyncio
+async def test_draft_message_is_excluded_from_backfill_and_reply_preview(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    adapter.config.extra["history_backfill_limit"] = 10
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    draft = make_history_message(author=human, content="Draft: private note", msg_id=3)
+    normal = make_history_message(author=human, content="drafting the plan", msg_id=2)
+    channel = FakeHistoryChannel([draft, normal], channel_id=123)
+    trigger = make_message(channel=channel, content="follow up")
+    trigger.reference = SimpleNamespace(message_id=3, resolved=draft)
+
+    context = await adapter._fetch_channel_context(channel, before=trigger, reply_target=draft)
+    assert "private note" not in context
+    assert "drafting the plan" in context
+    await adapter._handle_message(trigger)
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_to_text is None
+    assert "private note" not in (event.channel_context or "")
+
+
 def test_nonconversational_fallback_requires_self_improvement_emoji():
     assert discord_platform._looks_like_nonconversational_history_message(
         "💾 Self-improvement review: Memory updated"

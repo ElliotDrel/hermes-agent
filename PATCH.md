@@ -84,6 +84,10 @@ stands, the footer is dropped, nothing is posted twice (not for plugin response_
 v0.23.2 verification: tests/gateway/test_response_metadata.py (13), the Discord
 free-response suite and run_progress_topics suite (55, incl. four streaming/queued
 matrix cases and the failed-footer-edit no-resend case asserting history and result messages stay footer-free) all pass.
+Approval: Elliot granted a change-specific manual override on 2026-11-17 (T3 session)
+for re-porting this settled behavior onto v0.23.2 after a per-intent assessment of
+model-facing effect, failure mode and rollback; it covers the already-committed footer
+stripping from Discord reply previews and backfill input (fb3a1caceb).
 
 ## HERMES-FORK-015: Windows search pattern transport
 
@@ -271,6 +275,18 @@ Other transports and delegated/background execution receive no capability.
 
 Ignore explicit draft/drafts markers (optional slash; whitespace or colon boundary)
 before dispatch, history backfill and reply previews. Unrelated words remain input.
+Fixed settled behavior only: no configurable markers.
+Touchpoints: `plugins/platforms/discord/adapter_drafts.py` (`is_discord_draft_message`);
+`adapter.py` `_handle_message` start (live and recovered backfill both pass through it),
+`_fetch_channel_context._keep` and the reply-preview read. Drops inbound text only; no
+schema, stored history, prompt or cache change.
+Approval (protected inbound path): Elliot granted a change-specific manual override on
+2026-11-17 (T3 session) for re-porting this settled behavior onto v0.23.2 after a
+per-intent assessment of model-facing effect, failure mode and rollback.
+Residual risk: a message intentionally starting with the word "draft" is never seen.
+Rollback: revert the 002 commit.
+v0.23.2 verification: test_discord_free_response.py and test_discord_connect.py, 65
+passed, 0 failed, exit 0 (live and recovered dispatch, backfill, reply preview, markers).
 
 ## HERMES-FORK-004: Discord auto-thread rate limits
 
