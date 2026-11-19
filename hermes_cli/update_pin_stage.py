@@ -23,9 +23,24 @@ from hermes_cli.update_pin_stage_recovery import (
     GATEWAY_EXIT_WAIT_S, GatewayStillRunning, consume_marker, recover_gateway,
 )
 from hermes_constants import get_hermes_home
+from hermes_platform.host import is_elevated as _is_elevated
 from utils import atomic_json_write
 
 MODULE = "hermes_cli.update_pin_stage"
+
+
+class ElevatedSession(ValueError):
+    """Staging/activation refused because this process holds an administrator token."""
+
+
+def _refuse_elevated() -> None:
+    """Fail closed from an elevated process: everything it writes is owned by the Administrators group."""
+    if _is_elevated():
+        raise ElevatedSession(
+            "Refusing to stage or activate from an elevated (administrator-token) process: run from a "
+            "normal, non-elevated terminal. Elevated sessions (including Windows OpenSSH for admin "
+            "accounts) create files your normal account cannot open, and a gateway launched from one "
+            "runs elevated too.")
 
 
 def pending_path(root: Path) -> Path:
@@ -94,6 +109,7 @@ def _carry_remotes(root: Path, candidate: Path) -> None:
 
 
 def stage(root: Path, sha: str, branch: str = "live") -> dict:
+    _refuse_elevated()
     root = root.resolve()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("--stage requires the exact lowercase 40-character published commit SHA.")
@@ -116,14 +132,18 @@ def stage(root: Path, sha: str, branch: str = "live") -> dict:
     _git(candidate, "checkout", "-B", branch, sha)
     if not (candidate / "hermes_cli" / "update_pin_stage.py").is_file():
         raise ValueError("Published candidate predates staged activation support; publish a compatible candidate first.")
-    build_candidate_environment(candidate, ["all"])
+    from hermes_cli.update_pin_stage_features import active_features
+    # What the active install runs (PM's record, or a pre-PM venv's dist-info) must survive the swap.
+    features, features_source = active_features(root, candidate)
+    build_candidate_environment(candidate, ["all", *features])
     probe(candidate)
     _clean(candidate)
     if _git(candidate, "rev-parse", "HEAD") != sha:
         raise ValueError("Candidate revision changed during preparation.")
     data = {"schema": 1, "token": token, "sha": sha, "branch": branch,
             "root": str(root), "candidate": str(candidate), "home": str(get_hermes_home().resolve()),
-            "previous_sha": _git(root, "rev-parse", "HEAD")}
+            "previous_sha": _git(root, "rev-parse", "HEAD"),
+            "features": features, "features_source": features_source}
     atomic_json_write(pending_path(root), data)
     return data
 
@@ -149,6 +169,8 @@ def load_pending(root: Path, token: str | None = None) -> dict | None:
 
 def restart_candidate(root: Path) -> dict | None:
     data = load_pending(root)
+    if data:
+        _refuse_elevated()
     if data and not Path(data["candidate"]).is_dir():
         # Promoted (marker removal failed) or deleted: nothing can ever activate from it.
         consume_marker(_marker(root))
@@ -175,9 +197,18 @@ def _validate(root: Path, data: dict) -> None:
         raise ValueError("Installed or staged revision changed; refusing activation.")
     if not candidate_python(candidate).is_file():
         raise ValueError("Staged dependency environment is missing.")
+    from hermes_cli.update_pin_stage_features import missing_platform_extras
+    if missing := missing_platform_extras(candidate):
+        names = ", ".join(f"{platform} (extra '{extra}')" for extra, platform in sorted(missing.items()))
+        raise ValueError(
+            f"Staged environment lacks dependencies for configured platform(s): {names}. Refusing "
+            "activation; the running gateway is unchanged. Run `hermes pm install --extra "
+            f"{sorted(missing)[0]}` in the active install, move this candidate's pending marker aside, "
+            "and stage again so the extra is carried.")
 
 
 def activate(root: Path, token: str) -> dict:
+    _refuse_elevated()
     root = root.resolve()
     _require_owner(root)
     data = load_pending(root, token)
@@ -208,7 +239,7 @@ def activate(root: Path, token: str) -> dict:
         # Dependencies are published only after the cheap relocation probe. A sync that
         # fails commits nothing; one that commits and then fails (launcher publication)
         # leaves PM on the new lock, which the rollback below must undo.
-        run_complete_install(root, previous)
+        run_complete_install(root, previous, data.get("features"))
     except BaseException as exc:
         rename_with_retry(root, candidate)
         rename_with_retry(previous, root)
@@ -233,6 +264,9 @@ def _restore_pm_state(root: Path, candidate: Path, cause: BaseException) -> None
 
 
 def run_stage_command(args, root: Path) -> None:
+    # Command boundary: before the lock, receipts, recovery or any gateway launch, which would
+    # otherwise start an elevated gateway (the recovery path relaunches a stopped one).
+    _refuse_elevated()
     from hermes_cli.update_lock import UpdateLock
     from hermes_cli.update_receipt import begin_update_receipt, finalize_update_receipt, record_step
     # The executing candidate's package paths disappear on promotion. Receipt
@@ -281,7 +315,8 @@ def run_stage_command(args, root: Path) -> None:
         # Preparation never touches the gateway. Activation was user-requested;
         # if cutover refused/rolled back, recover the untouched old install using
         # its native start rather than strand the gateway after the manual drain.
-        if not args.stage and not promoted:
+        # An elevated refusal must not start the old gateway from the elevated token it refused.
+        if not args.stage and not promoted and not isinstance(exc, ElevatedSession):
             # The watcher fires at its drain deadline even if the gateway is still exiting.
             recover_gateway(root, wait_s=GATEWAY_EXIT_WAIT_S if isinstance(exc, GatewayStillRunning) else 0.0)
         finalize_update_receipt("failed")

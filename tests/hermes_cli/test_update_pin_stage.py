@@ -72,7 +72,7 @@ def install(short_tmp, monkeypatch):
     (origin / ".gitignore").write_text("venv/\n.venv/\n__pycache__/\n*.egg-info/\nbuild/\n")
     (origin / "pyproject.toml").write_text(
         '[project]\nname="stage-fixture"\nversion="1.0"\nrequires-python=">=3.11"\n'
-        'dependencies=["six==1.17.0"]\n[project.optional-dependencies]\nall=[]\n')
+        'dependencies=["six==1.17.0"]\n[project.optional-dependencies]\nall=[]\ndiscord=["six==1.17.0"]\nsms=["six==1.17.0"]\n')
     package = origin / "hermes_cli"
     package.mkdir()
     (package / "__init__.py").write_text("")
@@ -98,7 +98,9 @@ def install(short_tmp, monkeypatch):
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda **kw: [])
     published = []
-    monkeypatch.setattr(staging, "run_complete_install", lambda root, previous: published.append((root, previous)))
+    monkeypatch.setattr(staging, "_is_elevated", lambda: False)  # the host running the suite may be elevated
+    monkeypatch.setattr(staging, "run_complete_install",
+                        lambda root, previous, features=None: published.append((root, previous)))
     return active, origin, old_sha, sha, published
 
 
@@ -181,12 +183,15 @@ def test_activation_from_executing_candidate_interpreter(short_tmp):
     git(active, "config", "core.longpaths", "true")
     # Test the working implementation before the source intent is committed.
     for name in ("update_pin_stage.py", "update_pin_stage_env.py", "update_pin_stage_recovery.py",
+                 "update_pin_stage_features.py",
                  "update_cmd_windows.py",
                  "gateway_supervised_restart.py"):
         shutil.copyfile(source / "hermes_cli" / name, active / "hermes_cli" / name)
+    for name in ("__init__.py", "facts.py"):
+        shutil.copyfile(source / "hermes_platform" / "host" / name, active / "hermes_platform" / "host" / name)
     git(active, "config", "user.email", "offline@example.invalid")
     git(active, "config", "user.name", "Offline test")
-    git(active, "add", "hermes_cli")
+    git(active, "add", "hermes_cli", "hermes_platform")
     git(active, "commit", "--allow-empty", "-m", "disposable tested candidate")
     sha = old_sha = git(active, "rev-parse", "HEAD")
     token = "0123456789abcdef0123456789abcdef"
@@ -213,7 +218,8 @@ from hermes_cli import update_pin_stage as staging
 assert Path(staging.__file__).parent.parent == Path({str(candidate)!r})
 assert 'hermes_cli.gateway_windows' not in sys.modules
 published = []
-staging.run_complete_install = lambda root, previous: published.append((str(root), str(previous)))
+staging.run_complete_install = lambda root, previous, features=None: published.append((str(root), str(previous)))
+staging._is_elevated = lambda: False
 real_run = subprocess.run
 launches = []
 def run(cmd, **kwargs):
@@ -327,7 +333,7 @@ def test_failures_never_change_active_and_swap_or_publication_failure_restores_i
     assert git(active, "rev-parse", "HEAD") == old_sha
     git(Path(data["candidate"]), "checkout", "--", "hermes_cli/main.py")
 
-    def failed_publication(root, previous):
+    def failed_publication(root, previous, features=None):
         raise subprocess.CalledProcessError(1, "pm sync")
     monkeypatch.setattr(staging, "run_complete_install", failed_publication)
     with pytest.raises(subprocess.CalledProcessError):
@@ -335,7 +341,7 @@ def test_failures_never_change_active_and_swap_or_publication_failure_restores_i
     assert git(active, "rev-parse", "HEAD") == old_sha, "a failed dependency publication rolls the tree back"
     assert (active / "venv" / "active-sentinel").read_text() == "untouched"
     assert Path(data["candidate"]).is_dir()
-    monkeypatch.setattr(staging, "run_complete_install", lambda root, previous: published.append(1))
+    monkeypatch.setattr(staging, "run_complete_install", lambda root, previous, features=None: published.append(1))
     # Exercise command-boundary recovery and the real failed receipt, mocking
     # only native gateway launch (test must never start a real gateway).
     launches = []
@@ -356,25 +362,102 @@ def test_failures_never_change_active_and_swap_or_publication_failure_restores_i
     assert json.loads(staging.pending_path(active).read_text())["sha"] == sha
 
 
-def test_complete_install_carries_pre_pm_extras_once_and_defers_to_recorded_selection(monkeypatch, tmp_path):
-    """First PM generation carries the retained old venv's extras; afterwards PM's ledger owns them."""
+@pytest.mark.platforms("windows")
+def test_pre_pm_extras_are_derived_recorded_and_synced(install, monkeypatch, tmp_path):
+    """The active pre-PM venv's importable extras ride the pin marker into the staged build and the sync."""
     import pm
     import pm.extras
     from hermes_cli import venv_sync
+    active, _, _, sha, _ = install
+    site = active / "venv" / "Lib" / "site-packages"
+    site.mkdir(parents=True, exist_ok=True)
+    (site / "six-1.17.0.dist-info").mkdir()  # discord's only requirement; the active venv is otherwise bare
+    built = []
+    real_build = stage_env.build_candidate_environment
+    monkeypatch.setattr(staging, "build_candidate_environment",
+                        lambda candidate, extras: (built.append(list(extras)), real_build(candidate, extras)))
+    data = staging.stage(active, sha)
+    assert data["features"] == ["discord", "sms"] and data["features_source"] == "scan"
+    assert built == [["all", "discord", "sms"]]
+    assert staging.load_pending(active, data["token"])["features"] == ["discord", "sms"]
     calls = []
     monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: calls.append((a, kw)))
-    monkeypatch.setattr(venv_sync, "collect_superseded_generations", lambda root: calls.append("gc"))
-    monkeypatch.setattr(venv_sync, "publish_launchers", lambda root: calls.append("launchers"))
-    monkeypatch.setattr(pm.extras, "legacy_selection", lambda previous: ["all", "telegram"])
+    monkeypatch.setattr(venv_sync, "collect_superseded_generations", lambda root: None)
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda root: None)
     monkeypatch.setattr(pm.extras, "first_generation_selection", lambda root: ["all"])
-    stage_env.complete_install(tmp_path / "root", tmp_path / "previous")
-    assert calls[0] == ((["all", "telegram"],), {"explicit": True, "project_root": tmp_path / "root",
-                                                  "carried": ["telegram"]})
-    assert calls[1:] == ["gc", "launchers"]
-    calls.clear()
-    monkeypatch.setattr(pm.extras, "first_generation_selection", lambda root: None)
-    stage_env.complete_install(tmp_path / "root", tmp_path / "previous")
-    assert calls[0] == ((None,), {"explicit": True, "project_root": tmp_path / "root", "carried": None})
+    stage_env.complete_install(tmp_path / "root", tmp_path / "previous", data["features"])
+    assert calls == [((["all", "discord", "sms"],), {"explicit": True, "project_root": tmp_path / "root",
+                                              "carried": None})]
+
+
+@pytest.mark.platforms("windows")
+def test_restart_refuses_when_a_configured_platform_lacks_its_dependencies(install, monkeypatch):
+    """A profile with discord enabled must not drain its gateway for a staged env without discord."""
+    active, _, _, sha, _ = install
+    data = staging.stage(active, sha)  # the bare active venv carries no features
+    assert data["features"] == []
+    for dist in (Path(data["candidate"]) / "venv").glob("Lib/site-packages/six-*.dist-info"):
+        shutil.rmtree(dist)  # the staged env lacks discord's declared distribution
+    (staging.get_hermes_home() / "gateway.json").write_text(json.dumps(
+        {"platforms": {"discord": {"enabled": True, "token": "fake-test-token"}}}))
+    with pytest.raises(ValueError, match=r"discord \(extra 'discord'\)"):
+        staging.restart_candidate(active)
+    assert staging.pending_path(active).exists() and Path(data["candidate"]).is_dir()
+
+
+@pytest.mark.platforms("windows")
+def test_elevated_process_refuses_staging_and_activation_before_touching_anything(install, monkeypatch):
+    active, _, old_sha, sha, _ = install
+    monkeypatch.setattr(staging, "_is_elevated", lambda: True)
+    with pytest.raises(staging.ElevatedSession, match="non-elevated terminal"):
+        staging.stage(active, sha)
+    assert not list(active.parent.glob(".*candidate-*")) and not staging.pending_path(active).exists()
+    monkeypatch.setattr(staging, "_is_elevated", lambda: False)
+    data = staging.stage(active, sha)
+    monkeypatch.setattr(staging, "_is_elevated", lambda: True)
+    with pytest.raises(staging.ElevatedSession):
+        staging.activate(active, data["token"])
+    with pytest.raises(staging.ElevatedSession):
+        staging.restart_candidate(active)
+    assert git(active, "rev-parse", "HEAD") == old_sha and Path(data["candidate"]).is_dir()
+
+
+@pytest.mark.platforms("windows")
+def test_configured_sms_platform_is_judged_by_declared_distributions_not_an_import_name(install):
+    """``sms`` needs only aiohttp-class distributions and has no PM anchor: present deps mean no refusal."""
+    active, _, _, sha, _ = install
+    data = staging.stage(active, sha)
+    (staging.get_hermes_home() / "gateway.json").write_text(json.dumps(
+        {"platforms": {"sms": {"enabled": True, "token": "fake-test-token"}}}))
+    assert staging.restart_candidate(active)["token"] == data["token"]
+
+
+@pytest.mark.platforms("windows")
+def test_elevated_activation_with_a_held_lock_refuses_and_launches_nothing(install, monkeypatch):
+    from argparse import Namespace
+    from hermes_cli.update_lock import UpdateLock
+    active, _, _, sha, _ = install
+    data = staging.stage(active, sha)
+    monkeypatch.setattr(staging, "_is_elevated", lambda: True)
+    monkeypatch.setattr(UpdateLock, "acquire", lambda self: False)
+    starts = _recording_run(monkeypatch)
+    with pytest.raises(staging.ElevatedSession):
+        staging.run_stage_command(Namespace(stage=None, activate_stage=data["token"]), active)
+    assert starts == [], "an elevated process must never relaunch the gateway, even when recovery would"
+
+
+def test_staged_environment_inherits_its_parents_acl(tmp_path, monkeypatch):
+    import pm
+    import pm.filesystem
+    from pm.environments import site_packages
+    applied = []
+
+    def fake_build(*, out, **_):
+        site_packages(out).mkdir(parents=True)
+    monkeypatch.setattr(pm, "build_environment", fake_build)
+    monkeypatch.setattr(pm.filesystem, "inherit_parent_acl", lambda path: applied.append(path) or True)
+    stage_env.build_candidate_environment(tmp_path, ["all"])
+    assert applied == [tmp_path / "venv"], "the tree PM moved into place must not keep a private tempfile DACL"
 
 
 def _recording_run(monkeypatch, *, start_rc=0):
@@ -455,7 +538,7 @@ def test_rollback_after_committed_dependency_sync_restores_pm_state(install, mon
     monkeypatch.chdir(active.parent)
     resyncs = []
 
-    def committed_then_failed(root, previous):
+    def committed_then_failed(root, previous, features=None):
         raise subprocess.CalledProcessError(stage_env.SYNC_COMMITTED_EXIT, "publish")
     monkeypatch.setattr(staging, "run_complete_install", committed_then_failed)
     monkeypatch.setattr(staging, "run_resync_previous",

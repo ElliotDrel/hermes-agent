@@ -50,6 +50,10 @@ def build_candidate_environment(candidate: Path, extras: list[str]) -> None:
     destination = candidate / "venv"
     pm.build_environment(source=candidate, out=destination, extras=extras,
                          no_install_project=True, frozen=True, explicit=True)
+    # PM builds in a private temp folder (Python >= 3.13: SYSTEM/Administrators/OWNER RIGHTS only)
+    # and moves the tree here with that DACL; a staged tree must inherit its parent's access rules.
+    from pm.filesystem import inherit_parent_acl
+    inherit_parent_acl(destination)
     from pm.environments import site_packages
     (site_packages(destination) / "hermes-checkout.pth").write_text(
         "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.prefix).parent))\n",
@@ -84,20 +88,27 @@ def rename_with_retry(source: Path, destination: Path, *, attempts: int = 8, del
             time.sleep(delay)
 
 
-def complete_install(root: Path, previous: Path) -> None:
+def complete_install(root: Path, previous: Path, features: list[str] | None = None) -> None:
     """Publish the promoted checkout's PM dependency generation and launchers.
 
     PM keys install state by checkout path, so a generation cannot be built for the
     candidate's staging path and moved: it is committed here, at the final path, by
     the same explicit transaction ``hermes update`` runs. A failed sync commits
-    nothing. The first PM generation of a pre-PM install carries the extras its old
-    venv held (read from the retained previous tree, never imported); once PM
-    recorded a selection, that ledger owns the extras.
+    nothing. *features* are the extras the active install carried when it was staged
+    (``update_pin_stage_features.active_features``, recorded in the pin marker): they are
+    requested explicitly beside ``all`` and a failure to build one fails the sync. A marker
+    from before this was recorded has none (``None``); the first PM generation of a pre-PM
+    install then carries the extras its old venv held (read from the retained previous tree,
+    never imported), and once PM recorded a selection that ledger owns the extras.
     """
     import pm
     from hermes_cli.venv_sync import collect_superseded_generations, publish_launchers
     from pm.extras import first_generation_selection, legacy_selection
-    if first_generation_selection(root) is None:
+    if features is not None:
+        # An empty list on a recorded install keeps PM's ledger; otherwise ask for ``all`` + features.
+        extras = ["all", *features] if features or first_generation_selection(root) is not None else None
+        carried = None
+    elif first_generation_selection(root) is None:
         extras = carried = None
     else:
         extras = legacy_selection(previous)
@@ -119,10 +130,11 @@ def resync_previous(root: Path) -> None:
     publish_launchers(root)
 
 
-def run_complete_install(root: Path, previous: Path) -> None:
+def run_complete_install(root: Path, previous: Path, features: list[str] | None = None) -> None:
     """Run ``complete_install`` from the promoted candidate's fresh interpreter."""
+    carried = [] if features is None else ["--features", ",".join(features)]
     subprocess.run([str(candidate_python(root)), "-I", "-m", "hermes_cli.update_pin_stage_env",
-                    "--root", str(root), "--previous", str(previous)],
+                    "--root", str(root), "--previous", str(previous), *carried],
                    cwd=root.parent, env=clean_env(), check=True, timeout=3600)
 
 
@@ -141,12 +153,14 @@ if __name__ == "__main__":
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--previous", type=Path)
     mode.add_argument("--resync-previous", action="store_true")
+    parser.add_argument("--features", help="comma-separated extras carried from the active install")
     options = parser.parse_args()
     if options.resync_previous:
         resync_previous(options.root.resolve())
     else:
         try:
-            complete_install(options.root.resolve(), options.previous.resolve())
+            complete_install(options.root.resolve(), options.previous.resolve(),
+                             None if options.features is None else [f for f in options.features.split(",") if f])
         except PublicationFailedAfterSync as exc:
             print(f"Dependency publication failed after PM sync committed: {exc}", file=sys.stderr)
             sys.exit(SYNC_COMMITTED_EXIT)

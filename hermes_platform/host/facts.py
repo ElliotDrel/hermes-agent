@@ -442,8 +442,27 @@ def interactive_session() -> bool:
     return True
 
 
+@functools.cache
+def is_elevated() -> bool:
+    """Return whether this process runs with an elevated (administrator) token.
+
+    Windows only: ``IsUserAnAdmin`` is true for an elevated token, including the one OpenSSH hands
+    an administrator account, and false for a filtered (UAC) token. Everything an elevated process
+    writes is owned by the Administrators group, which the same user's normal processes may not be
+    able to open. Always False off Windows and when the probe fails.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.WinDLL("shell32", use_last_error=True).IsUserAnAdmin())
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
 def clear_caches() -> None:
     """Clear every cached host fact."""
-    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
+    for fact in (os_family, is_elevated, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
                  nvidia_gpus, _windows_display_adapters):
         fact.cache_clear()

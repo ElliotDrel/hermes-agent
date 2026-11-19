@@ -612,11 +612,13 @@ shadowed. PM keys dependency state by checkout path, so no generation can be bui
 at the candidate path and moved: activation commits the PM generation and
 launchers at the final path in the promoted interpreter (`pm.sync_venv`,
 generation collection, `publish_launchers`) as the last step before launch; a
-failed sync commits nothing and rolls the trees back. A pre-PM install's first
-generation carries the retained previous tree's extras; afterwards PM's ledger owns
-them. Plugin dependencies are PM's discovered selection; a conflict fails the sync
+failed sync commits nothing and rolls the trees back. Staging records the active
+install's dependency features in the marker (`features`, `features_source`) and builds
+the candidate with `all` plus them; activation syncs the same set (`pm.sync_venv(["all",
+*features], explicit=True)`). Only a marker staged before this was recorded falls back to
+the retained previous tree's extras (pre-PM) or PM's ledger. Plugin dependencies are PM's discovered selection; a conflict fails the sync
 (no plugin is disabled) and is only seen at activation, not staging. The marker is
-`.<install>.pin-stage.json` (schema 1, same fields as before): the pre-v0.23.2
+`.<install>.pin-stage.json` (schema 1, same fields as before plus `features`): the pre-v0.23.2
 loaded `/restart` handler reads `.staged-update.json` and would run
 `-m hermes_cli.update_stage --activate-stage`, which upstream's helper ignores,
 stranding a drained gateway. The legacy name is still read, so an old-staged pin
@@ -687,7 +689,8 @@ Touchpoints: hermes_cli/update_pin_stage.py + update_pin_stage_env.py + update_p
 (`cmd_update` hook), hermes_cli/subcommands/update.py (`--stage`), update_cmd_windows.py
 (`project_root` scan arguments), gateway_supervised_restart.py (own-PID preflight),
 gateway/slash_commands.py (`/restart`), gateway/run_shutdown.py + run_shutdown_staged.py
-(watcher), website/docs/user-guide/staged-fork-updates.md.
+(watcher), website/docs/user-guide/staged-fork-updates.md, hermes_cli/update_pin_stage_features.py,
+hermes_platform/host (`is_elevated`).
 
 v0.23.2 re-port. Authorization: Elliot's change-specific manual override, granted
 2026-11-18 (T3 session) after the re-port assessment, to carry the settled 001/016/028
@@ -963,3 +966,24 @@ normalization defects on the previous head, verified the repaired probes, and re
 all 259 acceptance tests. No runtime/profile writes, installation or gateway restart.
 Published source is not installed/running behavior; native installation remains
 Elliot's action.
+
+2026-11-19 outage fix (carried features, elevation). Incident: the first live activation of the
+v0.23.2 pin ran from Windows OpenSSH (elevated admin token) over a pre-PM Python 3.11 install that
+had the `messaging` extra but no PM-recorded features. (1) The candidate and the first PM generation
+were built from PM defaults, so the promoted venv had no `discord`, and v0.23.2 refuses lazy
+installs from a running gateway: the gateway came up with Discord unavailable until `hermes pm
+install --tools-only` and `--extra messaging`. (2) Everything activation and its gateway wrote was
+owned by BUILTIN\Administrators and PM's tool dirs (`tools/node-*`, `npm-*`) kept Python 3.14's
+private tempfile DACL, so normal processes failed with WinError 5 until an admin ran `takeown` +
+`icacls /reset`. Fixes: staging derives the active install's features read-only (PM's recorded
+extras plus its committed generation, else dist-info of the pre-PM venv matched against
+`[project.optional-dependencies]`; nothing imported from the active tree), builds the candidate with
+them, records them in the marker and activation syncs them. `/restart` preflight and activation
+refuse, leaving the old gateway running, when a platform the profile has connected lacks its extra in
+the staged env. Staging and activation refuse from an elevated token (`hermes_platform.host.
+is_elevated`; an elevated refusal never starts the old gateway from that token), and the staged
+`venv` gets `pm.filesystem.inherit_parent_acl`. Residual risk: derivation matches distribution names,
+not versions; a platform whose dependencies are not an extra is not judged; PM's own tool-dir moves
+are unchanged (a non-elevated owner keeps them readable); live Windows ACL/elevation behaviour is
+covered by injected-fact tests, not a live elevated run. Rollback: revert this fixup before
+deployment. Authorization: Elliot, 2026-11-19: fix outage-causing gaps.

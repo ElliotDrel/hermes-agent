@@ -26,9 +26,7 @@ path, in the promoted candidate's fresh interpreter, with the same explicit sync
 `hermes update` runs (`pm.sync_venv`, then superseded-generation collection and
 launcher publication). That sync is the last step before launch and commits nothing
 when it fails, so promotion/probe/sync failures roll the trees back and attempt a
-native recovery start. The first PM generation of a pre-PM install carries the
-extras its old venv held (read from the retained previous tree, never imported);
-afterwards PM's ledger owns the selection. Plugin dependencies are resolved by
+native recovery start. Plugin dependencies are resolved by
 PM from the profile's discovered plugins; a conflict fails the sync, never
 disables a plugin.
 
@@ -42,6 +40,30 @@ status/logs and run native `gateway start` if needed.
 
 No activation fetches Git. Moving `live` after staging cannot change the pin.
 There is no `--force-venv` override.
+
+## Carried dependency features
+
+Staging reads which optional extras the active install runs and carries them. If PM
+recorded a selection, those extras (plus anything its committed generation holds on
+top) are used. For a pre-PM install, the declared extras whose distributions are all
+installed in its own `venv` (dist-info in `site-packages`, matched against
+`pyproject.toml`) are used. The read is read-only: nothing from the active tree is
+imported or run. The candidate is built with `all` plus those extras, the marker
+records them (`features`), and activation syncs the same set, so the promoted
+environment never loses a gateway platform's SDK (a v0.23.2 gateway refuses lazy
+installs). `/restart` also refuses, leaving the running gateway untouched, when a
+platform configured in the profile (for example `discord`) lacks its extra in the staged
+environment; run `hermes pm install --extra <name>` in the active install, move the
+pending marker aside and stage again.
+
+## Never stage or activate from an elevated or SSH session
+
+Run staging and activation from a normal, non-elevated terminal. Windows OpenSSH gives
+administrator accounts an elevated token, and an elevated process creates files owned
+by Administrators that your normal account cannot open (`hermes pm install` then fails
+with WinError 5). Both commands refuse an elevated process, and the gateway they launch
+would run elevated too. The staged `venv` also has its parent's access rules applied so
+it never keeps a private temp-folder DACL.
 
 ## Two distinct update requests
 
@@ -63,7 +85,7 @@ Desktop build or dashboard/UI migration implementation is added. Non-Windows
 and linked Git worktrees are refused as deployment targets (tests run from an
 isolated worktree against disposable standalone clones).
 
-Staging builds only the core + `all` environment; it does not dry-run PM's plugin
+Staging builds the core + `all` environment plus the carried features; it does not dry-run PM's plugin
 selection, so a plugin-dependency conflict surfaces at activation (before launch,
 with rollback), not at staging. The candidate's own `venv` is the pre-launch probe
 and fallback interpreter; the running gateway uses PM's generation. The post-update
