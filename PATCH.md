@@ -3,6 +3,55 @@
 Base: official stable v0.23.2, `ae2a81ccc00e9b7c06301523e5bb09608397149c`.
 `main` stays exact official stable; `live` adds the intents below. Preserve these behaviors when rebasing.
 
+## HERMES-FORK-031: Downscale native images and budget user images
+
+Intent: prevent native photos from filling outbound requests. Approval: Elliot,
+2026-11-20, change-specific manual override ("DO IT"), narrowed the same day to
+existing ingress resizing and one conservative image budget; review fixes approved
+in the same session. One normalize_image helper reads an image once, reuses those
+bytes in the existing 1568 px vision resize policy, and retains changed pixels in
+the profile's content-addressed native-inputs store. CLI/gateway, API retention,
+replay and ACP/IDE inline/file images share that helper. Before re-encoding, the
+shared resize path applies EXIF orientation to the pixels and removes its tag.
+Images with alpha, including palette transparency, keep PNG encoding even when
+JPEG is requested. Original files are kept.
+
+Resize/retention failures log and preserve the original image URL/reference;
+an unreadable or untranscodable attachment alone is skipped. A corrupt image does
+not abort attachment of its siblings. The former agent-to-gateway capture call is
+removed. Normalized filenames record both normalized and original SHA-256 values,
+so API settlement substitutes the recorded normalized digest without file I/O or
+Pillow under the DB writer lock. Cleanup recognizes those filenames.
+
+The existing two send passes share an 8,000,000-byte image budget, leaving 2 MB
+for text/tools under Nous's 10 MB cap. Old USER images can retire alongside tool
+images, preserving text, roles, pairing and existing batch/cache policy. User latch
+ids include the message index, so resending a retired image is a fresh occurrence.
+User placeholders say "[image removed to save context]"; tool wording is unchanged.
+No provider table, config override, new per-path guard, 413 change or dedupe hook.
+
+Touchpoints: agent/image_routing.py, image_replay.py, image_eviction_policy.py,
+context_compressor.py, anthropic_message_convert.py; gateway/session_api_media.py,
+session_ingress_media.py; acp_adapter/content.py; tools/vision_tools.py.
+Upstream-worthy correctness fix. Risk: resize loses detail; crop/zoom remains.
+A corrupt original preserved after resize failure can still fail provider image
+validation. Text/tools above the reserved 2 MB can still cross a request cap;
+existing 413 recovery remains. Token estimates are learned flat per model@host:
+default 1500 tokens for both 2160x2880 and resized 1080x1440. Actual savings unknown.
+No paid calls or deployment. Rollback: revert this commit; retained files stay valid.
+
+Verification: original three regressions red on c63f73c1a7; corrupt-photo and
+resend regressions red on the first 031 implementation (3 passed, 2 failed,
+exit 1). Final canonical Git Bash run: original 12 files plus ACP image coverage
+and vision helper tests, 18 files, 302 passed, 0 failed, 1 POSIX-only skip, exit 0.
+Same selection against unchanged c63f73c1a7: 293 passed, eight added regressions
+and the updated alpha contract failed (9 total), 1 skipped, exit 1. The two EXIF/
+alpha cases also fail on b5d0df2db3 before this repair (5 passed, 2 failed, exit 1). One absent-Anthropic-SDK test remains deselected after
+its independent identical failure on the base. Single-read, recorded-digest/no-Pillow
+settlement, ACP inline/file scaling, corrupt-sibling and resend contracts pass.
+AST syntax/scoped whitespace pass. New tests pass Ruff F; six pre-existing
+source F401 findings match the base, with no added findings.
+
 ## HERMES-FORK-023: Native Windows update drain
 
 Windows updates use the normal restart exit budget, including its after-turn wait.

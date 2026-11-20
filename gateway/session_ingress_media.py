@@ -25,7 +25,8 @@ from utils import fsync_directory
 
 logger = logging.getLogger(__name__)
 
-_API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
+# Normalized images also record the original digest, so settlement never re-encodes them.
+_API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}(?:_[0-9a-f]{64})?\.(png|jpg|gif|webp)')
 _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
 
 

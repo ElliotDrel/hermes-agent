@@ -345,10 +345,10 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
         max_bytes=_VISION_MAX_DOWNLOAD_BYTES, timeout=_VISION_DOWNLOAD_TIMEOUT, retry_all=False)
 
 
-def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
+def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None, *, image_bytes: Optional[bytes] = None) -> str:
     """``data:<mime>;base64,...`` for a file (MIME from extension when not given)."""
     mime = mime_type or _determine_mime_type(image_path)
-    return f"data:{mime};base64,{base64.b64encode(image_path.read_bytes()).decode('ascii')}"
+    return f"data:{mime};base64,{base64.b64encode(image_path.read_bytes() if image_bytes is None else image_bytes).decode('ascii')}"
 
 
 # Absolute hard ceiling for vision payloads (20 MB): no major provider accepts more.
@@ -425,51 +425,52 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
                               max_dimension: Optional[int] = None,
                               scale_out: Optional[dict] = None,
-                              force_jpeg: bool = False) -> str:
+                              force_jpeg: bool = False, image_bytes: Optional[bytes] = None) -> str:
     """Base64 data URL, progressively downscaled with Pillow while over budget.
 
+    ``image_bytes`` reuses an ingress snapshot without reading its file again.
     Halves dimensions (aspect-preserving, 64px floor) up to 4 times; JPEG also walks a
     quality ladder (85/70/50) per step. Without Pillow, or if it still doesn't fit, returns
     the best attempt (or raw bytes) and lets the caller apply the size check.
     ``max_dimension``: force a downscale above this long edge even when bytes fit
-    (Anthropic's 8000px cap is independent of bytes). ``force_jpeg``: re-encode PNG as JPEG
+    (Anthropic's 8000px cap is independent of bytes). ``force_jpeg``: re-encode opaque PNG as JPEG
     when resizing — halving PNG dimensions destroys text legibility on dense screenshots.
 
     Args: max_dimension: If set, images whose longest side exceeds this pixel count are forcibly downscaled
     even if they're under the byte budget. Anthropic enforces an 8000 px per-side cap independently of the 5
-    MB byte cap. force_jpeg: Re-encode as JPEG even for PNG input when a resize is needed. History-reuse
+    MB byte cap. force_jpeg: Re-encode as JPEG even for opaque PNG input when a resize is needed. History-reuse
     embeds (#92699) opt in so a text-heavy screenshot keeps its readable resolution and shrinks via JPEG
     quality instead. Images already under both caps are returned unchanged (still PNG).
     """
-    file_size = image_path.stat().st_size
+    raw = image_path.read_bytes() if image_bytes is None else image_bytes
+    file_size = len(raw)
+    mime_type = mime_type or _determine_mime_type(image_path)
     estimated_b64 = (file_size * 4) // 3 + 100  # base64 ~4/3 + data URL header
-    data_url = None
+    data_url = _image_to_base64_data_url(image_path, mime_type=mime_type, image_bytes=raw)
     if estimated_b64 <= max_base64_bytes and not (
-        max_dimension is not None and _image_exceeds_dimension(image_path, max_dimension)
+        max_dimension is not None and _image_exceeds_dimension(BytesIO(raw), max_dimension)
     ):
-        data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         if len(data_url) <= max_base64_bytes:
             return data_url
 
-    def _raw() -> str:
-        return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
     Image = _import_pillow_for_resize()
     if Image is None:
         logger.info("Pillow not installed — cannot auto-resize oversized image")
-        return _raw()  # caller will raise the size error
+        return data_url  # caller will raise the size error
     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
                 max_base64_bytes / (1024 * 1024), max_dimension)
-    # JPEG for photos (smaller), PNG for transparency — unless force_jpeg.
-    is_png = (mime_type or _determine_mime_type(image_path)) == "image/png" and not force_jpeg
-    pil_format, out_mime = ("PNG", "image/png") if is_png else ("JPEG", "image/jpeg")
     try:
-        img = Image.open(image_path)
+        from PIL import ImageOps
+        img = ImageOps.exif_transpose(Image.open(BytesIO(raw)))
     except Exception as exc:
         logger.info("Pillow cannot open image for resizing: %s", exc)
-        return _raw()
+        return data_url
 
-    # JPEG cannot encode alpha/palette modes (force_jpeg routes PNGs here).
+    # Alpha (including palette transparency) always keeps PNG, even with force_jpeg.
+    is_png = any(("A" in img.getbands(), "transparency" in img.info,
+                  mime_type == "image/png" and not force_jpeg))
+    pil_format, out_mime = ("PNG", "image/png") if is_png else ("JPEG", "image/jpeg")
     if not is_png and img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
     quality_steps = (None,) if is_png else (85, 70, 50)
@@ -503,7 +504,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 _record_scale(img.width, img.height)
                 return candidate
     if candidate is None:
-        return _raw()
+        return data_url
     logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
                    max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
     _record_scale(img.width, img.height)

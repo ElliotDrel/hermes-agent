@@ -76,18 +76,20 @@ def _retained_data_url(ref: str) -> Optional[str]:
     """Data URL for a retained local image this profile still holds unchanged, else ``None``."""
     if not ref:
         return None
-    from agent.image_routing import _file_to_data_url
+    from agent.image_routing import normalize_image
     from gateway.session_ingress_media import native_inputs_root
 
     path = Path(ref)
     try:
         if path.parent.parent != native_inputs_root() or path.is_symlink() or not path.is_file():
             return None
-        if hashlib.sha256(path.read_bytes()).hexdigest() != path.parent.name:
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != path.parent.name:
             return None
     except OSError:
         return None
-    return _file_to_data_url(path)
+    normalized = normalize_image(path, raw=raw)
+    return normalized[1] if normalized else None
 
 
 def replay_frontier(total: int, keep: int) -> int:

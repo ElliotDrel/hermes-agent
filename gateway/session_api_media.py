@@ -52,7 +52,9 @@ def commit_api_images(content):
             temporary.write_bytes(data)
             os.replace(temporary, path)
         staged.append(path)
-    return capture_native_media(staged)
+    from agent.image_routing import normalize_image
+    normalized = [normalize_image(path) for path in staged]
+    return capture_native_media([item[0] if item else path for item, path in zip(normalized, staged)])
 
 
 def restore_api_images(content, media):
@@ -61,15 +63,24 @@ def restore_api_images(content, media):
     was seen, exactly like native image turns."""
     from gateway.session_ingress_media import restore_native_media
     paths = iter(restore_native_media(media))
+    replacements = {}
     hints = []
     for url in _image_urls(content):
         if _data_url_bytes(url) is not None:
-            hints.append(f'[Image attached at: {next(paths)}]')
+            from agent.image_routing import _file_to_data_url
+            path = next(paths)
+            replacements[url] = _file_to_data_url(Path(path)) or url
+            hints.append(f'[Image attached at: {path}]')
         else:
             hints.append(f'[Image attached: {url}]')
     if not hints:
         return content
     parts = [dict(part) for part in content]
+    for part in parts:
+        if part.get('type') == 'image_url':
+            image = part.get('image_url') or {}
+            if image.get('url') in replacements:
+                part['image_url'] = {**image, 'url': replacements[image['url']]}
     text = next((part for part in parts if part.get('type') == 'text'), None)
     if text is None:
         text = {'type': 'text', 'text': 'What do you see in this image?'}
@@ -87,14 +98,20 @@ def _compacted(content, media):
     nothing changes. Only bytes this admission committed are compacted (same order as capture)."""
     if not isinstance(content, list) or not media:
         return None
-    digests, parts, changed = iter(reference['sha256'] for reference in media), [], False
+    references, parts, changed = iter(media), [], False
     for part in content:
         url = (part.get('image_url') or {}).get('url', '') if isinstance(part, dict) and part.get('type') == 'image_url' else ''
         decoded = _data_url_bytes(url) if url else None
-        digest = next(digests, None) if decoded is not None else None
-        if digest is not None and hashlib.sha256(decoded[1]).hexdigest() == digest:
-            part = {**part, 'image_url': {**part['image_url'], 'url': _RETAINED + digest}}
-            changed = True
+        reference = next(references, None) if decoded is not None else None
+        if reference is not None:
+            digest = reference['sha256']
+            actual = hashlib.sha256(decoded[1]).hexdigest()
+            path = Path(reference['path'])
+            normalized_source = (path.parent.name == digest and
+                                 path.name.startswith(f'api_{digest[:32]}_{actual}.'))
+            if actual == digest or normalized_source:
+                part = {**part, 'image_url': {**part['image_url'], 'url': _RETAINED + digest}}
+                changed = True
         parts.append(part)
     return parts if changed else None
 

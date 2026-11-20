@@ -64,3 +64,23 @@ async def test_initialize_advertises_image_prompt_capability():
     assert response.agent_capabilities is not None
     assert response.agent_capabilities.prompt_capabilities is not None
     assert response.agent_capabilities.prompt_capabilities.image is True
+
+
+def test_inline_and_file_images_use_native_normalization(tmp_path):
+    import base64
+    from io import BytesIO
+    from PIL import Image
+
+    photo = tmp_path / "photo.jpg"
+    Image.new("RGB", (2160, 2880), "blue").save(photo)
+    raw = photo.read_bytes()
+    parts = _content_blocks_to_openai_user_content([
+        ImageContentBlock(type="image", data=base64.b64encode(raw).decode(), mimeType="image/jpeg"),
+        ResourceContentBlock(type="resource_link", name=photo.name, uri=photo.as_uri(), mimeType="image/jpeg"),
+    ])
+    images = [p for p in parts if p.get("type") == "image_url"]
+    assert len(images) == 2
+    for part in images:
+        image = Image.open(BytesIO(base64.b64decode(part["image_url"]["url"].partition(",")[2])))
+        assert max(image.size) <= 1568
+    assert photo.read_bytes() == raw

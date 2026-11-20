@@ -1,6 +1,6 @@
 """Send-path image eviction policy shared by both stateless outbound passes.
 
-Two passes retire old tool-result images from the per-request copy of the conversation:
+Two passes retire old user and tool-result images from the per-request copy of the conversation:
 ``agent.context_compressor.evict_stale_outbound_tool_images`` on the OpenAI-shaped list and
 ``agent.anthropic_message_convert._evict_old_screenshots`` on the Anthropic wire list. Both run
 from scratch on a fresh clone every request, so they must agree on one policy or the second
@@ -27,8 +27,9 @@ So the block ceiling is CONDITIONAL on the request's actual dimensions: the stri
 only when some image exceeds ``MANY_IMAGE_DIMENSION_LIMIT``, when the stricter per-side cap is
 live and the retire genuinely protects the request; otherwise the ceiling is the hard count
 ``OUTBOUND_IMAGE_HARD_LIMIT``. The hard ceilings above 20 are real but distant (100 images per
-request on 200K-context models, 600 otherwise) and the 32 MB request-size limit usually binds
-first, which the byte budget guards with headroom for text. Classification reads image HEADERS
+request on 200K-context models, 600 otherwise) and the request-size limit usually binds
+first. The shared 8 MB image budget leaves 2 MB for text/tools under the smallest
+known provider cap (Nous: 10 MB). Classification reads image HEADERS
 only — never a full decode of every base64 payload per request — and treats unreadable or unknown
 dimensions as unsafe, so a payload this module cannot measure keeps today's strict trigger.
 """
@@ -45,7 +46,7 @@ OUTBOUND_IMAGE_LIMIT = 20
 # budget below binds first for a 200K-context transcript, and the byte ceiling needs no context
 # knowledge to be safe.
 OUTBOUND_IMAGE_HARD_LIMIT = 100
-OUTBOUND_IMAGE_BUDGET_BYTES = 24_000_000
+OUTBOUND_IMAGE_BUDGET_BYTES = 8_000_000  # leaves 2 MB for text/tools under Nous's 10 MB cap
 IMAGE_EVICTION_BATCH = 8
 # Satisfiability floor — see outbound_image_retire_count.
 OUTBOUND_IMAGE_FLOOR = 3
@@ -208,7 +209,7 @@ def outbound_image_retire_count(
 
 
 def outbound_retired_image_ids(agent: Any) -> set[str]:
-    """The session's latched set of tool-call ids whose images the send path has retired.
+    """The session's latched set of tool-call/source ids whose images the send path has retired.
 
     Keyed on ``agent.session_id`` so a new session (or a compaction rotation, which rewrites the
     prefix anyway) starts clean and a reused provider call id cannot retire a fresh screenshot.

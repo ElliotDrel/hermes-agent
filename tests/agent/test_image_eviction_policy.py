@@ -126,7 +126,7 @@ def _wire_image_blocks(result: list[dict]) -> int:
 def test_retire_count(blocks, reserved, sizes, reserved_bytes, expected):
     assert (
         outbound_image_retire_count(
-            blocks, reserved, carrier_bytes_newest_first=sizes, reserved_bytes=reserved_bytes
+            blocks, reserved, carrier_bytes_newest_first=sizes, reserved_bytes=reserved_bytes, budget=24 * MB
         )
         == expected
     )
@@ -257,7 +257,7 @@ def test_unfixable_upload_breach_under_byte_pressure_fits_and_still_steps():
     span = range(1, 31)
     counts = [
         outbound_image_retire_count(
-            [1] * n, OUTBOUND_IMAGE_LIMIT + 1, carrier_bytes_newest_first=[3 * MB] * n, reserved_bytes=6 * MB
+            [1] * n, OUTBOUND_IMAGE_LIMIT + 1, carrier_bytes_newest_first=[3 * MB] * n, reserved_bytes=6 * MB, budget=24 * MB
         )
         for n in span
     ]

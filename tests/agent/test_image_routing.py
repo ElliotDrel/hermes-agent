@@ -320,13 +320,10 @@ class TestBuildNativeContentParts:
 
 
 class TestLargeImageHandling:
-    """Large images attach at native size; shrink is handled reactively at
-    retry time in ``run_agent._try_shrink_image_parts_in_messages`` rather
-    than proactively here.
-    """
+    """Unresizable image bytes survive; missing files are skipped."""
 
     def test_large_image_passes_through_unchanged(self, tmp_path: Path):
-        """A multi-MB image is attached as-is — no resize, no skip."""
+        """Undecodable PNG-shaped bytes survive a failed resize."""
         from agent import image_routing as _ir
 
         img = tmp_path / "medium.png"

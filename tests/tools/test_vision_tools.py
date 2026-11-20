@@ -811,13 +811,8 @@ class TestResizeImageForVision:
         )
         assert result.startswith("data:image/png;base64,")
 
-    def test_force_jpeg_handles_alpha_and_exotic_modes(self, tmp_path):
-        """RGBA/LA/P PNGs must convert cleanly — JPEG can't encode alpha.
-
-        force_jpeg newly routes PNG inputs to the JPEG encoder, so modes
-        JPEG can't save (LA grayscale+alpha especially) must be normalized
-        to RGB instead of crashing img.save().
-        """
+    def test_force_jpeg_preserves_alpha_and_converts_opaque_palette(self, tmp_path):
+        """Alpha modes retain PNG; opaque palette images can use JPEG."""
         try:
             from PIL import Image
         except ImportError:
@@ -845,7 +840,8 @@ class TestResizeImageForVision:
                 max_base64_bytes=16 * 1024, max_dimension=1568,
                 force_jpeg=True,
             )
-            assert result.startswith("data:image/jpeg;base64,"), mode
+            expected = "jpeg" if mode == "P" else "png"
+            assert result.startswith(f"data:image/{expected};base64,"), mode
 
 
 # ---------------------------------------------------------------------------

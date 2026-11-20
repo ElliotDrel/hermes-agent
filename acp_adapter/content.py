@@ -133,9 +133,12 @@ def _text_parts(**kwargs: Any) -> list[dict[str, Any]]:
 
 def _image_parts(uri: str, display: str, data: bytes, mime: str) -> list[dict[str, Any]]:
     """Text header + image_url data URL so vision models can see the attachment."""
+    from agent.image_routing import normalize_image
+    normalized = normalize_image(Path(display), raw=data, mime=mime)
+    url = normalized[1] if normalized else f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
     return [
         {"type": "text", "text": f"[Attached image: {display}]" + (f"\nURI: {uri}" if uri else "")},
-        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}},
+        {"type": "image_url", "image_url": {"url": url}},
     ]
 
 
@@ -239,8 +242,17 @@ def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | No
     mime_type = _attr(block, "mime_type") or "image/png"
     if data:
         url = data if data.startswith("data:") else f"data:{mime_type};base64,{data}"
+        try:
+            from agent.image_routing import normalize_image
+            normalized = normalize_image(Path("image"), raw=base64.b64decode(url.partition(",")[2], validate=True), mime=mime_type)
+            if normalized:
+                url = normalized[1]
+        except ValueError:
+            pass  # Admission retains its existing invalid-base64 handling.
     elif uri:
-        url = uri
+        from agent.image_routing import _file_to_data_url
+        path = _path_from_file_uri(uri)
+        url = (_file_to_data_url(path) if path else None) or uri
     else:
         return None
     return {"type": "image_url", "image_url": {"url": url}}

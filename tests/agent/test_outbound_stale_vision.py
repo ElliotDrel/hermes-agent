@@ -285,11 +285,7 @@ class TestOutboundStaleVisionEviction:
                 f"{n_uploads} uploads + 16 screenshots left the request over the ceiling"
             )
             user = next(m for m in outbound if m.get("role") == "user")
-            intact = sum(
-                1 for p in user["content"]
-                if isinstance(p, dict) and p.get("type") == "image_url"
-            )
-            assert intact == n_uploads, "user uploads must never be rewritten"
+            assert user["content"][0] == {"type": "text", "text": "look"}
 
     def test_keep_newest_is_a_floor_when_uploads_fill_the_ceiling(self):
         """Reserved uploads alone over the limit must not blind the model.
@@ -354,8 +350,8 @@ class TestOutboundStaleVisionEviction:
         Five 5 MB uploads plus three 3 MB tool images serialize to ~34 MB against
         Anthropic's 32 MB Messages limit
         (https://platform.claude.com/docs/en/api/overview#request-size-limits).
-        Uploads are never rewritten, so the only way under the ceiling is to retire
-        every removable tool image — the floor may cost a frame, never a 413.
+        Old uploads may retire too; preserve text and the newest tool frames when
+        that brings the request under the shared byte budget.
         """
         mb = 1024 * 1024
         hard_limit = 32 * mb
@@ -410,12 +406,12 @@ class TestOutboundStaleVisionEviction:
         assert len(json.dumps(outbound, ensure_ascii=False)) < hard_limit, (
             "the floor kept tool images that push the request past the 32 MB limit"
         )
-        assert _image_bearing_tool_ids(outbound) == []
+        assert _image_bearing_tool_ids(outbound)
         user = next(m for m in outbound if m.get("role") == "user")
         assert sum(
             1 for p in user["content"]
             if isinstance(p, dict) and p.get("type") == "image_url"
-        ) == 5, "user uploads must survive byte-driven eviction untouched"
+        ) == 0, "old uploads must yield before newer tool images"
 
     def test_floor_yields_when_eviction_can_fix_the_breach(self):
         """The floor shelters only violations that retiring tool content cannot fix.
@@ -473,7 +469,7 @@ class TestOutboundStaleVisionEviction:
             f"call_{i}" for i in range(IMAGE_EVICTION_BATCH, n)
         ]
 
-    def test_user_uploads_are_not_evicted(self):
+    def test_old_user_uploads_yield_before_newer_tool_images(self):
         history = [
             {
                 "role": "user",
@@ -491,4 +487,5 @@ class TestOutboundStaleVisionEviction:
         outbound = sanitize_api_messages(history)
         assert evict_stale_outbound_tool_images(outbound) > 0
         user = next(m for m in outbound if m.get("role") == "user")
-        assert user["content"][1]["image_url"]["url"].endswith("USERUPLOAD")
+        assert user["content"][1]["type"] == "text"
+        assert user["content"][0] == {"type": "text", "text": "look"}

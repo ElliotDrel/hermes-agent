@@ -12,6 +12,7 @@ main models (``native`` is the absolute override); else ``supports_vision``
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import mimetypes
 import os
@@ -392,11 +393,6 @@ def decide_image_input_mode(
     return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
 
 
-# Image size handling is REACTIVE: attach at full size and let
-# ``run_agent._try_shrink_image_parts_in_messages`` shrink + retry on rejection
-# (e.g. Anthropic's 5 MB ceiling as HTTP 400). Provider ceilings are partial and
-# evolving; a proactive table would go stale and silently degrade quality.
-
 # Magic-byte signatures as ((offset, bytes), ...) conjunctions, checked in order.
 # Platforms lie about content-type (Discord serves PNG as ``image/webp`` for
 # proxied stickers) and Anthropic rejects a mismatched media_type with HTTP 400.
@@ -499,36 +495,61 @@ def _accepted_mimes() -> frozenset:
     return _UNIVERSALLY_SUPPORTED_MIMES
 
 
-def _file_to_data_url(path: Path) -> Optional[str]:
-    """Encode a local image as a base64 data URL at native size (the agent retry
-    loop shrinks on rejection, so lenient providers pay no silent quality tax);
-    MIMEs outside the accepted set are transcoded to PNG. None when unreadable,
-    blocked by the read guard, or untranscodable — the caller reports ``skipped``."""
-    try:
-        from agent.file_safety import raise_if_read_blocked
+def normalize_image(path: Path, *, raw: Optional[bytes] = None, mime: Optional[str] = None) -> Optional[tuple[Path, str]]:
+    """Read once, resize using the vision policy, and retain changed bytes for replay.
 
-        raise_if_read_blocked(str(path))
-    except ValueError as exc:
-        logger.warning("image_routing: blocked local image attachment %s -- %s", path, exc)
-        return None
-    except Exception:
-        pass  # Keep attachment routing best-effort if the guard itself is unavailable.
-    try:
-        raw = path.read_bytes()
-    except Exception as exc:
-        logger.warning("image_routing: failed to read %s — %s", path, exc)
-        return None
-    mime = _guess_mime(path, raw=raw)
-    if mime not in _accepted_mimes():
-        if (transcoded := _transcode_to_png(raw)) is None:
-            logger.warning(
-                "image_routing: %s is %s which is not accepted by the active provider "
-                "and could not be transcoded to PNG; skipping this attachment.", path, mime,
-            )
+    Resize/storage failures preserve the original URL and reference, so one bad
+    attachment cannot discard the other photos in the turn.
+    """
+    if raw is None:
+        try:
+            from agent.file_safety import raise_if_read_blocked
+            raise_if_read_blocked(str(path))
+            raw = path.read_bytes()
+        except (OSError, ValueError) as exc:
+            logger.warning("image_routing: cannot read image %s -- %s", path, exc)
             return None
-        logger.info("image_routing: transcoded %s (%s) -> image/png for provider compatibility", path.name, mime)
-        raw, mime = transcoded, "image/png"
-    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    original = raw
+    mime = _sniff_mime_from_bytes(raw) or mime or _guess_mime(path, raw=raw)
+    original_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    if mime not in _accepted_mimes():
+        raw = _transcode_to_png(raw)
+        if raw is None:
+            return None
+        mime = "image/png"
+    try:
+        from tools.vision_tools import _resize_image_for_vision
+        url = _resize_image_for_vision(path, mime_type=mime, max_dimension=1568, force_jpeg=True, image_bytes=raw)
+        header, _, encoded = url.partition(",")
+        data = base64.b64decode(encoded, validate=True)
+        if data == original:
+            from agent.image_eviction_policy import image_dimensions_from_bytes
+            dims = image_dimensions_from_bytes(data)
+            if dims and max(dims) > 1568:
+                logger.warning("image_routing: image could not be resized; using original %s", path)
+        if data != original:
+            from hermes_constants import get_hermes_dir
+            from hermes_dir_acl import make_user_dir
+            from utils import atomic_write_bytes
+            digest = hashlib.sha256(data).hexdigest()
+            source_digest = hashlib.sha256(original).hexdigest()
+            ext = ".jpg" if header.startswith("data:image/jpeg;") else ".png"
+            root = get_hermes_dir("cache/documents", "document_cache") / "native-inputs"
+            target = root / digest / f"api_{digest[:32]}_{source_digest}{ext}"
+            if target.resolve() != target:
+                raise ValueError("linked retained-image path")
+            make_user_dir(target.parent, mode=0o700, parents=True, exist_ok=True)
+            atomic_write_bytes(target, data, mode=0o600)
+            path = target
+        return path, url
+    except Exception as exc:
+        logger.warning("image_routing: normalization failed for %s; using original -- %s", path, exc)
+        return path, original_url
+
+
+def _file_to_data_url(path: Path) -> Optional[str]:
+    normalized = normalize_image(path)
+    return normalized[1] if normalized else None
 
 
 def build_native_content_parts(
@@ -549,9 +570,9 @@ def build_native_content_parts(
     attached: list[tuple[str, str]] = []  # (url, hint)
     for raw_path in image_paths:
         p = Path(raw_path)
-        data_url = _file_to_data_url(p) if p.exists() and p.is_file() else None
-        if data_url:
-            attached.append((data_url, f"[Image attached at: {raw_path}]"))
+        normalized = normalize_image(p) if p.exists() and p.is_file() else None
+        if normalized:
+            attached.append((normalized[1], f"[Image attached at: {normalized[0]}]"))
         else:
             skipped.append(str(raw_path))
     attached += [(u, f"[Image attached: {u}]") for u in ((u or "").strip() for u in image_urls or []) if u]
