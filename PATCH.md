@@ -230,9 +230,6 @@ v0.23.2 verification: 26 passed across the three account_usage suites.
 
 ## HERMES-FORK-017: One Discord progress message
 
-Discord batches now open and inherit this message on receipt (018, 2026-11-20).
-Other turns retain the opt-in setting below.
-
 Opt-in display.platforms.discord.progress_compositor: single_message (config.yaml only,
 Discord only; a global value never replaces Slack cards or other transports) shows each
 turn's progress in one owned temporary message. It is posted concurrently with the turn
@@ -328,78 +325,89 @@ no such field, so duck-typed contexts in stock tests keep stock (uncomposed) beh
 initial send is only freed by `settle()`, which the pending-send test asserts.
 This remains fork-specific progress behavior, not a stock-upstream defect.
 
-## HERMES-FORK-018: Fixed Discord batches and permanent receipt positions
+## HERMES-FORK-018: Discord receipt acknowledgement and merged-message identity
 
-Elliot reinstated the fixed window on 2026-11-20. Every accepted non-command
-Discord message (text or attachments) joins its conversation's batch. The first
-receipt opens a fixed `discord.batch_window_seconds` window (config.yaml,
-default 30 seconds); later receipts do not extend it. Messages received during
-execution collect in the next batch, whose clock begins after the running turn.
-Ordinary batch members do not steer or interrupt the running turn. Commands and
-blocking approval replies keep their existing bypass, authorization and cancellation behavior.
+Every accepted Discord message is acknowledged the moment it arrives, before its
+attachments download: ⏳ when its conversation is busy (it queues or merges), 👀 when
+idle. A turn marks every message it carries 👀 at start (⏳ removed) and ✅/❌ at its
+end. Gated on the existing `reactions` setting. Reaction calls are detached tasks,
+serialized per message and bounded (10s), so a Discord 429, failure or hang never
+delays admission, the turn or delivery and never raises into them. A message dropped
+before it ran (`/stop`, `/new`, held-burst or text-debounce discard, a replaced pending
+slot, stale-lock heal, full queue, refused/fenced admission, any exit before dispatch such
+as a failed attachment download or mention-only drop, burst commit failure) loses its mark
+through `gateway/receipt_drops.py` (events bind their adapter; marks exist only if
+reactions were enabled when set, so drop paths read no config). A message folded into an
+already running turn (steer) switches ⏳ to 👀 at once. Marks not recorded in memory
+(restart, 1024-cap eviction, a timed-out call) get an idempotent ⏳ removal at start and end;
+the receipt ack itself skips that removal (a message just received live carries no mark), so it
+is one reaction call, not two: Discord rate-limits reactions per channel and the wasted call
+delayed every later ack in a burst (2026-11-20). Each receipt ack that lands logs one INFO line,
+`receipt ack <emoji> on <id> landed <N> ms after send` (snowflake send time vs local clock).
 Discord dispatch returns the gateway's real admission verdict (`event._gateway_accepted`), so
 missed-message recovery counts a refused message as not dispatched (it always said admitted).
+Graceful shutdown waits (5s) for pending reactions before cancelling tasks. The recovery
+column `emoji_ack` now means "the 👀 was scheduled" (the call is detached; its result is
+unknown).
 
-Receipt reactions are ⏳ plus the message's position (1️⃣ through 🔟; no number
-above ten), gated by the existing `discord.reactions` setting. Closing the window
-removes every ⏳; numbers remain permanently. Inputs dropped before running lose
-both marks. There are no 👀, ✅ or ❌ lifecycle reactions. Calls remain detached,
-per-message serialized and bounded; the ⏳ landing retains the INFO latency log.
+`MessageEvent.absorbed_message_ids` (ordered, deduped, head included, set only when
+more than one) is appended by `absorb_turn_input`, so every merge site carries it, and
+is persisted in the durable ingress envelope only when more than one (single messages
+keep their fingerprint; old rows load with none). Discord replies anchor to the latest
+id unless `reply_anchor_override` exists. The model-facing triggering line names the
+latest id and, only for merged turns, appends "(merged N messages)". Recovery rows of
+every absorbed id are marked with the turn's outcome. Stable's configurable busy
+debounce is unchanged; the fixed 30s composition window, `discord_composition.py` and
+the post-window ⏳ are not ported (see PATCH-ARCHIVE.md).
 
-Review repairs (2026-11-21): a consumed or rejected receipt releases its preparation
-barrier and removes both marks and its unowned Working message, including background
-rejections whose activity hooks are suppressed. Receipt bookkeeping errors never
-abort dispatch. A queued or still-preparing predecessor defers the successor's clock
-until the predecessor ends. Dropped IDs release both lookup mappings. Collecting
-receipts stay pinned; non-collecting mappings can be evicted without closing or
-deleting a retained breadcrumb. Standalone adapters do not post an unowned Working
-message. Busy-delivery identity updates remain Discord-only.
+Approval: Elliot, 2026-11-17, T3 session, change-specific manual override after
+assessment (protected: merged-message identity and the model-facing triggering line).
+Old part-B (truthful admission, restart drain, review gaps) is not ported: v0.23.2's
+durable authority FIFO already provides acceptance receipts, queue-full refusal and
+restart persistence; nothing turn-control was left missing.
 
-The existing 017 compositor posts one temporary Working message as soon as the
-batch opens. The executing turn inherits it, including pre-agent compression;
-terminal cleanup retains 017's delivery-confirmation rules. The posted message ID
-and busy-window deadline are kept in the authority's existing state metadata.
+Residual risk: reaction 429s are cosmetic (marks may lag or be missing). The
+triggering line changes model-facing bytes once per merged turn. Still uncovered: shutdown
+clears of the pending slot (`run_shutdown`, adapter `cancel_background_tasks`) keep ⏳ on
+purpose, since those inputs are flushed to disk and recovered after restart, where the
+recovered turn clears it; runner-level unauthorized refusals after dispatch (Discord
+pre-filters; an idle one ends ✅/❌ through the processing hooks). A mark of a message that is
+never processed stays until the 1024-entry cap evicts it. A paused-FIFO row stays ⏳ by design. Upstream
+burst merging needs the same kind, so a standalone TEXT followed by PHOTO messages
+still runs as separate turns (unchanged, turn-control). Restored events also issue one
+best-effort ⏳ removal. Each mark keeps its target (the live message, else the channel to build a
+partial message in: the parent channel for an auto-thread starter), captured before a clear drops the
+state; an event's `raw_message` is used only for its own id, never for a merged-in message.
+Recovery claim for merged ids: processing start upserts a `processing` row for every id the
+turn carries (the head's channel/thread/parent columns, or the restored source's), and a steer
+folded into a running turn (`receipt_drops.join_event` -> adapter `on_event_joined_turn`, written
+off-loop) does the same, so the reconnect scan skips B and C while the head's claim is live instead
+of dispatching them ahead of it. Every claim and completion write is one monotonic upsert over every carried id, head
+included (a restored envelope has no live message, so its source supplies the columns); status
+only moves processing, then failed/cancelled, then responded, so a steer's delayed claim that lands
+after the turn completed cannot undo it. The reconnect scan also skips ids owned by an unresolved
+durable envelope (queued, started or unknown, absorbed ids included; one profile-scoped read per
+scan, `receipt_drops.pending_envelope_message_ids`): the FIFO runs them, so a second admission would
+run the merged input and then its member again. This closes an inherited upstream gap (the same
+duplicate existed for any queued message). Residual: the scan snapshot is read once, so an
+envelope admitted after it started is covered only by the dedup/claim guards already in place.
+Rollback: revert the 018 commit. Fork-specific; no upstream report.
 
-Each prepared input commits to the existing durable authority FIFO immediately.
-At claim, contiguous members become one execution snapshot in the head row and
-the absorbed rows are cancelled in the same transaction; their waiters settle when
-the claim is stamped. The fold is skipped when the claim cannot stamp (a worker
-execution is registered) and never re-runs over an existing snapshot. The batch's
-state-metadata keys are deleted at claim, since the claimed payload carries them.
-The original input fingerprints remain intact for redelivery. Every message ID
-survives into the merged event; Discord replies anchor to the latest. Queue
-capacity, refusal, paused/unknown execution and restart recovery remain owned by
-the authority.
+Touchpoints: gateway/platforms/event.py, platforms/base.py (anchor, legacy debounce),
+session_envelope.py, session_ingress.py, session_ingress_burst.py, run_inbound.py,
+receipt_drops.py (new), hermes_state_runtime.py (pending_native_admissions), plugins/platforms/discord/adapter_reactions.py, adapter.py,
+tui_gateway/session_history.py and apps/desktop hydration.ts (legacy-note heal regex
+accepts the merge count; TS unverified, no node_modules in the candidate).
 
-Merged-message identity (carried from the 2026-11-17 port): `MessageEvent.absorbed_message_ids`
-(ordered, deduped, head included, set only when more than one) is appended by
-`absorb_turn_input` and persisted in the durable envelope only when more than one, so single
-messages keep their fingerprint. The model-facing triggering line names the latest id and, only
-for merged turns, appends "(merged N messages)". Processing start and completion write one
-monotonic recovery upsert over every carried id (processing, then failed/cancelled, then
-responded). The reconnect scan skips ids owned by an unresolved envelope, absorbed ids included
-(`receipt_drops.pending_envelope_message_ids`), so only the FIFO runs them.
-`tui_gateway/session_history.py` and desktop `hydration.ts` accept the merge count in their
-legacy-note heal regex. Approval: Elliot, 2026-11-17, T3 session, change-specific manual
-override (protected: merged-message identity and the model-facing triggering line).
-
-Touchpoints: Discord receipt hooks and ingress dispatch; native envelope and
-redelivery reconciliation; session_ingress_burst's Discord claim policy;
-SessionAuthority claim/wait integration; receipt_drops' merged snapshot reader;
-017 inherited compositor adoption. Rollback: revert this change before activation.
-Offline fake-transport/agent verification does not establish live Discord latency.
-Verification (2026-11-20): final focused acceptance: 50 passed across receipt,
-reaction, compositor lifecycle, stop/new, capacity and media-redelivery suites.
-The broad 175-file gateway run: 3,019 passed, 9 unchanged-base failures, 28 skipped;
-three standalone-adapter files initially timed out, then passed after retaining
-native standalone text batching (68 passed in that focused rerun). All nine broad
-failures reproduce on unchanged 727ce319eb: Windows image-URI handling (3),
-startup bootstrap peer verification (1), POSIX status/launchd assumptions (3),
-and Windows STT path rendering (2). Additional serial-reader (2) and shared-authority
-trust-envelope (1) failures also reproduce on that base. New fixed-window and
-reactions-disabled batching contracts fail on the unchanged base. No live install,
-profile changes, deployment staging, push or gateway restart.
-
+Verification (v0.23.2 candidate, scripts/run_tests.sh -j 1): new
+test_discord_receipt_reactions.py 12 passed (7 original failed on unchanged ae2a81ccc0; the
+5 added for the drop, dispatch-guard, shutdown, unrecorded-mark and steer-join fixes failed
+before them), test_discord_reactions.py 4 passed. 138 adjacent busy/burst/ingress/authority/
+queue/discord/017/005 files (run in two chunks; Windows 0xc0000142 child crashes are
+environmental): 1270 passed, 28 failed. All 28 fail identically on ae2a81ccc0
+(feishu 24, serial-reader 2, attachment-receipts 1, session_authority 1). The tui server file
+times out at the runner's 300s here; its 16 triggering-note/history tests pass (24 base-failing
+tests there are pre-existing). No live Discord, push, staging or restart.
 
 ## HERMES-FORK-021: Scoped Discord session messages
 

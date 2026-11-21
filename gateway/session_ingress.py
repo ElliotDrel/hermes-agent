@@ -153,8 +153,6 @@ async def _hand_over_turn_marker(authority, admission_id, event):
     if adopter is not None:
         _move_marker(event, adopter)
         adopter._hermes_run_generation = getattr(event, '_hermes_run_generation', None)
-        if getattr(event, '_discord_processing_started', False):
-            adopter._discord_processing_started = True
         return
     if admission_id in authority.pending_deliveries:
         # Released by ``deliver_settled``, also when settlement failed and dropped the delivery.
@@ -333,23 +331,7 @@ async def execute_admission(authority, ref, row):
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
     if 'native_text_v1' in row['payload']:
-        event = restore_native(row['payload'].get('discord_execution', row['payload']), authority.runner)
-        if 'discord_execution' in row['payload']:
-            adapter = authority.runner._adapter_for_source(event.source)
-            if adapter is not None and row['payload'].get('discord_progress_id'):
-                from gateway.progress_compositor import ProgressCompositor
-                compositor = ProgressCompositor(adapter, event.source.chat_id, session_key=live.route)
-                compositor.message_id = row['payload']['discord_progress_id']
-                compositor._start_attempted = True
-                progress = adapter.__dict__.setdefault('_discord_progress_by_message', {})
-                for mid in event.message_ids():
-                    progress.setdefault(mid, compositor)
-            if not native:
-                authority.__dict__.setdefault('producer_turns', {}).setdefault(row['admission_id'], None)
-            adopter = _marker_adopters(authority).get(row['admission_id'])
-            if adopter is not None:
-                adopter.absorbed_message_ids = event.message_ids()
-                adopter.message_id = event.message_id
+        event = restore_native(row['payload'], authority.runner)
     else:
         from gateway.session_ingress_media import restore_attachments
         event = MessageEvent(text=row['payload']['text'], source=live.source,
@@ -473,10 +455,6 @@ async def _admission_scope(authority, ref, home, row, event, captured):
     from agent.runtime_scope import bind_turn, claim_fence
     async with producer_turn(authority, row, event, captured):
         with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
-            if 'discord_execution' in row['payload'] and not getattr(event, '_discord_processing_started', False):
-                adapter = authority.runner._adapter_for_source(event.source)
-                if adapter is not None:
-                    await adapter._run_processing_hook('on_processing_start', event)
             yield
 
 
@@ -609,9 +587,6 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
-            if event.source.platform.value == "discord":
-                delivery_event.message_id = event.message_id
-                delivery_event.absorbed_message_ids = event.message_ids()
             delivered = await deliver_response(adapter, delivery_event, session_key, response)
         except Exception as exc:
             if not accepted.done():

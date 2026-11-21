@@ -1042,15 +1042,9 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         if ctx.progress_compositor is not None:
             return ctx.progress_compositor
-        # Prefer an already-owned hygiene breadcrumb; a collecting Discord batch is the other
-        # pre-turn owner of the same temporary message.
+        # Only the matching generation can inherit a pre-agent hygiene breadcrumb.
         inherited = (self._runner._session_state(ctx.session_key).turn.progress_compositor
                      if ctx.session_key else None)
-        if inherited is None or inherited.generation != ctx.run_generation or inherited.closed:
-            adapter = adapter or self._runner._delivery_adapter_for(ctx.source)
-            if ctx.source.platform.value == 'discord' and adapter is not None:
-                from gateway.session_ingress_burst import adopt_discord_batch_progress
-                inherited = adopt_discord_batch_progress(adapter, ctx.source, ctx.event_message_id, ctx.run_generation)
         if inherited is not None and inherited.generation == ctx.run_generation and not inherited.closed:
             ctx.progress_compositor = inherited
             ctx.progress_started_at = inherited.started_at

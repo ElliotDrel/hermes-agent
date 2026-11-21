@@ -854,9 +854,7 @@ class GatewayTurnHygieneMixin:
         adapter = self._delivery_adapter_for(source)
         if adapter is None:
             return
-        from gateway.session_ingress_burst import adopt_discord_batch_progress
-        inherited = adopt_discord_batch_progress(adapter, source, event.message_id, run_generation)
-        compositor = inherited or ProgressCompositor(
+        compositor = ProgressCompositor(
             adapter, source.chat_id, reply_to=event.message_id,
             # Presentation must not partition Discord backfill or enter reply context.
             metadata=_non_conversational_metadata(attempt.meta, platform=source.platform),

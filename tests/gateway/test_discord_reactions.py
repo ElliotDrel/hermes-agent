@@ -107,9 +107,9 @@ async def test_process_message_background_adds_and_swaps_reactions(adapter):
     await adapter._process_message_background(event, build_session_key(event.source))
     await adapter.flush_reactions()  # reaction calls are detached from the turn
 
-    raw_message.add_reaction.assert_not_awaited()
-    assert [call.args for call in raw_message.remove_reaction.await_args_list] == [("⏳", adapter._client.user)]
-
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+    assert ("👀", adapter._client.user) in [c.args for c in raw_message.remove_reaction.await_args_list]
+    assert raw_message.add_reaction.await_args_list[1].args == ("✅",)
 
 
 @pytest.mark.asyncio
@@ -167,9 +167,11 @@ async def test_queued_event_without_raw_message_reacts_through_a_partial_message
     await adapter.flush_reactions()
 
     partial = channel.partials[1234567890]
-    partial.add_reaction.assert_not_awaited()
-    assert [call.args for call in partial.remove_reaction.await_args_list] == [("⏳", adapter._client.user)]
-
+    assert [c.args for c in partial.add_reaction.await_args_list] == [("👀",), ("✅",)]
+    # A restored message may still show the ⏳ it earned before the restart: cleared at start.
+    removed = [c.args for c in partial.remove_reaction.await_args_list]
+    assert removed[0] == ("⏳", adapter._client.user)
+    assert ("👀", adapter._client.user) in removed
 
 
 @pytest.mark.asyncio

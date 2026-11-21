@@ -1227,7 +1227,6 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
         self._gate_env_snapshot: Optional[dict[str, str]] = None
-        self._receipt_reactions_enabled = self._reactions_enabled()
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -2099,7 +2098,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                         task.cancel()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
-        await self._settle_reactions()  # graceful restart lets pending receipt updates finish
+        await self._settle_reactions()  # a graceful restart must not cancel the final ✅/❌
         await super().cancel_background_tasks()
 
     def _text_batch_flush_deadline_seconds(self) -> float:
@@ -6432,13 +6431,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             await self._threads.mark_async(thread_id)
-        if not recovered and msg_type != MessageType.COMMAND:
-            from gateway.session_ingress_burst import wait_discord_receipt_predecessors
-            if not await wait_discord_receipt_predecessors(self, event):
-                return False
-        self._receipt_dispatched(message)  # the admitted event owns drop cleanup from here
-        if (self.gateway_runner is None and not recovered and msg_type == MessageType.TEXT
-                and self._text_batch_delay_seconds > 0):
+        self._receipt_dispatched(message)  # from here the event's own drop paths clear its mark
+        # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
+        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)
             return True
         await self.handle_message(event)
