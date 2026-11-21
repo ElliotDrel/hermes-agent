@@ -350,8 +350,9 @@ Review repairs (2026-11-21): a consumed or rejected receipt releases its prepara
 barrier and removes both marks and its unowned Working message, including background
 rejections whose activity hooks are suppressed. Receipt bookkeeping errors never
 abort dispatch. A queued or still-preparing predecessor defers the successor's clock
-until the predecessor ends. Live progress mappings stay pinned; only closed owners
-are evicted at the cache cap. Standalone adapters do not post an unowned Working
+until the predecessor ends. Dropped IDs release both lookup mappings. Collecting
+receipts stay pinned; non-collecting mappings can be evicted without closing or
+deleting a retained breadcrumb. Standalone adapters do not post an unowned Working
 message. Busy-delivery identity updates remain Discord-only.
 
 The existing 017 compositor posts one temporary Working message as soon as the

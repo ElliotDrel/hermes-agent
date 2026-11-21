@@ -31,18 +31,24 @@ async def test_nonadmitted_receipt_releases_route_and_display(monkeypatch, tmp_p
         if exit_kind == 'consumer':
             monkeypatch.setattr(runner, '_hm_post_admission_consume', AsyncMock(return_value=(True, None)))
 
-    async def dispatch(message, *args, **kwargs):
-        adapter._acknowledge_receipt(message, event.source)
-        adapter._bind_receipt(message, event)
-        adapter._receipt_dispatched(message)
-        await adapter.handle_message(event)
-        return event._gateway_accepted is True
-    monkeypatch.setattr(adapter, '_handle_message_dispatch', dispatch)
-    await adapter._handle_message(event.raw_message)
+    import gateway.session_ingress_burst as bursts
+    from tests.gateway.test_discord_free_response import FakeTextChannel, make_message
+    for name in ('DISCORD_REQUIRE_MENTION', 'DISCORD_AUTO_THREAD', 'DISCORD_HISTORY_BACKFILL'):
+        monkeypatch.setenv(name, 'false')
+    message = make_message(channel=FakeTextChannel(channel_id='room'), content='yes')
+    message.id = int(event.message_id)
+    message.add_reaction = event.raw_message.add_reaction
+    message.remove_reaction = event.raw_message.remove_reaction
+    predecessor_wait = AsyncMock(wraps=bursts.wait_discord_receipt_predecessors)
+    monkeypatch.setattr(bursts, 'wait_discord_receipt_predecessors', predecessor_wait)
+    await adapter._handle_message(message)
+    predecessor_wait.assert_awaited_once()
     await async_wait_until(lambda: not adapter._background_tasks, timeout=10)
     await adapter.flush_reactions()
     await settle_detached_deletes()
     assert event.message_id not in adapter._discord_preparing
+    assert event.message_id not in adapter._discord_batch_by_message
+    assert event.message_id not in adapter._discord_progress_by_message
     assert board.shown[21001] == set()
     adapter.delete_message.assert_awaited_once()
     following = _event(adapter, board, tmp_path, 21002, 'next')
@@ -181,3 +187,27 @@ async def test_standalone_receipt_does_not_post_unowned_working_message(tmp_path
     adapter._acknowledge_receipt(event.raw_message, event.source)
     await adapter.flush_reactions()
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retained_breadcrumb_does_not_pin_finished_batch_mappings(monkeypatch, tmp_path):
+    import gateway.session_ingress_burst as bursts
+    board = Board()
+    runner, adapter, authority = await _owner(monkeypatch, tmp_path, board)
+    monkeypatch.setattr(bursts, '_save_discord_progress', lambda *args: None)
+    adapter.delete_message = AsyncMock(return_value=True)
+    event = _event(adapter, board, tmp_path, 28001, 'first')
+    batch, _ = bursts.open_discord_batch(adapter, event.source, event.message_id)
+    await batch['progress']._start_task
+    breadcrumb = batch['progress']
+    retained_id = breadcrumb.message_id
+    batch['closed'] = True  # the collection window ended; the failed turn retained its open breadcrumb
+    for mid in range(28002, 29027):
+        live, _ = bursts.open_discord_batch(adapter, event.source, str(mid))
+    assert event.message_id not in adapter._discord_progress_by_message
+    assert event.message_id not in adapter._discord_batch_by_message
+    assert adapter._discord_progress_by_message[str(mid)] is live['progress']
+    assert breadcrumb.message_id == retained_id and not breadcrumb.closed
+    adapter.delete_message.assert_not_awaited()
+    await live['progress']._start_task
+    await asyncio.to_thread(authority.db.close)

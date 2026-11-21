@@ -258,15 +258,17 @@ def open_discord_batch(adapter, source, mid):
     runner = getattr(adapter, 'gateway_runner', None)
     epoch = runner._route_stop_epoch(key) if runner else None
     _state(adapter, '_discord_preparing').setdefault(mid, (key, asyncio.get_running_loop().create_future(), epoch))
-    _state(adapter, '_discord_batch_by_message')[mid] = batch
+    by_message = _state(adapter, '_discord_batch_by_message')
+    by_message[mid] = batch
     progress = _state(adapter, '_discord_progress_by_message')
     progress[mid] = batch['progress']
     while len(progress) > 1024:
-        oldest = next((mid for mid, compositor in progress.items() if compositor.closed), None)
+        oldest = next((mid for mid, compositor in progress.items()
+                       if compositor.closed or by_message.get(mid, {}).get('closed', True)), None)
         if oldest is None:
-            break  # live receipt owners remain pinned until the turn or drop closes them
+            break  # collecting receipts stay pinned; retained breadcrumbs do not own collection state
         progress.pop(oldest)
-        adapter.__dict__.get('_discord_batch_by_message', {}).pop(oldest, None)
+        by_message.pop(oldest, None)
     if mid not in batch['ids']:
         batch['ids'].append(mid)
         batch['positions'][mid] = max(batch['positions'].values(), default=0) + 1
@@ -286,6 +288,9 @@ def drop_discord_messages(adapter, source, ids):
         discord_receipt_committed(adapter, mid)
     batch = next((adapter.__dict__.get('_discord_batch_by_message', {}).get(mid) for mid in ids
                   if mid in adapter.__dict__.get('_discord_batch_by_message', {})), None)
+    for mid in ids:
+        adapter.__dict__.get('_discord_batch_by_message', {}).pop(mid, None)
+        adapter.__dict__.get('_discord_progress_by_message', {}).pop(mid, None)
     if batch is None:
         return
     batch['ids'] = [mid for mid in batch['ids'] if mid not in ids]
