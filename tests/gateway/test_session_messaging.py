@@ -323,3 +323,47 @@ async def test_cross_profile_and_cross_user_targets_are_refused_before_delivery(
         setattr(entries['b'].origin, field, old)
         assert 'error' in refused
     assert not events and not adapter.send.called
+
+
+@pytest.mark.asyncio
+async def test_compression_sender_resolution_uses_reopened_sqlite_route(tmp_path):
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    config = GatewayConfig()
+    store = SessionStore(tmp_path / 'sessions', config)
+    a, b = source(), source('2')
+    sender, target = store.get_or_create_session(a), store.get_or_create_session(b)
+    parent, key = sender.session_id, sender.session_key
+    child = parent + '-compressed'
+    resumed = None
+    try:
+        db = store._db_for_key(key)
+        retained = [{'role': 'user', 'content': 'summary'},
+                    {'role': 'assistant', 'content': 'retained answer'}]
+        db.publish_compression_child(
+            parent_session_id=parent, child_session_id=child, source='discord',
+            require_compression_lease=False, model='offline', model_config={},
+            system_prompt='stable compressed system', messages=retained)
+        assert store.advance_compression_session(key, parent, child)
+        before = {sid: store.load_transcript(sid) for sid in (parent, child, target.session_id)}
+        store.close_all_db_handles()
+        resumed = SessionStore(tmp_path / 'sessions', config)
+        assert resumed.lookup_by_session_id(parent) is None
+        messenger, _, _, adapter, events, _ = harness()
+        messenger.runner.session_store = resumed
+        messenger.runner._session_key_for_source = lambda src: (
+            key if src.chat_id == a.chat_id else target.session_key)
+        with bind_session_messenger(messenger, a, parent, None):
+            result = json.loads(await asyncio.to_thread(
+                send_session_message, target.session_id, 'after compression'))
+        assert result['accepted'] and result['sender_session_id'] == child
+        assert resumed.lookup_by_session_id(child).session_key == key
+        assert f'session {child}' in events[0].text
+        assert events[0].metadata['gateway_session_id'] == target.session_id
+        assert events[0].metadata['gateway_session_strict'] is True
+        assert {sid: resumed.load_transcript(sid) for sid in before} == before
+    finally:
+        store.close_all_db_handles()
+        if resumed is not None:
+            resumed.close_all_db_handles()

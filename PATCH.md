@@ -457,29 +457,34 @@ original opener (up to `5000` characters), excluding bound skill bodies. Bare /r
 regenerates from up to `10000` characters of clean history; explicit /rename sets the
 thread and session title, including during an active turn, with actionable errors.
 Opt-in discord.rename_manual_threads also titles user-created threads; fresh
-Discord-name comparison preserves a human rename made during title generation.
+Discord-name comparison guards a human rename made during title generation;
+the edit guard uses the connected client's gateway-fed thread name.
 Main input/history, provider routing and cached system/tool inputs remain native.
 
 Rename transaction correction: native `/rename` owns a thread from admission through
 confirmation and conditional persistence; duplicates report pending, never DB-only
 "already titled". Automatic native renames share that admission. Explicit names
 are validated unchanged against Discord's documented 1–100 character limit before
-mutation (https://docs.discord.com/developers/resources/channel). Fresh GET/PATCH/GET
-confirms the visible name before title/provenance CAS; native uniqueness, Bot Chat,
-lineage and ended-session constraints stay enforced. A newer manual decision wins.
+mutation (https://docs.discord.com/developers/resources/channel). Explicit `/rename`
+reads the fresh name through native `HTTPClient.get_channel`; `rename_once` resolves
+from the connected client's cache (fetching on a miss), checks the expected name,
+and confirms the name returned by `thread.edit`, before title/provenance CAS.
+There is no post-edit GET. Native uniqueness, Bot Chat, lineage and ended-session
+constraints stay enforced. A newer saved manual decision wins.
 
-Rename-local single-attempt HTTP uses connected native auth/proxy/user-agent and
-known native route/global cooldown state, with one 15-second transport budget that covers
-the channel lookup (`fetch_channel` on a cache miss) and the edit together, so a stalled lookup
-cannot hold the rename slot; a failure before the edit is sent (lookup timeout, guard) is a plain
-`RenameLookupFailed`/original error, not an uncertain edit. `429`
-returns retry-after immediately and retains a cooldown, never an edit retry; no
-shared max_ratelimit_timeout policy mutation. Cancellation closes transport and
-retains command ownership through settlement of any non-cancellable SQLite worker.
-Timeout/5xx/read-back failure after sending explicitly report an uncertain visible
+Discord.py owns auth/proxy and shared route/global rate limits, including native
+waiting/retries; the rename wrapper makes one `thread.edit` call, not a guaranteed
+single HTTP attempt. One 15-second budget covers lookup, guard and edit. A lookup
+timeout is `RenameLookupFailed`; other failures before edit retain their original
+error. If discord.py raises `RateLimited`, its retry-after is retained as a local
+cooldown and later renames refuse while it is open; there is no guarantee that a
+raw HTTP 429 returns immediately. Shared max_ratelimit_timeout is not mutated.
+Cancellation leaves no detached rename task and retains command ownership through
+settlement of any non-cancellable SQLite worker. Timeout/5xx/other failures after
+sending, or an edit response with a different name, report an uncertain visible
 outcome, not a fabricated rollback. A confirmed visible change whose DB commit
 fails is reported separately. Unsupported relay adapters refuse `/rename` safely
-until they offer fresh-name confirmation; relay auto-title paths remain untouched.
+until they offer name confirmation; relay auto-title paths remain untouched.
 
 Protected override: Elliot's rename-only approval:
 https://discord.com/channels/1517646536505557132/1558651185500782623/1558652307569119293.
@@ -490,8 +495,8 @@ rejections and uncertainty, plus adjacent title/cache/auxiliary-wire invariants.
 No schemas, stored model messages/system prompt, provider policy, session routing,
 or subagent ownership repair. No migration, production DB write, manufactured
 Discord traffic or gateway restart. Discord has no atomic name compare-and-edit;
-a human change between the final read and PATCH remains possible, as does external
-state movement after read-back. Atomic CAS preserves newer saved decisions but
+a human change after the guard remains possible, as does external state movement
+after the edit response. Atomic CAS preserves newer saved decisions but
 cannot prove nondeterministic model behavior. Rollback: scoped revert before deployment.
 Verification: 153 tests passed across 11 named files with isolated dev environment,
 canonical runner `-j 1` and retries disabled; syntax and scoped diff checks passed.
@@ -599,8 +604,16 @@ substitute_api_content wire helper (valid nonempty string sidecar on user/assist
 otherwise content), not both display and wire copies. Clean finalization/SQLite
 reload no longer invalidates an unchanged request. A full priced-prefix digest
 also rejects earlier rewrites/reordering even when the last priced row survives.
-Persist/restore retain that digest; legacy last-row-only anchors fail closed until
-the next real provider reading. No provider payload, cache key, schema, role/order,
+Persist/restore retain that digest. Anchors missing a nonempty `base_prefix_fp`
+are rejected by serialization/restoration. Anchors with both digests still match
+when every priced message's fingerprint is unchanged. The fingerprint rewrite
+invalidates an old anchor when a priced row had a non-null `api_content` field
+(previously hashed separately, now canonicalized into `content` or ignored by the
+wire helper); rows without it keep the same fingerprint. A valid-format but
+mismatching restored anchor is cleared from storage; a legacy-format blob is not
+adopted. Accounting falls back to estimation until the next real provider usage
+reading captures a fresh anchor; there is no blanket one-time invalidation.
+No provider payload, cache key, schema, role/order,
 clean display storage, transcript migration or old-history rewrite is introduced.
 
 Dropped on v0.23.2: the earlier pruning-only rearm (delta b: `_finish_compaction_boundary`
@@ -646,8 +659,11 @@ the retained previous tree's extras (pre-PM) or PM's ledger. Plugin dependencies
 `.<install>.pin-stage.json` (schema 1, same fields as before plus `features`): the pre-v0.23.2
 loaded `/restart` handler reads `.staged-update.json` and would run
 `-m hermes_cli.update_stage --activate-stage`, which upstream's helper ignores,
-stranding a drained gateway. The legacy name is still read, so an old-staged pin
-activates. Old loaded code cannot stage this lock anyway (its Python 3.11 `uv sync
+stranding a drained gateway. The legacy marker name is still read, but this is
+filename compatibility only:
+a pre-v0.23.2 candidate does not acquire the new activation module or PM environment
+by having its marker accepted and must be staged again with the current mechanism.
+Old loaded code cannot stage this lock anyway (its Python 3.11 `uv sync
 --locked` is refused by the 3.14-only lock), so a candidate is staged by running
 `-m hermes_cli.update_pin_stage --stage` from a reviewed checkout (see the user guide).
 
@@ -738,6 +754,27 @@ fresh-interpreter probe imported candidate code. Not exercised: `pm.sync_venv` a
 launcher publication on a full Hermes tree (no disposable Hermes install with a PM
 store), an end-to-end activation from the candidate venv of a full lock, and live
 Discord/gateway restart.
+
+2026-11-19 outage fix (carried features, elevation). Incident: the first live activation of the
+v0.23.2 pin ran from Windows OpenSSH (elevated admin token) over a pre-PM Python 3.11 install that
+had the `messaging` extra but no PM-recorded features. (1) The candidate and the first PM generation
+were built from PM defaults, so the promoted venv had no `discord`, and v0.23.2 refuses lazy
+installs from a running gateway: the gateway came up with Discord unavailable until `hermes pm
+install --tools-only` and `--extra messaging`. (2) Everything activation and its gateway wrote was
+owned by BUILTIN\Administrators and PM's tool dirs (`tools/node-*`, `npm-*`) kept Python 3.14's
+private tempfile DACL, so normal processes failed with WinError 5 until an admin ran `takeown` +
+`icacls /reset`. Fixes: staging derives the active install's features read-only (PM's recorded
+extras plus its committed generation, else dist-info of the pre-PM venv matched against
+`[project.optional-dependencies]`; nothing imported from the active tree), builds the candidate with
+them, records them in the marker and activation syncs them. `/restart` preflight and activation
+refuse, leaving the old gateway running, when a platform the profile has connected lacks its extra in
+the staged env. Staging and activation refuse from an elevated token (`hermes_platform.host.
+is_elevated`; an elevated refusal never starts the old gateway from that token), and the staged
+`venv` gets `pm.filesystem.inherit_parent_acl`. Residual risk: derivation matches distribution names,
+not versions; a platform whose dependencies are not an extra is not judged; PM's own tool-dir moves
+are unchanged (a non-elevated owner keeps them readable); live Windows ACL/elevation behaviour is
+covered by injected-fact tests, not a live elevated run. Rollback: revert this fixup before
+deployment. Authorization: Elliot, 2026-11-19: fix outage-causing gaps.
 
 ## HERMES-FORK-030: Truthful delegated process completion ownership
 
@@ -991,24 +1028,3 @@ normalization defects on the previous head, verified the repaired probes, and re
 all 259 acceptance tests. No runtime/profile writes, installation or gateway restart.
 Published source is not installed/running behavior; native installation remains
 Elliot's action.
-
-2026-11-19 outage fix (carried features, elevation). Incident: the first live activation of the
-v0.23.2 pin ran from Windows OpenSSH (elevated admin token) over a pre-PM Python 3.11 install that
-had the `messaging` extra but no PM-recorded features. (1) The candidate and the first PM generation
-were built from PM defaults, so the promoted venv had no `discord`, and v0.23.2 refuses lazy
-installs from a running gateway: the gateway came up with Discord unavailable until `hermes pm
-install --tools-only` and `--extra messaging`. (2) Everything activation and its gateway wrote was
-owned by BUILTIN\Administrators and PM's tool dirs (`tools/node-*`, `npm-*`) kept Python 3.14's
-private tempfile DACL, so normal processes failed with WinError 5 until an admin ran `takeown` +
-`icacls /reset`. Fixes: staging derives the active install's features read-only (PM's recorded
-extras plus its committed generation, else dist-info of the pre-PM venv matched against
-`[project.optional-dependencies]`; nothing imported from the active tree), builds the candidate with
-them, records them in the marker and activation syncs them. `/restart` preflight and activation
-refuse, leaving the old gateway running, when a platform the profile has connected lacks its extra in
-the staged env. Staging and activation refuse from an elevated token (`hermes_platform.host.
-is_elevated`; an elevated refusal never starts the old gateway from that token), and the staged
-`venv` gets `pm.filesystem.inherit_parent_acl`. Residual risk: derivation matches distribution names,
-not versions; a platform whose dependencies are not an extra is not judged; PM's own tool-dir moves
-are unchanged (a non-elevated owner keeps them readable); live Windows ACL/elevation behaviour is
-covered by injected-fact tests, not a live elevated run. Rollback: revert this fixup before
-deployment. Authorization: Elliot, 2026-11-19: fix outage-causing gaps.

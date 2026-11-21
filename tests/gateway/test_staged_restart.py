@@ -121,6 +121,9 @@ async def test_real_windows_pipe_remains_live_during_owner_preflight(tmp_path, m
         assert not gateway_declares_external_supervisor(os.getpid(), tmp_path)
         monkeypatch.setattr("gateway.control_socket._detect_supervisor", lambda: "external")
         assert gateway_declares_external_supervisor(os.getpid(), tmp_path)
+        # Use the saved real client while the owner check's patched client forbids self-query.
+        result = await asyncio.wait_for(asyncio.to_thread(identify_gateway, tmp_path), 5)
+        assert result == {"pid": os.getpid(), "supervisor": "manual"}
     finally:
         await server.stop()
 
