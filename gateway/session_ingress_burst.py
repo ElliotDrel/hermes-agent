@@ -237,17 +237,24 @@ def open_discord_batch(adapter, source, mid):
         from gateway.session_authorities import active_authority
         runner = getattr(adapter, 'gateway_runner', None)
         authority = active_authority(runner) if runner else None
-        busy = key in adapter._active_sessions or bool(runner and key in runner._running_agents)
-        if authority is not None:
-            busy = busy or any(live.route == key and sid in authority.executing
-                               for sid, live in authority.sessions.items())
+        busy = (key in adapter._active_sessions or bool(runner and key in runner._running_agents)
+                or bool(authority is not None and batch is not None and not batch['closed']))
+        if authority is not None and not busy:
+            from hermes_state_runtime import list_session_admissions
+            busy = any(live.route == key and (sid in authority.executing or
+                       bool(list_session_admissions(authority.db, session_id=sid)))
+                       for sid, live in authority.sessions.items())
         compositor = ProgressCompositor(adapter, source.chat_id, reply_to=mid, session_key=key,
                                         metadata={'non_conversational': True})
         compositor.publish_status('⏳ Working… collecting messages')
-        compositor.start_nowait()
+        if authority is not None:
+            compositor.start_nowait()
+        else:
+            compositor.closed = True  # standalone text batching has no turn that can adopt it
         batch = batches[key] = dict(id=mid, deadline=None if busy else now + seconds,
                                     seconds=seconds, ids=[], positions={}, closed=False, progress=compositor)
-        compositor._start_task.add_done_callback(lambda _: _save_discord_progress(adapter, batch))
+        if compositor._start_task is not None:
+            compositor._start_task.add_done_callback(lambda _: _save_discord_progress(adapter, batch))
     runner = getattr(adapter, 'gateway_runner', None)
     epoch = runner._route_stop_epoch(key) if runner else None
     _state(adapter, '_discord_preparing').setdefault(mid, (key, asyncio.get_running_loop().create_future(), epoch))
@@ -255,7 +262,9 @@ def open_discord_batch(adapter, source, mid):
     progress = _state(adapter, '_discord_progress_by_message')
     progress[mid] = batch['progress']
     while len(progress) > 1024:
-        oldest = next(iter(progress))
+        oldest = next((mid for mid, compositor in progress.items() if compositor.closed), None)
+        if oldest is None:
+            break  # live receipt owners remain pinned until the turn or drop closes them
         progress.pop(oldest)
         adapter.__dict__.get('_discord_batch_by_message', {}).pop(oldest, None)
     if mid not in batch['ids']:
@@ -491,6 +500,7 @@ async def wait_discord_receipt_predecessors(adapter, event):
 
 
 def discord_receipt_committed(adapter, mid):
+    adapter.__dict__.get('_receipt_undispatched', {}).pop(mid, None)
     held = adapter.__dict__.get('_discord_preparing', {}).pop(mid, None)
     if held is not None and not held[1].done():
         held[1].set_result(None)

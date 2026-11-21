@@ -609,8 +609,9 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
-            delivery_event.message_id = event.message_id
-            delivery_event.absorbed_message_ids = event.message_ids()
+            if event.source.platform.value == "discord":
+                delivery_event.message_id = event.message_id
+                delivery_event.absorbed_message_ids = event.message_ids()
             delivered = await deliver_response(adapter, delivery_event, session_key, response)
         except Exception as exc:
             if not accepted.done():

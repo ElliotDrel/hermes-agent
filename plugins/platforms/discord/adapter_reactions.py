@@ -143,22 +143,25 @@ class DiscordReactionsMixin:
         return event.message_ids() or [f"event-{id(event)}"]
 
     def _acknowledge_receipt(self, message: Any, source: Any) -> None:
-        """Open the conversation's fixed batch before attachment downloads or REST calls."""
-        from gateway.session_ingress_burst import open_discord_batch
-        batch, position = open_discord_batch(self, source, str(message.id))
-        self.__dict__.setdefault("_receipt_undispatched", {})[str(message.id)] = source
-        enabled = self._reactions_enabled()
-        self._receipt_reactions_enabled = enabled
-        if not enabled:
-            return
-        stub = MessageEvent(text="", source=source, raw_message=message, message_id=str(message.id))
-        number = _KEYCAPS[position - 1] if position <= len(_KEYCAPS) else None
-        channel = self._home_channel_id(stub, str(message.id))
-        self._receipt_marks()[str(message.id)] = [number, message, channel]
-        while len(self._receipt_marks()) > self._RECEIPT_STATE_CAP:
-            self._receipt_marks().pop(next(iter(self._receipt_marks())))
-        ops = [("add", _WAITING)] + ([("add", number)] if number else [])
-        self._schedule_reaction(str(message.id), message, channel, *ops, receipt=True)
+        """Open the batch before downloads; acknowledgement failures never abort dispatch."""
+        try:
+            from gateway.session_ingress_burst import open_discord_batch
+            batch, position = open_discord_batch(self, source, str(message.id))
+            self.__dict__.setdefault("_receipt_undispatched", {})[str(message.id)] = source
+            enabled = self._reactions_enabled()
+            self._receipt_reactions_enabled = enabled
+            if not enabled:
+                return
+            stub = MessageEvent(text="", source=source, raw_message=message, message_id=str(message.id))
+            number = _KEYCAPS[position - 1] if position <= len(_KEYCAPS) else None
+            channel = self._home_channel_id(stub, str(message.id))
+            self._receipt_marks()[str(message.id)] = [number, message, channel]
+            while len(self._receipt_marks()) > self._RECEIPT_STATE_CAP:
+                self._receipt_marks().pop(next(iter(self._receipt_marks())))
+            ops = [("add", _WAITING)] + ([("add", number)] if number else [])
+            self._schedule_reaction(str(message.id), message, channel, *ops, receipt=True)
+        except Exception:
+            logger.debug("[%s] receipt acknowledgement skipped", self.name, exc_info=True)
 
     def _clear_marks(self, event: MessageEvent, mid: str, dropped: bool = False) -> None:
         held = self._receipt_marks().pop(mid, None)
@@ -175,21 +178,31 @@ class DiscordReactionsMixin:
         bind_adapter(event, self)
 
     def _receipt_dispatched(self, message: Any) -> None:
-        """*message* became an event handed to ``handle_message``: its own drop paths own the mark now."""
-        self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None)
+        """Standalone dispatch releases immediately; a runner receipt waits for admission/verdict."""
         if getattr(self, "gateway_runner", None) is None:
+            self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None)
             from gateway.session_ingress_burst import discord_receipt_committed
             discord_receipt_committed(self, str(message.id))
 
     async def _guard_receipt(self, message: Any, call: Any) -> Any:
         """Run ``call()``; a message acknowledged on receipt but never dispatched (a failed attachment
         download, an early return, an exception) loses its mark instead of keeping waiting reactions forever."""
+        accepted = False
         try:
-            return await call()
+            accepted = await call()
+            return accepted
         finally:
             source = self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None)
-            if source is not None:
+            if source is not None and accepted is not True:
                 self.on_messages_dropped(source, [str(message.id)])
+
+    async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
+        try:
+            await super()._process_message_background(event, session_key)
+        finally:
+            # Activity hooks intentionally skip unauthorized senders; receipt cleanup must still run.
+            if event.message_id in self.__dict__.get("_discord_preparing", {}):
+                self.on_messages_dropped(event.source, event.message_ids())
 
     async def _settle_reactions(self, timeout: float = 5.0) -> None:
         """Let scheduled reaction calls finish (bounded) before shutdown cancels background tasks."""
