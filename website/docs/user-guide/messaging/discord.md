@@ -319,7 +319,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots and webhooks (any post carrying a `webhook_id`, such as CI or deploy alerts, counts as a bot even when Discord omits the bot flag). `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
 | `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
-| `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
+| `DISCORD_REACTIONS` | No | `true` | When `true`, messages sent while the bot is busy show ⏳ plus their batch number until the batch runs (see `discord.reactions`). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
@@ -480,10 +480,11 @@ How long an auto-created or handoff thread stays idle before Discord archives it
 
 **Type:** boolean — **Default:** `true`
 
-Controls whether the bot adds emoji reactions to messages as visual feedback:
-- 👀 added when the bot starts processing your message
-- ✅ added when the response is delivered successfully
-- ❌ added if an error occurs during processing
+Controls whether the bot marks queued messages (this fork, HERMES-FORK-018). A message sent while
+the bot is busy joins a batch: it shows ⏳ plus the batch's number (1️⃣ to 🔟). Each new busy
+message restarts the batch window (`display.busy_text_debounce_seconds`); when the window closes
+the ⏳ is removed and the number stays until the batch starts running, when all its reactions are
+removed. A message sent while the bot is idle gets no reaction.
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
 
