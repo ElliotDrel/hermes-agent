@@ -416,15 +416,17 @@ async def test_pending_initial_send_is_bounded_and_joined(monkeypatch):
     compositor = runner._session_state("key").turn.progress_compositor
     await asyncio.wait_for(compositor._start_task, .2)
     # A timed-out initial send is never cancelled by the bound (it may already have created the message);
-    # settle() joins it for a bounded time, then frees it.
+    # settle() joins it for a bounded time; it may still land (and be deleted) for a grace period, then is freed.
     assert not cancelled.is_set()
     assert compositor.editing_disabled and compositor.message_id is None
     assert not (await compositor.start()).success
     adapter.send.assert_awaited_once()
     ctx = TurnContext(source=args[1], session_key="key", run_generation=1)
     assert await started(TurnRunner(runner, ctx)) is compositor
+    monkeypatch.setattr(ProgressCompositor, "LATE_SEND_GRACE_SECONDS", .05, raising=False)
     await asyncio.wait_for(compositor.settle(), 3)
-    await asyncio.sleep(0)
+    assert not cancelled.is_set()
+    await asyncio.sleep(.2)
     assert cancelled.is_set()
 
 

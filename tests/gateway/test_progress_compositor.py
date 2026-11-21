@@ -413,3 +413,37 @@ async def test_send_that_times_out_but_lands_is_adopted_not_orphaned():
     await compositor.settle()
     assert compositor.message_id == "progress-1", "cleanup must learn the id of a message the timed-out send created"
     assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_still_in_flight_at_cleanup_is_deleted_when_it_lands():
+    """Cleanup cannot wait forever for a slow initial send, and cancelling it would strand a message
+    Discord already created with no id to delete: the message is deleted once the send reports."""
+    import asyncio
+
+    landed = asyncio.Event()
+
+    class StuckSendAdapter(CaptureAdapter):
+        deleted: list = []
+
+        async def send(self, *args, **kwargs):
+            await landed.wait()
+            return await super().send(*args, **kwargs)
+
+        async def delete_message(self, chat_id, message_id):
+            self.deleted.append((chat_id, message_id))
+            return True
+
+    adapter = StuckSendAdapter()
+    compositor = ProgressCompositor(adapter, "thread-1")
+    compositor.TRANSPORT_TIMEOUT_SECONDS = 0.01
+    assert (await compositor.start()).success is False
+    await compositor.settle()  # cleanup's settle gives up while the send is still in flight
+    assert compositor.closed and compositor.message_id is None and adapter.deleted == []
+    landed.set()
+    for _ in range(50):
+        if adapter.deleted:
+            break
+        await asyncio.sleep(0.01)
+    assert adapter.deleted == [("thread-1", "progress-1")]
+    assert len(adapter.sent) == 1

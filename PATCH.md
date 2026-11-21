@@ -313,7 +313,10 @@ Review fixes: a transport timeout on an edit is retried with bounded backoff (ed
 only after three consecutive timeouts or a non-retryable error). A timed-out initial send is
 not cancelled (that orphaned a created message with no id): its single call is left to report,
 a late success is adopted as the owned message, and `settle()` waits for it (bounded) so cleanup
-learns the id; it is still never repeated. The session authority's drain
+learns the id; it is still never repeated. One still in flight after that wait is no longer
+cancelled there (that stranded a ⏳ message Discord had already created, with no id for cleanup
+to delete; food-log, 2026-11-20): it gets a 60s grace, is deleted if it lands, else cancelled.
+The session authority's drain
 (`fire_post_delivery`, `_run_own_post_delivery`) now reports its delivery verdict through
 `delivery_confirmed` (False when the reply failed/was refused, the turn was never committed, or
 it was cancelled; None when none was owed), so refused delivery keeps progress there as in the

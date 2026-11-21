@@ -4,7 +4,8 @@ The compositor owns exactly one temporary message for a turn. It never falls
 back to a replacement send after the initial post because preserving one
 message is more important than preserving every transient update. A timed-out
 initial send is never repeated either: its single in-flight call is allowed to
-report, and a late success is adopted as the owned message.
+report, and a late success is adopted as the owned message. One still in flight
+when the turn's cleanup settles is deleted when it lands.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any, Callable, Deque, Optional
 from gateway.platforms.base import SendResult
 
 logger = logging.getLogger(__name__)
+_late_deletes: set = set()  # strong refs for deletes of initial sends that landed after cleanup
 
 
 class ProgressCompositor:
@@ -32,6 +34,8 @@ class ProgressCompositor:
     # Edits are idempotent, so a transport timeout is retried with backoff; only a run of
     # them (a transport that never answers) stops editing for the turn.
     MAX_CONSECUTIVE_EDIT_TIMEOUTS = 3
+    # An initial send still in flight when cleanup settles: how long it may still land and be deleted.
+    LATE_SEND_GRACE_SECONDS = 60.0
 
     def __init__(
         self,
@@ -155,8 +159,23 @@ class ProgressCompositor:
         late = self._late_send
         if late is not None and not late.done():
             await asyncio.wait([late], timeout=self.TRANSPORT_TIMEOUT_SECONDS + 1.0)
-            late.cancel()
+            if not late.done():
+                # Cancelling now could strand a message Discord already created with no id to delete
+                # (cleanup is the only caller): give it a longer bound and delete it if it lands.
+                task = asyncio.ensure_future(self._delete_when_landed(late))
+                _late_deletes.add(task)
+                task.add_done_callback(_late_deletes.discard)
         self.closed = True
+
+    async def _delete_when_landed(self, send: "asyncio.Future[Any]") -> None:
+        try:
+            result = await asyncio.wait_for(send, self.LATE_SEND_GRACE_SECONDS)  # cancels it on timeout
+            message_id = getattr(result, "message_id", None)
+            if getattr(result, "success", False) and message_id:
+                await asyncio.wait_for(self.adapter.delete_message(self.chat_id, str(message_id)), 10.0)
+        except Exception as exc:  # health: allow BLE001 -- best-effort cleanup of a late temporary message
+            logger.warning("Late progress message cleanup failed chat=%s category=%s",
+                           self.chat_id, type(exc).__name__)
 
     def publish_activity(self, text: Any, kind: str = "message") -> None:
         value = str(text or "").strip()
