@@ -19,7 +19,8 @@ import logging
 import time
 
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.receipt_drops import notify_dropped
+from gateway.config import Platform
+from gateway.receipt_drops import notify_dropped, _call
 from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ class _Burst:
 
 
 def _kind(adapter, event):
+    if event.source.platform == Platform.DISCORD:
+        return "user" if not event.internal and not event.is_command() else None
     if event.message_type == MessageType.PHOTO and not event.internal:
         return 'photo'
     return 'text' if adapter._is_queue_text_debounce_candidate(event) else None
@@ -75,8 +78,7 @@ async def burst_gate(adapter, event, session_key):
 
 
 async def dispatch_busy_burst(adapter, event, session_key):
-    """``dispatch_shared_busy`` for one busy input, merging a same-sender PHOTO+PHOTO or
-    queue-mode TEXT+TEXT burst first."""
+    """Merge same-sender busy input before admission (all user content on Discord)."""
     from gateway.platforms.base import merge_pending_message_event
     from gateway.session_ingress import dispatch_shared_busy
     stamp_busy_arrival(adapter, event)
@@ -84,7 +86,7 @@ async def dispatch_busy_burst(adapter, event, session_key):
     while (burst := bursts.get(session_key)) is not None:
         if kind is not None and kind == _kind(adapter, burst.head) and adapter._can_merge_text_debounce_events(
                 burst.head, event):
-            merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind == 'text')
+            merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind in ('text', 'user'))
             burst.absorbed.append(event)
             note_busy_merged(burst.head, event)
             burst.last_ts = time.monotonic()
@@ -138,6 +140,7 @@ def _flush(adapter, session_key, burst):
             del bursts[session_key]
         if burst.timer is not asyncio.current_task():
             burst.timer.cancel()
+        _call(adapter, 'on_busy_burst_closed', burst.head.source, burst.head.message_ids())
         burst.commit = tails[session_key] = _track(adapter, asyncio.create_task(
             _commit(adapter, session_key, burst, tails.get(session_key))))
         burst.commit.add_done_callback(lambda task: tails.get(session_key) is task and tails.pop(session_key))

@@ -201,8 +201,9 @@ class MessageEvent:
             def pad(msg: "MessageEvent") -> list[str]:
                 return (list(msg.media_filenames) + [""] * len(msg.media_urls))[: len(msg.media_urls)]
             self.media_filenames = pad(self) + pad(other)
+        self.media_types = (list(self.media_types) + [""] * len(self.media_urls))[:len(self.media_urls)]
+        self.media_types.extend((list(other.media_types) + [""] * len(other.media_urls))[:len(other.media_urls)])
         self.media_urls.extend(other.media_urls)
-        self.media_types.extend(other.media_types)
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

@@ -18,6 +18,11 @@ CASES = [
     ('split-text', [('42', 'first half', False), ('42', 'second half', False)],
      [('first half\nsecond half', 0)]),
     ('photo-burst', [('42', 'look', True), ('42', '', True)], [('look', 2)]),
+    ('mixed', [('42', 'first', False), ('42', 'caption', True), ('42', 'last', False)],
+     [('first\ncaption\nlast', 1)]),
+    ('mixed-document', [('42', 'first', False), ('42', 'document', 'document'),
+                        ('42', 'caption', True), ('42', 'last', False)],
+     [('first\ndocument\ncaption\nlast', 2)]),
     # Different senders never merge, and arrival order holds.
     ('two-senders', [('42', 'mine', False), ('43', 'theirs', False)], [('mine', 0), ('theirs', 0)]),
 ]
@@ -68,8 +73,8 @@ async def test_busy_burst_is_admitted_once(monkeypatch, tmp_path, case, follow_u
             return MessageEvent(text=text, source=source, message_id=f'm{n}')
         path = tmp_path / f'p{n}.png'
         path.write_bytes(PNG + bytes([n]))
-        return MessageEvent(text=text, source=source, message_id=f'm{n}', message_type=MessageType.PHOTO,
-                            media_urls=[str(path)], media_types=['image/png'])
+        return MessageEvent(text=text, source=source, message_id=f'm{n}', message_type=MessageType.DOCUMENT if photo == "document" else MessageType.PHOTO,
+                            media_urls=[str(path)], media_types=['application/pdf' if photo == 'document' else 'image/png'])
 
     await adapter.handle_message(event('42', 'A', False, 0))
     await asyncio.wait_for(running.wait(), 10)
@@ -88,6 +93,16 @@ async def test_busy_burst_is_admitted_once(monkeypatch, tmp_path, case, follow_u
     rows = list_session_admissions(authority.db, session_id=owner, pending_only=False)
     assert [(r['payload']['text'], len(r['payload']['native_text_v1'].get('media', [])))
             for r in rows[1:]] == expected
+    if case.startswith('mixed'):
+        from gateway.session_envelope import restore_native
+        from gateway.platforms.base import _reply_anchor_for_event
+        merged = restore_native(rows[1]['payload'], runner)
+        assert merged.message_ids() == [e.message_id for e in sent]
+        assert _reply_anchor_for_event(merged) == sent[-1].message_id
+        assert len(merged.media_urls) == len(merged.media_types) == expected[0][1]
+        images, _, _, _ = runner._classify_inbound_media(merged, pending_stt_prepared=False)
+        assert images == [merged.media_urls[-1]]
+        assert merged.message_type == MessageType.PHOTO
     finish.set()
     await async_wait_until(lambda: len(executed) >= 1 + len(expected), timeout=10, what='every merged turn executed')
     await asyncio.to_thread(authority.db.close)

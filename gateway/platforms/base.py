@@ -1694,7 +1694,8 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
                 existing.extend_media(event)
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
-                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+                existing.text = (_append_text(existing.text, event.text) if merge_text
+                                 else BasePlatformAdapter._merge_caption(existing.text, event.text))
             existing.absorb_turn_input(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -1706,8 +1707,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
                 if hasattr(existing, attr):
                     delattr(existing, attr)
             return
-        both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
-        if merge_text and both_text:
+        if merge_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_turn_input(event)
