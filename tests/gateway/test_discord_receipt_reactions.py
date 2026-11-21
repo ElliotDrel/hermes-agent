@@ -470,7 +470,7 @@ async def test_idle_receipt_compositor_is_shared_and_adopted_without_waiting(mon
     from gateway.platforms.base import SendResult
     from gateway.run_turn_progress import GatewayTurnProgressMixin
 
-    monkeypatch.setattr('hermes_cli.config.read_raw_config', lambda: {
+    monkeypatch.setattr('hermes_cli.config.read_raw_config_readonly', lambda: {
         'display': {'platforms': {'discord': {'progress_compositor': 'single_message'}}}})
     board = Board()
     adapter = _adapter(board, reactions=False)
@@ -488,7 +488,7 @@ async def test_idle_receipt_compositor_is_shared_and_adopted_without_waiting(mon
     key = adapter._event_session_key(a)
     compositor = adapter._receipt_progress[key][0]
     ctx = SimpleNamespace(progress_compositor=None, session_key=key, run_generation=7,
-                          source=a.source, _progress_reply_to='9202', _progress_metadata={},
+                          source=a.source, inbound_message_ids=['9201', '9202'], _progress_reply_to='9202', _progress_metadata={},
                           _cleanup_progress=False)
     runner = SimpleNamespace(_ctx=ctx, _runner=SimpleNamespace(
         _session_state=lambda key: SimpleNamespace(turn=SimpleNamespace(progress_compositor=None)),
@@ -512,7 +512,7 @@ async def test_dropped_idle_receipt_deletes_a_late_working_send(monkeypatch, tmp
     from gateway.platforms.base import SendResult
     from gateway.run_turn_bubble_cleanup import settle_detached_deletes
 
-    monkeypatch.setattr('hermes_cli.config.read_raw_config', lambda: {
+    monkeypatch.setattr('hermes_cli.config.read_raw_config_readonly', lambda: {
         'display': {'platforms': {'discord': {'progress_compositor': 'single_message'}}}})
     adapter = _adapter(Board())
     entered, release = asyncio.Event(), asyncio.Event()
@@ -533,3 +533,122 @@ async def test_dropped_idle_receipt_deletes_a_late_working_send(monkeypatch, tmp
     await settle_detached_deletes()
     adapter.delete_message.assert_awaited_once_with('room', 'working')
     assert not adapter._receipt_progress
+
+
+@pytest.mark.asyncio
+async def test_receipts_reserve_one_burst_across_delayed_preparation(monkeypatch, tmp_path):
+    import gateway.session_ingress_burst as bursts
+    board = Board()
+    adapter = _adapter(board)
+    adapter._shared_runtime_owns_input = lambda event: True
+    adapter._busy_text_debounce_seconds = 30
+    adapter._busy_text_hard_cap_seconds = 3600
+    clock = [0.0]
+    monkeypatch.setattr(bursts, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    waits = []
+    class TimerClock:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+        async def sleep(self, delay):
+            wake = asyncio.Event()
+            waits.append(wake)
+            await wake.wait()
+    monkeypatch.setattr(bursts, 'asyncio', TimerClock())
+    committed = []
+    async def admit(adapter, event, key, **kwargs):
+        committed.append(event)
+        event._gateway_accepted = True
+    monkeypatch.setattr('gateway.session_ingress.dispatch_shared_busy', admit)
+    events = [_event(adapter, board, tmp_path, mid, str(mid), photo=mid in (9401, 9402)) for mid in (9401, 9402, 9403, 9404)]
+    expected_media = [path for event in events[:2] for path in event.media_urls]
+    key = adapter._event_session_key(events[0])
+    adapter._active_sessions[key] = asyncio.Event()
+    callers = []
+    try:
+        adapter._acknowledge_receipt(events[0].raw_message, events[0].source)
+        # The first receipt reserves the holder even before its download finishes.
+        holder = adapter._shared_bursts[key]
+        await asyncio.sleep(0)
+        original_window = waits[-1]
+        clock[0] = 29
+        adapter._acknowledge_receipt(events[1].raw_message, events[1].source)
+        assert adapter._shared_bursts[key] is holder and holder.last_ts == 29
+        callers.append(asyncio.create_task(bursts.dispatch_busy_burst(adapter, events[0], key)))
+        await asyncio.sleep(0)
+        clock[0] = 30
+        original_window.set()
+        await asyncio.sleep(0)
+        assert holder.commit is None, 'the receipt at 29s restarted the original 30s window'
+        clock[0] = 31
+        adapter._acknowledge_receipt(events[2].raw_message, events[2].source)
+        callers.append(asyncio.create_task(bursts.dispatch_busy_burst(adapter, events[2], key)))
+        await asyncio.sleep(0)
+        await adapter.flush_reactions()
+        assert board.marks([9401, 9402, 9403]) == {mid: {'\u23f3', N[0]} for mid in (9401, 9402, 9403)}
+        clock[0] = 61
+        waits[-1].set()
+        await async_wait_until(lambda: holder.commit is not None, timeout=2, what='receipt window closed')
+        assert not holder.commit.done() and not committed, 'preparing input prevents admission'
+        callers.append(asyncio.create_task(bursts.dispatch_busy_burst(adapter, events[1], key)))
+        await asyncio.wait_for(asyncio.gather(*callers), 2)
+        assert [e.message_ids() for e in committed] == [['9401', '9402', '9403']]
+        assert committed[0].text == '9401\n9402\n9403'
+        assert committed[0].media_urls == expected_media
+        adapter._acknowledge_receipt(events[3].raw_message, events[3].source)
+        await adapter.flush_reactions()
+        assert board.shown[9404] == {'\u23f3', N[1]}, 'only a new holder gets the next number'
+        bursts.discard_busy_burst(adapter, key)
+        assert adapter._bind_receipt(events[3].raw_message, events[3]) is False
+        await adapter.flush_reactions()
+        assert board.shown[9404] == set(), 'dropping a preparing receipt also clears its marks'
+    finally:
+        for task in callers:
+            task.cancel()
+        await asyncio.gather(*callers, return_exceptions=True)
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('site', ['turn', 'hygiene'])
+async def test_unrelated_turn_cannot_adopt_a_preparing_inputs_working_message(monkeypatch, tmp_path, site):
+    from unittest.mock import AsyncMock
+    from gateway.platforms.base import SendResult
+    from gateway.run_turn_progress import GatewayTurnProgressMixin
+    monkeypatch.setattr('hermes_cli.config.read_raw_config_readonly', lambda: {
+        'display': {'platforms': {'discord': {'progress_compositor': 'single_message'}}}})
+    adapter = _adapter(Board(), reactions=False)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id='working'))
+    event = _event(adapter, Board(), tmp_path, 9501, 'downloading')
+    adapter._acknowledge_receipt(event.raw_message, event.source)
+    key = adapter._event_session_key(event)
+    owned = adapter._receipt_progress[key][0]
+    ctx = SimpleNamespace(progress_compositor=None, session_key=key, run_generation=9,
+                          source=event.source, inbound_message_ids=['9502'],
+                          _progress_reply_to='9502', _progress_metadata={}, _cleanup_progress=False)
+    runner = SimpleNamespace(_ctx=ctx, _runner=SimpleNamespace(
+        _session_state=lambda key: SimpleNamespace(turn=SimpleNamespace(progress_compositor=None)),
+        _delivery_adapter_for=lambda source: adapter), _track_compositor_id=lambda c: None)
+    def start():
+        if site == 'turn':
+            return GatewayTurnProgressMixin.start_progress_compositor(runner)
+        from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
+        from gateway.platforms.event import MessageEvent
+        runner._is_session_run_current = lambda *args: True
+        attempt = SimpleNamespace(meta={})
+        hs = SimpleNamespace(data={'display': {'progress_compositor': 'single_message'}})
+        executing = MessageEvent(text='', source=event.source, message_id=ctx.inbound_message_ids[-1],
+                                 absorbed_message_ids=list(ctx.inbound_message_ids))
+        GatewayTurnHygieneMixin._hmwa_hygiene_start_progress(
+            runner, attempt, hs, executing, event.source, key, 9)
+        return attempt.progress_compositor
+    runner._delivery_adapter_for = lambda source: adapter
+    runner._session_state = runner._runner._session_state
+    unrelated = start()
+    await unrelated._start_task
+    assert unrelated is not owned and adapter._receipt_progress[key][0] is owned
+    # A merged idle batch may adopt using any one of its genuine input ids.
+    ctx.progress_compositor = None
+    ctx.inbound_message_ids = ['9500', '9501']
+    adopted = start()
+    await adopted._start_task
+    assert adopted is owned and not adapter._receipt_progress

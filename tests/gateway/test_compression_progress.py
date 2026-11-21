@@ -8,6 +8,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 from gateway.run_turn_runner import TurnRunner
@@ -393,7 +394,7 @@ def hygiene_display_runner(adapter):
     runner._event_thread_metadata = lambda *a: {"thread_id": "777"}
     runner._is_session_run_current = lambda *a: True
     runner._hmwa_hygiene_detached_attempt = AsyncMock()
-    args = (SimpleNamespace(message_id=None), source, SimpleNamespace(session_id="session"), "key", history, "key", 1)
+    args = (MessageEvent(text="", source=source), source, SimpleNamespace(session_id="session"), "key", history, "key", 1)
     return runner, args
 
 

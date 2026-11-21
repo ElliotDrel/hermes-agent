@@ -172,24 +172,32 @@ class DiscordReactionsMixin:
         """Schedule receipt display: idle Working or the open busy batch's marks. Never raises."""
         try:
             self._post_receipt_progress(message, source)
-            if not self._reactions_enabled():
-                return
-            from gateway.session_ingress_burst import holds_busy_burst
+            from gateway.session_ingress_burst import holds_busy_burst, reserve_busy_receipt
             key = self._source_session_key(source)
             if key not in self._active_sessions and not holds_busy_burst(self, key):
                 return
             mid = str(message.id)
+            stub = MessageEvent(text="", source=source, raw_message=message, message_id=mid)
+            burst = reserve_busy_receipt(self, stub, key) if self._shared_runtime_owns_input(stub) else None
+            self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
+            if not self._reactions_enabled():
+                return
             queue = self._queues().setdefault(key, [0, set(), None])
             sender = source.user_id_alt or source.user_id
-            if queue[2] is None or queue[2][0] != sender:
-                queue[0] += 1
-                queue[2] = [sender, queue[0], set()]
-            queue[2][2].add(mid)
-            number = queue[2][1]
+            if burst is not None:
+                if burst.number is None:
+                    queue[0] += 1
+                    burst.number = queue[0]
+                number = burst.number
+            else:
+                if queue[2] is None or queue[2][0] != sender:
+                    queue[0] += 1
+                    queue[2] = [sender, queue[0], set()]
+                queue[2][2].add(mid)
+                number = queue[2][1]
             emoji = _POSITIONS[number - 1] if number <= len(_POSITIONS) else _BEYOND
             if emoji != _BEYOND:
                 queue[1].add(mid)
-            stub = MessageEvent(text="", source=source, raw_message=message, message_id=mid)
             marks = self._receipt_marks()
             marks[mid] = [emoji, message, self._home_channel_id(stub, mid), key, True]
             while len(marks) > self._RECEIPT_STATE_CAP:
@@ -224,12 +232,12 @@ class DiscordReactionsMixin:
         pending = self.__dict__.setdefault("_receipt_progress", {})
         mid = str(message.id)
         if key not in pending:
-            from hermes_cli.config import read_raw_config
+            from hermes_cli.config import read_raw_config_readonly
             from gateway.display_config import resolve_display_setting
             from gateway.bot_peer_notices import automatic_notices_allowed
             from gateway.progress_compositor import ProgressCompositor
             if not automatic_notices_allowed(source) or resolve_display_setting(
-                    read_raw_config() or {}, "discord", "progress_compositor", "off") != "single_message":
+                    read_raw_config_readonly() or {}, "discord", "progress_compositor", "off") != "single_message":
                 return
             compositor = ProgressCompositor(self, source.chat_id, reply_to=mid,
                                             metadata={"non_conversational": True}, session_key=key)
@@ -238,10 +246,12 @@ class DiscordReactionsMixin:
         pending[key][1].add(mid)
         self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
 
-    def take_receipt_progress(self, session_key: str, generation: Any) -> Any:
-        held = self.__dict__.get("_receipt_progress", {}).pop(session_key, None)
-        if held is None:
+    def take_receipt_progress(self, session_key: str, generation: Any, message_ids: list[str]) -> Any:
+        pending = self.__dict__.get("_receipt_progress", {})
+        held = pending.get(session_key)
+        if held is None or not held[1].intersection(message_ids):
             return None
+        del pending[session_key]
         held[0].generation = generation
         return held[0]
 
@@ -259,10 +269,12 @@ class DiscordReactionsMixin:
                 progress_compositor_mode="single_message", progress_compositor=compositor,
                 session_key=key, source=SimpleNamespace(chat_id=compositor.chat_id)))
 
-    def _bind_receipt(self, message: Any, event: MessageEvent) -> None:
+    def _bind_receipt(self, message: Any, event: MessageEvent) -> bool:
         """Let drop paths that hold only *event* clear its marks (``gateway.receipt_drops``)."""
         from gateway.receipt_drops import bind_adapter
         bind_adapter(event, self)
+        burst = self.__dict__.get('_shared_burst_receipts', {}).get(str(message.id))
+        return burst is None or str(message.id) in burst.receipts
 
     def _receipt_dispatched(self, message: Any) -> None:
         """*message* became an event handed to ``handle_message``: its own drop paths own the mark now."""
@@ -276,6 +288,7 @@ class DiscordReactionsMixin:
         finally:
             if self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None) is not None:
                 self.on_messages_dropped(None, [str(message.id)])
+            self.__dict__.get('_shared_burst_receipts', {}).pop(str(message.id), None)
 
     async def _settle_reactions(self, timeout: float = 5.0) -> None:
         """Let scheduled reaction calls finish (bounded) before shutdown cancels background tasks."""
@@ -287,6 +300,8 @@ class DiscordReactionsMixin:
     def on_messages_dropped(self, source: Any, message_ids: list[str]) -> None:
         """Messages that will never run (``/stop``, a replaced slot, a refused queue) lose their number.
         Reads no config: drop paths run outside the message's profile scope."""
+        from gateway.session_ingress_burst import drop_busy_receipts
+        drop_busy_receipts(self, message_ids)
         self._drop_receipt_progress(message_ids)
         for mid in message_ids:
             self._clear_mark(mid)

@@ -35,6 +35,10 @@ class _Burst:
     timer: asyncio.Task | None = None
     commit: asyncio.Task | None = None
     absorbed: list = field(default_factory=list)
+    # Receipt order is retained while attachments prepare independently.
+    receipts: dict = field(default_factory=dict)
+    prepared: asyncio.Event | None = None
+    number: int | None = None
 
 
 def _kind(adapter, event):
@@ -56,6 +60,39 @@ def _serial(adapter):
 def holds_busy_burst(adapter, session_key):
     """A burst is held or committing: later input for the route must queue behind it."""
     return any(session_key in adapter.__dict__.get(name, ()) for name in ('_shared_bursts', '_shared_burst_commits'))
+
+
+def reserve_busy_receipt(adapter, event, session_key):
+    """Reserve membership before downloads; the existing holder owns both timer and batch number."""
+    bursts = _state(adapter, '_shared_bursts')
+    burst = bursts.get(session_key)
+    if burst is not None and (burst.prepared is None or not adapter._can_merge_text_debounce_events(burst.head, event)):
+        _flush(adapter, session_key, burst)
+        burst = None
+    now = time.monotonic()
+    if burst is None:
+        burst = bursts[session_key] = _Burst(event, asyncio.get_running_loop().create_future(), now, now,
+                                           prepared=asyncio.Event())
+    burst.receipts[str(event.message_id)] = None
+    burst.prepared.clear()
+    _state(adapter, '_shared_burst_receipts')[str(event.message_id)] = burst
+    burst.last_ts = now
+    _arm(adapter, session_key, burst)
+    return burst
+
+
+def drop_busy_receipts(adapter, message_ids):
+    """Release preparation holds; keep cancelled reservations identifiable until dispatch/guard exit."""
+    for mid in message_ids:
+        burst = adapter.__dict__.get('_shared_burst_receipts', {}).get(mid)
+        if burst is not None:
+            burst.receipts.pop(mid, None)
+            if all(event is not None for event in burst.receipts.values()):
+                burst.prepared.set()
+
+
+def _burst_message_ids(burst):
+    return list(burst.receipts) if burst.prepared is not None else burst.head.message_ids()
 
 
 async def burst_gate(adapter, event, session_key):
@@ -82,13 +119,30 @@ async def dispatch_busy_burst(adapter, event, session_key):
     from gateway.platforms.base import merge_pending_message_event
     from gateway.session_ingress import dispatch_shared_busy
     stamp_busy_arrival(adapter, event)
+    reservations = adapter.__dict__.get('_shared_burst_receipts', {})
+    reserved = reservations.get(str(event.message_id))
+    if reserved is not None:
+        for mid in event.message_ids():
+            reservations.pop(mid, None)
+        if str(event.message_id) not in reserved.receipts:
+            event._gateway_accepted = False
+            return
+        reserved.receipts[str(event.message_id)] = event
+        if all(item is not None for item in reserved.receipts.values()):
+            reserved.prepared.set()
+        return await _accepted(adapter, reserved, event)
     kind, bursts = _kind(adapter, event), _state(adapter, '_shared_bursts')
     while (burst := bursts.get(session_key)) is not None:
         if kind is not None and kind == _kind(adapter, burst.head) and adapter._can_merge_text_debounce_events(
                 burst.head, event):
-            merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind in ('text', 'user'))
-            burst.absorbed.append(event)
-            note_busy_merged(burst.head, event)
+            if burst.prepared is not None:
+                burst.receipts[str(event.message_id)] = event
+                if all(item is not None for item in burst.receipts.values()):
+                    burst.prepared.set()
+            else:
+                merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind in ('text', 'user'))
+                burst.absorbed.append(event)
+                note_busy_merged(burst.head, event)
             burst.last_ts = time.monotonic()
             _arm(adapter, session_key, burst)
             return await _accepted(adapter, burst, event)
@@ -140,7 +194,7 @@ def _flush(adapter, session_key, burst):
             del bursts[session_key]
         if burst.timer is not asyncio.current_task():
             burst.timer.cancel()
-        _call(adapter, 'on_busy_burst_closed', burst.head.source, burst.head.message_ids())
+        _call(adapter, 'on_busy_burst_closed', burst.head.source, _burst_message_ids(burst))
         burst.commit = tails[session_key] = _track(adapter, asyncio.create_task(
             _commit(adapter, session_key, burst, tails.get(session_key))))
         burst.commit.add_done_callback(lambda task: tails.get(session_key) is task and tails.pop(session_key))
@@ -150,14 +204,24 @@ def _flush(adapter, session_key, burst):
 
 async def _commit(adapter, session_key, burst, previous):
     from gateway.session_ingress import dispatch_shared_busy
-    if previous is not None:
-        await asyncio.wait({previous})
     try:
+        if burst.prepared is not None:
+            await burst.prepared.wait()
+            events = list(burst.receipts.values())
+            if not events:
+                return
+            from gateway.platforms.base import merge_pending_message_event
+            burst.head = events[0]
+            for event in events[1:]:
+                merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=True)
+                note_busy_merged(burst.head, event)
+        if previous is not None:
+            await asyncio.wait({previous})
         # Durable: this task is what the chat's next burst, a command barrier and /restart wait on, so
         # it ends once the row is committed, not when its FIFO position is fixed behind a capture.
         await dispatch_shared_busy(adapter, burst.head, session_key, durable=True)
     except (Exception, asyncio.CancelledError) as exc:
-        notify_dropped(adapter, burst.head.source, burst.head.message_ids())  # never queued: clear its waiting marks
+        notify_dropped(adapter, burst.head.source, _burst_message_ids(burst))  # never queued: clear its waiting marks
         if isinstance(exc, asyncio.CancelledError) or not _serial(adapter):
             raise  # every absorbed caller sees it (``_settle``)
         # No caller waits on a serial reader's burst: log it as its receive loop would have.
@@ -213,9 +277,16 @@ async def when_returned_inputs_durable(adapter, persist):
 
 def discard_busy_burst(adapter, session_key):
     """``/stop`` / ``/new`` drop a held burst as main dropped its debounce buffer; nothing was ACKed."""
-    burst = adapter.__dict__.get('_shared_bursts', {}).pop(session_key, None)
-    if burst is not None:
+    held = adapter.__dict__.get('_shared_bursts', {}).pop(session_key, None)
+    preparing = [burst for burst in adapter.__dict__.get('_shared_burst_receipts', {}).values()
+                 if adapter._source_session_key(burst.head.source) == session_key]
+    for burst in dict.fromkeys([held, *preparing]):
+        if burst is None:
+            continue
         burst.timer.cancel()
-        notify_dropped(adapter, burst.head.source, burst.head.message_ids())
+        if burst.commit is not None:
+            burst.commit.cancel()
+        notify_dropped(adapter, burst.head.source, _burst_message_ids(burst))
+        burst.head._gateway_accepted = False
         settle_busy_arrival(burst.head, discarded=True)
         burst.done.done() or burst.done.set_result(None)

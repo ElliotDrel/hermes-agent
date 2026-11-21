@@ -6426,7 +6426,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         )
         if is_automated_message(message) and self._is_bot_tag_debounce_continuation(message):
             event._bot_tag_debounce = True  # type: ignore[attr-defined]
-        self._bind_receipt(message, event)
+        if not self._bind_receipt(message, event):
+            return False  # its reserved batch was dropped while attachments prepared
 
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
@@ -6434,7 +6435,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         self._receipt_dispatched(message)  # from here the event's own drop paths clear its mark
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0
-                and self._source_session_key(source) not in self._active_sessions):
+                and self._source_session_key(source) not in self._active_sessions
+                and str(message.id) not in self.__dict__.get('_shared_burst_receipts', {})):
             self._enqueue_text_event(event)
             return True
         await self.handle_message(event)

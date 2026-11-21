@@ -230,7 +230,7 @@ v0.23.2 verification: 26 passed across the three account_usage suites.
 
 ## HERMES-FORK-017: One Discord progress message
 
-Discord pre-posts Working at receipt before downloads; the turn adopts that same message.
+Discord pre-posts Working at receipt before downloads; only a turn carrying one of its owned input IDs adopts that same message.
 
 Opt-in display.platforms.discord.progress_compositor: single_message (config.yaml only,
 Discord only; a global value never replaces Slack cards or other transports) shows each
@@ -333,6 +333,9 @@ Discord idle messages keep the existing 0.6s text batch and run immediately, wit
 reactions. Busy same-sender user messages merge across text, images, captions and other
 attachments through the existing sliding busy-burst window. Configure
 `display.busy_text_debounce_seconds: 30` and `display.busy_text_hard_cap_seconds: 3600`.
+Busy receipts reserve ordered membership in the existing burst holder before downloads and
+restart its sliding timer immediately. Admission waits for every reserved input to prepare
+(or drop), preserving receipt order even when downloads complete out of order.
 Each burst commits as one FIFO turn. With `discord.reactions`, every message in the
 open batch gets ⏳ plus the same stable batch number (1️⃣ through 🔟; beyond ten, ⏳ only).
 Window close removes ⏳; turn start or drop removes all its marks. Numbers reset once
