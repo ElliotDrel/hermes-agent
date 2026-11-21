@@ -1053,7 +1053,9 @@ class GatewayTurnProgressMixin:
         adapter = adapter or self._runner._delivery_adapter_for(ctx.source)
         if adapter is None:
             return None
-        compositor = ProgressCompositor(
+        take_receipt = getattr(adapter, "take_receipt_progress", None)
+        compositor = take_receipt(ctx.session_key, ctx.run_generation) if callable(take_receipt) else None
+        compositor = compositor or ProgressCompositor(
             adapter, ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
             session_key=ctx.session_key, generation=ctx.run_generation,
         )

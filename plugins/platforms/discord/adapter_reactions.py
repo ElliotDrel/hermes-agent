@@ -1,12 +1,4 @@
-"""Discord receipt and processing reactions, one per message.
-
-Every accepted message is acknowledged the moment it arrives: ⏳ when its conversation is busy (it
-queues or merges into a pending turn), 👀 when idle. A turn marks every message it carries 👀 when it
-starts and ✅ or ❌ by its outcome when it ends; a message dropped before it ran loses its mark.
-
-Display only: each reaction call is a detached task, bounded by ``_RECEIPT_OP_TIMEOUT`` and serialized
-per message, so a Discord 429, failure or hang never delays admission, the turn or delivery.
-"""
+"""Detached receipt display: hourglass while a busy batch is open, stable number until work starts."""
 from __future__ import annotations
 
 import asyncio
@@ -20,9 +12,8 @@ logger = logging.getLogger(__name__)
 
 _DISCORD_EPOCH_MS = 1420070400000
 
-_WAITING = "⏳"
-_WORKING = "👀"
-_OUTCOME_EMOJI = {ProcessingOutcome.SUCCESS: "✅", ProcessingOutcome.FAILURE: "❌"}
+_POSITIONS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟")
+_BEYOND = "⏳"
 
 
 class DiscordReactionsMixin:
@@ -68,7 +59,7 @@ class DiscordReactionsMixin:
     # -- reaction targets and detached, per-message serialized calls ------------------------------
 
     def _receipt_marks(self) -> dict:
-        """message id -> [emoji currently shown, live message or None, channel id to find it in], oldest first."""
+        """message id -> [number, live message, channel id, session key, window open], oldest first."""
         return self.__dict__.setdefault("_receipt_marks_by_id", {})
 
     @staticmethod
@@ -145,64 +136,128 @@ class DiscordReactionsMixin:
         while tails := list(self.__dict__.get("_receipt_tails", {}).values()):
             await asyncio.wait(tails)
 
-    # -- the per-message state machine ------------------------------------------------------------
+    # -- queue positions ---------------------------------------------------------------------------
 
     @staticmethod
     def _event_message_ids(event: MessageEvent) -> list[str]:
         return event.message_ids() or [f"event-{id(event)}"]
 
-    def _set_mark(
-        self, event: MessageEvent, mid: str, emoji: str, message: Any = None, *, fresh: bool = False,
-    ) -> None:
-        """Show *emoji* on message *mid*, replacing the mark it has (a restored message may carry a
-        waiting mark from before the restart that this process never recorded). A *fresh* message,
-        just received live, carries none: its acknowledgement is one reaction call, because Discord
-        rate-limits reactions per channel and a wasted call delays every later ack in a burst."""
-        marks = self._receipt_marks()
-        held = marks.pop(mid, None)
-        if held is not None and held[0] == emoji:
-            marks[mid] = held
-            return
-        ops: list[tuple[str, str]] = []
-        if held is not None:
-            ops.append(("remove", held[0]))
-        elif emoji != _WAITING and not fresh:
-            # Unrecorded (restored, evicted past the cap, or a timed-out earlier call): a ⏳ may be showing.
-            ops.append(("remove", _WAITING))
-        ops.append(("add", emoji))
-        if message is None:
-            message = (held[1] if held else None) or self._live_message(event, mid)
-        channel_id = held[2] if held else self._home_channel_id(event, mid)
-        marks[mid] = [emoji, message, channel_id]
-        while len(marks) > self._RECEIPT_STATE_CAP:
-            marks.pop(next(iter(marks)))
-        self._schedule_reaction(mid, message, channel_id, *ops, receipt=fresh)
+    def _queues(self) -> dict:
+        """session key -> [last number, numbered ids, open [sender, number, ids] or None]."""
+        return self.__dict__.setdefault("_queue_positions", {})
 
-    def _clear_marks(self, event: MessageEvent, mid: str, final: str | None) -> None:
-        """Remove the mark of message *mid*, then show *final* (a result) when given."""
+    def _clear_mark(self, mid: str) -> None:
+        """Remove message *mid*'s number; its conversation's counter restarts once none are left."""
         held = self._receipt_marks().pop(mid, None)
-        ops: list[tuple[str, str]] = [("remove", held[0] if held else _WORKING)]
         if held is None:
-            ops.append(("remove", _WAITING))
-        if final:
-            ops.append(("add", final))
-        message = (held[1] if held else None) or self._live_message(event, mid)
-        channel_id = held[2] if held else self._home_channel_id(event, mid)
+            return
+        emoji, message, channel_id, key, waiting = held
+        queue = self._queues().get(key)
+        if queue is not None:
+            queue[1].discard(mid)
+            if queue[2]:
+                queue[2][2].discard(mid)
+                if not queue[2][2]:
+                    queue[2] = None
+            if not queue[1]:
+                queue[0] = 0
+                if queue[2] is None:
+                    self._queues().pop(key, None)
+        ops = [("remove", _BEYOND)] if waiting else []
+        if emoji != _BEYOND:
+            ops.append(("remove", emoji))
         self._schedule_reaction(mid, message, channel_id, *ops)
 
     def _acknowledge_receipt(self, message: Any, source: Any) -> None:
-        """Mark a just-accepted message ⏳ when its conversation is busy, else 👀. Never raises."""
-        if not self._reactions_enabled():
-            return
+        """Schedule receipt display: idle Working or the open busy batch's marks. Never raises."""
         try:
+            self._post_receipt_progress(message, source)
+            if not self._reactions_enabled():
+                return
             from gateway.session_ingress_burst import holds_busy_burst
             key = self._source_session_key(source)
-            busy = key in self._active_sessions or holds_busy_burst(self, key)
-            stub = MessageEvent(text="", source=source, raw_message=message, message_id=str(message.id))
-            self._set_mark(stub, str(message.id), _WAITING if busy else _WORKING, message, fresh=True)
-            self.__dict__.setdefault("_receipt_undispatched", {})[str(message.id)] = source
+            if key not in self._active_sessions and not holds_busy_burst(self, key):
+                return
+            mid = str(message.id)
+            queue = self._queues().setdefault(key, [0, set(), None])
+            sender = source.user_id_alt or source.user_id
+            if queue[2] is None or queue[2][0] != sender:
+                queue[0] += 1
+                queue[2] = [sender, queue[0], set()]
+            queue[2][2].add(mid)
+            number = queue[2][1]
+            emoji = _POSITIONS[number - 1] if number <= len(_POSITIONS) else _BEYOND
+            if emoji != _BEYOND:
+                queue[1].add(mid)
+            stub = MessageEvent(text="", source=source, raw_message=message, message_id=mid)
+            marks = self._receipt_marks()
+            marks[mid] = [emoji, message, self._home_channel_id(stub, mid), key, True]
+            while len(marks) > self._RECEIPT_STATE_CAP:
+                self._clear_mark(next(iter(marks)))
+            ops = [("add", _BEYOND)]
+            if emoji != _BEYOND:
+                ops.append(("add", emoji))
+            self._schedule_reaction(mid, message, marks[mid][2], *ops, receipt=True)
+            self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
         except Exception:
-            logger.debug("[%s] receipt acknowledgement skipped", self.name, exc_info=True)
+            logger.debug("[%s] queue position skipped", self.name, exc_info=True)
+
+    def on_busy_burst_closed(self, source: Any, message_ids: list[str]) -> None:
+        for mid in message_ids:
+            held = self._receipt_marks().get(mid)
+            if held is None:
+                continue
+            _, message, channel_id, key, waiting = held
+            if waiting:
+                held[4] = False
+                self._schedule_reaction(mid, message, channel_id, ("remove", _BEYOND))
+            queue = self._queues().get(key)
+            if queue and queue[2] and mid in queue[2][2]:
+                queue[2] = None
+
+    def _post_receipt_progress(self, message: Any, source: Any) -> None:
+        """Start the existing compositor before downloads; same-session text chunks share it."""
+        from gateway.session_ingress_burst import holds_busy_burst
+        key = self._source_session_key(source)
+        if key in self._active_sessions or holds_busy_burst(self, key):
+            return
+        pending = self.__dict__.setdefault("_receipt_progress", {})
+        mid = str(message.id)
+        if key not in pending:
+            from hermes_cli.config import read_raw_config
+            from gateway.display_config import resolve_display_setting
+            from gateway.bot_peer_notices import automatic_notices_allowed
+            from gateway.progress_compositor import ProgressCompositor
+            if not automatic_notices_allowed(source) or resolve_display_setting(
+                    read_raw_config() or {}, "discord", "progress_compositor", "off") != "single_message":
+                return
+            compositor = ProgressCompositor(self, source.chat_id, reply_to=mid,
+                                            metadata={"non_conversational": True}, session_key=key)
+            compositor.start_nowait()
+            pending[key] = [compositor, set()]
+        pending[key][1].add(mid)
+        self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
+
+    def take_receipt_progress(self, session_key: str, generation: Any) -> Any:
+        held = self.__dict__.get("_receipt_progress", {}).pop(session_key, None)
+        if held is None:
+            return None
+        held[0].generation = generation
+        return held[0]
+
+    def _drop_receipt_progress(self, message_ids: list[str]) -> None:
+        from types import SimpleNamespace
+        from gateway.run_turn_bubble_cleanup import detach_turn_bubble_delete
+        pending = self.__dict__.get("_receipt_progress", {})
+        for key, (compositor, ids) in list(pending.items()):
+            ids.difference_update(message_ids)
+            if ids:
+                continue
+            del pending[key]
+            detach_turn_bubble_delete(SimpleNamespace(
+                _cleanup_progress=True, _cleanup_adapter=self, _cleanup_msg_ids=[],
+                progress_compositor_mode="single_message", progress_compositor=compositor,
+                session_key=key, source=SimpleNamespace(chat_id=compositor.chat_id)))
 
     def _bind_receipt(self, message: Any, event: MessageEvent) -> None:
         """Let drop paths that hold only *event* clear its marks (``gateway.receipt_drops``)."""
@@ -214,14 +269,13 @@ class DiscordReactionsMixin:
         self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None)
 
     async def _guard_receipt(self, message: Any, call: Any) -> Any:
-        """Run ``call()``; a message acknowledged on receipt but never dispatched (a failed attachment
-        download, an early return, an exception) loses its mark instead of keeping 👀 forever."""
+        """Run ``call()``; a message numbered on receipt but never dispatched (a failed attachment
+        download, an early return, an exception) loses its number."""
         try:
             return await call()
         finally:
-            source = self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None)
-            if source is not None:
-                self.on_messages_dropped(source, [str(message.id)])
+            if self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None) is not None:
+                self.on_messages_dropped(None, [str(message.id)])
 
     async def _settle_reactions(self, timeout: float = 5.0) -> None:
         """Let scheduled reaction calls finish (bounded) before shutdown cancels background tasks."""
@@ -231,37 +285,28 @@ class DiscordReactionsMixin:
             logger.debug("[%s] reaction calls still pending at shutdown", self.name)
 
     def on_messages_dropped(self, source: Any, message_ids: list[str]) -> None:
-        """Messages marked on receipt will never run (``/stop``, a replaced slot, a refused queue): clear
-        them. A mark exists only if reactions were enabled when it was set, so this reads no config
-        (drop paths run outside the message's profile scope)."""
-        stub = MessageEvent(text="", source=source)
+        """Messages that will never run (``/stop``, a replaced slot, a refused queue) lose their number.
+        Reads no config: drop paths run outside the message's profile scope."""
+        self._drop_receipt_progress(message_ids)
         for mid in message_ids:
-            if mid in self._receipt_marks():
-                self._clear_marks(stub, mid, None)
+            self._clear_mark(mid)
 
     def on_messages_joined_turn(self, source: Any, message_ids: list[str]) -> None:
-        """Messages folded into a turn that already started (steer): ⏳ becomes 👀 at once."""
-        stub = MessageEvent(text="", source=source)
+        """Messages absorbed by a turn that already started are being worked on."""
         for mid in message_ids:
-            if mid in self._receipt_marks():
-                self._set_mark(stub, mid, _WORKING)
+            self._clear_mark(mid)
 
     # -- processing lifecycle hooks ---------------------------------------------------------------
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Mark every message the turn carries 👀 and record durable handling state. The recovery
-        column ``emoji_ack`` records that the 👀 was scheduled (reactions enabled): the call itself is
-        detached and best effort, so its outcome is not known here."""
-        acked = self._reactions_enabled()
-        if acked:
-            for mid in self._event_message_ids(event):
-                self._set_mark(event, mid, _WORKING)
-        await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
+        """Work began on every message the turn carries: remove their numbers and record durable
+        handling state (``emoji_ack`` keeps meaning "reactions were enabled")."""
+        for mid in self._event_message_ids(event):
+            self._clear_mark(mid)
+        await asyncio.to_thread(self._record_discord_processing_start, event,
+                                emoji_ack=self._reactions_enabled())
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap every carried message's mark for its final reaction and record durable state."""
+        """Record durable state; outcomes get no reaction."""
+        self._drop_receipt_progress(event.message_ids())
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
-            return
-        for mid in self._event_message_ids(event):
-            self._clear_marks(event, mid, _OUTCOME_EMOJI.get(outcome))

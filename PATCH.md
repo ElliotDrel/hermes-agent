@@ -230,6 +230,8 @@ v0.23.2 verification: 26 passed across the three account_usage suites.
 
 ## HERMES-FORK-017: One Discord progress message
 
+Discord pre-posts Working at receipt before downloads; the turn adopts that same message.
+
 Opt-in display.platforms.discord.progress_compositor: single_message (config.yaml only,
 Discord only; a global value never replaces Slack cards or other transports) shows each
 turn's progress in one owned temporary message. It is posted concurrently with the turn
@@ -327,28 +329,15 @@ This remains fork-specific progress behavior, not a stock-upstream defect.
 
 ## HERMES-FORK-018: Discord receipt acknowledgement and merged-message identity
 
-Every accepted Discord message is acknowledged the moment it arrives, before its
-attachments download: ⏳ when its conversation is busy (it queues or merges), 👀 when
-idle. A turn marks every message it carries 👀 at start (⏳ removed) and ✅/❌ at its
-end. Gated on the existing `reactions` setting. Reaction calls are detached tasks,
-serialized per message and bounded (10s), so a Discord 429, failure or hang never
-delays admission, the turn or delivery and never raises into them. A message dropped
-before it ran (`/stop`, `/new`, held-burst or text-debounce discard, a replaced pending
-slot, stale-lock heal, full queue, refused/fenced admission, any exit before dispatch such
-as a failed attachment download or mention-only drop, burst commit failure) loses its mark
-through `gateway/receipt_drops.py` (events bind their adapter; marks exist only if
-reactions were enabled when set, so drop paths read no config). A message folded into an
-already running turn (steer) switches ⏳ to 👀 at once. Marks not recorded in memory
-(restart, 1024-cap eviction, a timed-out call) get an idempotent ⏳ removal at start and end;
-the receipt ack itself skips that removal (a message just received live carries no mark), so it
-is one reaction call, not two: Discord rate-limits reactions per channel and the wasted call
-delayed every later ack in a burst (2026-11-20). Each receipt ack that lands logs one INFO line,
-`receipt ack <emoji> on <id> landed <N> ms after send` (snowflake send time vs local clock).
-Discord dispatch returns the gateway's real admission verdict (`event._gateway_accepted`), so
-missed-message recovery counts a refused message as not dispatched (it always said admitted).
-Graceful shutdown waits (5s) for pending reactions before cancelling tasks. The recovery
-column `emoji_ack` now means "the 👀 was scheduled" (the call is detached; its result is
-unknown).
+Discord idle messages keep the existing 0.6s text batch and run immediately, with no
+reactions. Busy same-sender user messages merge across text, images, captions and other
+attachments through the existing sliding busy-burst window. Configure
+`display.busy_text_debounce_seconds: 30` and `display.busy_text_hard_cap_seconds: 3600`.
+Each burst commits as one FIFO turn. With `discord.reactions`, every message in the
+open batch gets ⏳ plus the same stable batch number (1️⃣ through 🔟; beyond ten, ⏳ only).
+Window close removes ⏳; turn start or drop removes all its marks. Numbers reset once
+the conversation has no numbered messages. All display transport work stays detached
+and bounded; no working or outcome emoji reactions are sent.
 
 `MessageEvent.absorbed_message_ids` (ordered, deduped, head included, set only when
 more than one) is appended by `absorb_turn_input`, so every merge site carries it, and
@@ -356,28 +345,13 @@ is persisted in the durable ingress envelope only when more than one (single mes
 keep their fingerprint; old rows load with none). Discord replies anchor to the latest
 id unless `reply_anchor_override` exists. The model-facing triggering line names the
 latest id and, only for merged turns, appends "(merged N messages)". Recovery rows of
-every absorbed id are marked with the turn's outcome. Stable's configurable busy
-debounce is unchanged; the fixed 30s composition window, `discord_composition.py` and
-the post-window ⏳ are not ported (see PATCH-ARCHIVE.md).
+every absorbed id are marked with the turn's outcome.
 
 Approval: Elliot, 2026-11-17, T3 session, change-specific manual override after
 assessment (protected: merged-message identity and the model-facing triggering line).
-Old part-B (truthful admission, restart drain, review gaps) is not ported: v0.23.2's
-durable authority FIFO already provides acceptance receipts, queue-full refusal and
-restart persistence; nothing turn-control was left missing.
+Approved by Elliot 2026-11-21 in T3 session.
+Residual: numbers may remain after a gateway restart; reaction rate limits may delay marks.
 
-Residual risk: reaction 429s are cosmetic (marks may lag or be missing). The
-triggering line changes model-facing bytes once per merged turn. Still uncovered: shutdown
-clears of the pending slot (`run_shutdown`, adapter `cancel_background_tasks`) keep ⏳ on
-purpose, since those inputs are flushed to disk and recovered after restart, where the
-recovered turn clears it; runner-level unauthorized refusals after dispatch (Discord
-pre-filters; an idle one ends ✅/❌ through the processing hooks). A mark of a message that is
-never processed stays until the 1024-entry cap evicts it. A paused-FIFO row stays ⏳ by design. Upstream
-burst merging needs the same kind, so a standalone TEXT followed by PHOTO messages
-still runs as separate turns (unchanged, turn-control). Restored events also issue one
-best-effort ⏳ removal. Each mark keeps its target (the live message, else the channel to build a
-partial message in: the parent channel for an auto-thread starter), captured before a clear drops the
-state; an event's `raw_message` is used only for its own id, never for a merged-in message.
 Recovery claim for merged ids: processing start upserts a `processing` row for every id the
 turn carries (the head's channel/thread/parent columns, or the restored source's), and a steer
 folded into a running turn (`receipt_drops.join_event` -> adapter `on_event_joined_turn`, written

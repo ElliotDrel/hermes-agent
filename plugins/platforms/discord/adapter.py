@@ -6433,7 +6433,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             await self._threads.mark_async(thread_id)
         self._receipt_dispatched(message)  # from here the event's own drop paths clear its mark
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
+        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0
+                and self._source_session_key(source) not in self._active_sessions):
             self._enqueue_text_event(event)
             return True
         await self.handle_message(event)

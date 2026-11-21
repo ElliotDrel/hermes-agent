@@ -854,7 +854,9 @@ class GatewayTurnHygieneMixin:
         adapter = self._delivery_adapter_for(source)
         if adapter is None:
             return
-        compositor = ProgressCompositor(
+        take_receipt = getattr(adapter, "take_receipt_progress", None)
+        compositor = take_receipt(session_key, run_generation) if callable(take_receipt) else None
+        compositor = compositor or ProgressCompositor(
             adapter, source.chat_id, reply_to=event.message_id,
             # Presentation must not partition Discord backfill or enter reply context.
             metadata=_non_conversational_metadata(attempt.meta, platform=source.platform),

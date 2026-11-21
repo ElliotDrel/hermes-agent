@@ -86,7 +86,7 @@ def _make_event(message_id: str, raw_message) -> MessageEvent:
 
 
 @pytest.mark.asyncio
-async def test_process_message_background_adds_and_swaps_reactions(adapter):
+async def test_idle_processing_makes_no_reaction_calls(adapter):
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
@@ -107,9 +107,9 @@ async def test_process_message_background_adds_and_swaps_reactions(adapter):
     await adapter._process_message_background(event, build_session_key(event.source))
     await adapter.flush_reactions()  # reaction calls are detached from the turn
 
-    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
-    assert ("👀", adapter._client.user) in [c.args for c in raw_message.remove_reaction.await_args_list]
-    assert raw_message.add_reaction.await_args_list[1].args == ("✅",)
+    raw_message.add_reaction.assert_not_awaited()
+    raw_message.remove_reaction.assert_not_awaited()
+
 
 
 @pytest.mark.asyncio
@@ -140,48 +140,3 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     raw_message.remove_reaction.assert_not_awaited()
     # Response should still be sent
     adapter.send.assert_awaited_once()
-
-
-
-
-class FakeChannel:
-    """Only what reacting needs: ``get_partial_message`` returns a message with reaction mocks."""
-
-    def __init__(self):
-        self.partials = {}
-
-    def get_partial_message(self, message_id):
-        return self.partials.setdefault(message_id, SimpleNamespace(
-            id=message_id, add_reaction=AsyncMock(), remove_reaction=AsyncMock()))
-
-
-@pytest.mark.asyncio
-async def test_queued_event_without_raw_message_reacts_through_a_partial_message(adapter):
-    """A queued message restored from the session queue has its ids but no live message."""
-    channel = FakeChannel()
-    adapter._client.get_channel = lambda channel_id: channel if channel_id == 123 else None
-
-    event = _make_event("1234567890", None)
-    await adapter.on_processing_start(event)
-    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-    await adapter.flush_reactions()
-
-    partial = channel.partials[1234567890]
-    assert [c.args for c in partial.add_reaction.await_args_list] == [("👀",), ("✅",)]
-    # A restored message may still show the ⏳ it earned before the restart: cleared at start.
-    removed = [c.args for c in partial.remove_reaction.await_args_list]
-    assert removed[0] == ("⏳", adapter._client.user)
-    assert ("👀", adapter._client.user) in removed
-
-
-@pytest.mark.asyncio
-async def test_queued_event_with_a_non_discord_id_skips_reactions(adapter):
-    channel = FakeChannel()
-    adapter._client.get_channel = lambda channel_id: channel
-
-    event = _make_event("not-a-discord-id", None)
-    await adapter.on_processing_start(event)
-    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
-    await adapter.flush_reactions()
-
-    assert channel.partials == {}
