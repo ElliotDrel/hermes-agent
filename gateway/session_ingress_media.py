@@ -250,6 +250,11 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
     retained = json.loads(row[1]) if row is not None else {}
+    # Execution grouping is owner scheduling metadata, outside the original input digest.
+    retained = {key: value for key, value in retained.items()
+                if key not in ('discord_execution', 'discord_members', 'discord_progress_id')}
+    if retained.get('native_text_v1', {}).get('discord_batch'):
+        payload['native_text_v1']['discord_batch'] = retained['native_text_v1']['discord_batch']
     if 'timestamp' in retained.get('native_text_v1', {}) and 'native_text_v1' in payload:
         payload = {**payload, 'native_text_v1': {**payload['native_text_v1'],
                                                  'timestamp': retained['native_text_v1']['timestamp']}}

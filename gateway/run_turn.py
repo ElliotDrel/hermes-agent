@@ -2149,6 +2149,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         disp = await asyncio.to_thread(self._run_agent_display_settings, source)  # auth lock + config I/O; scope rides the copied context
         disp = self._with_session_messaging(disp, source)
+        if source.platform == Platform.DISCORD:
+            adapter = self._delivery_adapter_for(source)
+            progress = adapter.__dict__.get('_discord_progress_by_message', {}) if adapter else {}
+            if event_message_id in progress:
+                disp = dataclasses.replace(disp, progress_compositor_mode='single_message', needs_progress_queue=True)
+
         # Heartbeat progress is temporary and on by default (display.heartbeat_progress); turning it off
         # restores the quiet heartbeat below.
         heartbeat_quiet = scheduled_heartbeat and not disp.resolve_display_setting(

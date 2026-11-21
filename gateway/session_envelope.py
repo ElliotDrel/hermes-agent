@@ -264,6 +264,11 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
     # COMMAND that passed admission is path text (``/Users/x is broken``): replay it as text.
+    if event.source.platform.value == 'discord' and not event.internal and not event.get_command():
+        from gateway.session_ingress_burst import discord_batch_descriptor
+        descriptor = discord_batch_descriptor(runner._adapter_for_source(event.source), event)
+        if descriptor is not None:
+            envelope['discord_batch'] = descriptor
     if event.message_type not in (MessageType.TEXT, MessageType.COMMAND):
         envelope['message_type'] = event.message_type.value
     if event.media_urls:

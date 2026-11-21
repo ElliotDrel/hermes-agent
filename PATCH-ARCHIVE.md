@@ -127,6 +127,10 @@ failed backend refresh is observed reporting success.
 
 ## 018 (design 1): Fixed Discord composition window
 
+Superseded retirement: Elliot reinstated the fixed window on 2026-11-20 as
+conversation-wide text/attachment batches, permanent numbered receipts and one
+inherited Working message; the busy window starts after the running turn (active 018).
+
 **Intent:** Make busy Discord messages from one sender run as one turn, with visible
 acknowledgement, without losing any of them.
 **Previous design:** A fixed 30-second composition window reserved one FIFO position and

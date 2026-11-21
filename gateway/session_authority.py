@@ -650,6 +650,11 @@ class SessionAuthority:
 
     def _admitted(self, ref, event, row):
         if event is not None:
+            if row['payload'].get('native_text_v1', {}).get('discord_batch'):
+                from gateway.session_ingress_burst import discord_receipt_committed
+                adapter = self.runner._adapter_for_source(event.source)
+                if adapter is not None:
+                    discord_receipt_committed(adapter, event.message_id)
             event._gateway_accepted = True
             if row['status'] == 'queued' and (committed := getattr(event, '_on_commit', None)) is not None:
                 committed()  # a queued slash command's ack follows its commit (``_queue_command_turn``)
@@ -1101,6 +1106,12 @@ class SessionAuthority:
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
+            from gateway.session_ingress_burst import discord_batch_wait, discord_batch_claim_guard
+            if first is not None and first['payload'].get('native_text_v1', {}).get('discord_batch'):
+                if self._classic_turn_holds(live.route):
+                    return 'classic_busy', first
+                if await discord_batch_wait(self, ref, live, first):
+                    return 'discord_collecting', first
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the
@@ -1173,8 +1184,9 @@ class SessionAuthority:
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
+            claim_guard = discord_batch_claim_guard(self, ref, live, first, self._admission_gate())
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate(),
+                                                    session_id=ref.session_id, _guard=claim_guard,
                                                     head=first['admission_id'] if first is not None else None),
                                       then=partial(self._stamp_claim, ref, live))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read
@@ -1185,6 +1197,8 @@ class SessionAuthority:
         """The claim's execution stamp, in the same tracked task as its commit: no observer (or
         retirement's join) ever sees a committed claim that no execution stamp names."""
         if row:  # None or False (the head changed under the write) claimed nothing
+            for member in row['payload'].get('discord_members', []):
+                self._settle_cancelled(ref, member)
             with live.event_stream.lock:
                 live.event_stream.execution = {
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
@@ -1284,7 +1298,7 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
-            if row != 'classic_busy':
+            if row not in ('classic_busy', 'discord_collecting'):
                 return row, first
             if self._drain_stopping(ref, live):
                 return None

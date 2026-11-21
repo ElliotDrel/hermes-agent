@@ -1,12 +1,4 @@
-"""Discord receipt and processing reactions, one per message.
-
-Every accepted message is acknowledged the moment it arrives: ⏳ when its conversation is busy (it
-queues or merges into a pending turn), 👀 when idle. A turn marks every message it carries 👀 when it
-starts and ✅ or ❌ by its outcome when it ends; a message dropped before it ran loses its mark.
-
-Display only: each reaction call is a detached task, bounded by ``_RECEIPT_OP_TIMEOUT`` and serialized
-per message, so a Discord 429, failure or hang never delays admission, the turn or delivery.
-"""
+"""Discord batch receipt reactions; detached, bounded and serialized per message."""
 from __future__ import annotations
 
 import asyncio
@@ -21,8 +13,7 @@ logger = logging.getLogger(__name__)
 _DISCORD_EPOCH_MS = 1420070400000
 
 _WAITING = "⏳"
-_WORKING = "👀"
-_OUTCOME_EMOJI = {ProcessingOutcome.SUCCESS: "✅", ProcessingOutcome.FAILURE: "❌"}
+_KEYCAPS = tuple(str(i) + "\ufe0f\u20e3" for i in range(1, 10)) + ("\U0001f51f",)
 
 
 class DiscordReactionsMixin:
@@ -134,7 +125,7 @@ class DiscordReactionsMixin:
             return
         for kind, emoji in ops:
             landed = await (self._add_reaction if kind == "add" else self._remove_reaction)(message, emoji)
-            if receipt and kind == "add" and landed:
+            if receipt and kind == "add" and emoji == _WAITING and landed:
                 # Discord send time is in the snowflake; the gap is delivery + admission + rate limit + REST.
                 sent_ms = (int(mid) >> 22) + _DISCORD_EPOCH_MS
                 logger.info("[%s] receipt ack %s on %s landed %d ms after send",
@@ -151,58 +142,32 @@ class DiscordReactionsMixin:
     def _event_message_ids(event: MessageEvent) -> list[str]:
         return event.message_ids() or [f"event-{id(event)}"]
 
-    def _set_mark(
-        self, event: MessageEvent, mid: str, emoji: str, message: Any = None, *, fresh: bool = False,
-    ) -> None:
-        """Show *emoji* on message *mid*, replacing the mark it has (a restored message may carry a
-        waiting mark from before the restart that this process never recorded). A *fresh* message,
-        just received live, carries none: its acknowledgement is one reaction call, because Discord
-        rate-limits reactions per channel and a wasted call delays every later ack in a burst."""
-        marks = self._receipt_marks()
-        held = marks.pop(mid, None)
-        if held is not None and held[0] == emoji:
-            marks[mid] = held
-            return
-        ops: list[tuple[str, str]] = []
-        if held is not None:
-            ops.append(("remove", held[0]))
-        elif emoji != _WAITING and not fresh:
-            # Unrecorded (restored, evicted past the cap, or a timed-out earlier call): a ⏳ may be showing.
-            ops.append(("remove", _WAITING))
-        ops.append(("add", emoji))
-        if message is None:
-            message = (held[1] if held else None) or self._live_message(event, mid)
-        channel_id = held[2] if held else self._home_channel_id(event, mid)
-        marks[mid] = [emoji, message, channel_id]
-        while len(marks) > self._RECEIPT_STATE_CAP:
-            marks.pop(next(iter(marks)))
-        self._schedule_reaction(mid, message, channel_id, *ops, receipt=fresh)
-
-    def _clear_marks(self, event: MessageEvent, mid: str, final: str | None) -> None:
-        """Remove the mark of message *mid*, then show *final* (a result) when given."""
-        held = self._receipt_marks().pop(mid, None)
-        ops: list[tuple[str, str]] = [("remove", held[0] if held else _WORKING)]
-        if held is None:
-            ops.append(("remove", _WAITING))
-        if final:
-            ops.append(("add", final))
-        message = (held[1] if held else None) or self._live_message(event, mid)
-        channel_id = held[2] if held else self._home_channel_id(event, mid)
-        self._schedule_reaction(mid, message, channel_id, *ops)
-
     def _acknowledge_receipt(self, message: Any, source: Any) -> None:
-        """Mark a just-accepted message ⏳ when its conversation is busy, else 👀. Never raises."""
-        if not self._reactions_enabled():
+        """Open the conversation's fixed batch before attachment downloads or REST calls."""
+        from gateway.session_ingress_burst import open_discord_batch
+        batch, position = open_discord_batch(self, source, str(message.id))
+        self.__dict__.setdefault("_receipt_undispatched", {})[str(message.id)] = source
+        enabled = self._reactions_enabled()
+        self._receipt_reactions_enabled = enabled
+        if not enabled:
             return
-        try:
-            from gateway.session_ingress_burst import holds_busy_burst
-            key = self._source_session_key(source)
-            busy = key in self._active_sessions or holds_busy_burst(self, key)
-            stub = MessageEvent(text="", source=source, raw_message=message, message_id=str(message.id))
-            self._set_mark(stub, str(message.id), _WAITING if busy else _WORKING, message, fresh=True)
-            self.__dict__.setdefault("_receipt_undispatched", {})[str(message.id)] = source
-        except Exception:
-            logger.debug("[%s] receipt acknowledgement skipped", self.name, exc_info=True)
+        stub = MessageEvent(text="", source=source, raw_message=message, message_id=str(message.id))
+        number = _KEYCAPS[position - 1] if position <= len(_KEYCAPS) else None
+        channel = self._home_channel_id(stub, str(message.id))
+        self._receipt_marks()[str(message.id)] = [number, message, channel]
+        while len(self._receipt_marks()) > self._RECEIPT_STATE_CAP:
+            self._receipt_marks().pop(next(iter(self._receipt_marks())))
+        ops = [("add", _WAITING)] + ([("add", number)] if number else [])
+        self._schedule_reaction(str(message.id), message, channel, *ops, receipt=True)
+
+    def _clear_marks(self, event: MessageEvent, mid: str, dropped: bool = False) -> None:
+        held = self._receipt_marks().pop(mid, None)
+        ops = [("remove", _WAITING)]
+        if dropped:
+            ops += [("remove", number) for number in ([held[0]] if held else _KEYCAPS) if number]
+        message = (held[1] if held else None) or self._live_message(event, mid)
+        channel = held[2] if held else self._home_channel_id(event, mid)
+        self._schedule_reaction(mid, message, channel, *ops)
 
     def _bind_receipt(self, message: Any, event: MessageEvent) -> None:
         """Let drop paths that hold only *event* clear its marks (``gateway.receipt_drops``)."""
@@ -212,10 +177,13 @@ class DiscordReactionsMixin:
     def _receipt_dispatched(self, message: Any) -> None:
         """*message* became an event handed to ``handle_message``: its own drop paths own the mark now."""
         self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None)
+        if getattr(self, "gateway_runner", None) is None:
+            from gateway.session_ingress_burst import discord_receipt_committed
+            discord_receipt_committed(self, str(message.id))
 
     async def _guard_receipt(self, message: Any, call: Any) -> Any:
         """Run ``call()``; a message acknowledged on receipt but never dispatched (a failed attachment
-        download, an early return, an exception) loses its mark instead of keeping 👀 forever."""
+        download, an early return, an exception) loses its mark instead of keeping waiting reactions forever."""
         try:
             return await call()
         finally:
@@ -231,37 +199,35 @@ class DiscordReactionsMixin:
             logger.debug("[%s] reaction calls still pending at shutdown", self.name)
 
     def on_messages_dropped(self, source: Any, message_ids: list[str]) -> None:
-        """Messages marked on receipt will never run (``/stop``, a replaced slot, a refused queue): clear
-        them. A mark exists only if reactions were enabled when it was set, so this reads no config
-        (drop paths run outside the message's profile scope)."""
+        """Dropped inputs lose both their waiting mark and permanent batch number."""
+        from gateway.session_ingress_burst import drop_discord_messages
+        drop_discord_messages(self, source, message_ids)
         stub = MessageEvent(text="", source=source)
         for mid in message_ids:
-            if mid in self._receipt_marks():
-                self._clear_marks(stub, mid, None)
+            if mid in self._receipt_marks() or self.__dict__.get('_receipt_reactions_enabled', False):
+                self._clear_marks(stub, mid, dropped=True)
 
     def on_messages_joined_turn(self, source: Any, message_ids: list[str]) -> None:
-        """Messages folded into a turn that already started (steer): ⏳ becomes 👀 at once."""
         stub = MessageEvent(text="", source=source)
         for mid in message_ids:
-            if mid in self._receipt_marks():
-                self._set_mark(stub, mid, _WORKING)
-
-    # -- processing lifecycle hooks ---------------------------------------------------------------
+            if mid in self._receipt_marks() or self.__dict__.get("_receipt_reactions_enabled", False):
+                self._clear_marks(stub, mid)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Mark every message the turn carries 👀 and record durable handling state. The recovery
-        column ``emoji_ack`` records that the 👀 was scheduled (reactions enabled): the call itself is
-        detached and best effort, so its outcome is not known here."""
-        acked = self._reactions_enabled()
-        if acked:
+        from gateway.session_ingress_burst import discord_batch_descriptor
+        from gateway.session_ingress import executing_admission
+        if (getattr(self, "gateway_runner", None) is not None and discord_batch_descriptor(self, event)
+                and not executing_admission.get()):
+            return
+        if self._reactions_enabled():
             for mid in self._event_message_ids(event):
-                self._set_mark(event, mid, _WORKING)
-        await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
+                self._clear_marks(event, mid)
+        await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=False)
+        event._discord_processing_started = True
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap every carried message's mark for its final reaction and record durable state."""
-        await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
+        from gateway.session_ingress_burst import discord_batch_descriptor
+        if (getattr(self, "gateway_runner", None) is not None and discord_batch_descriptor(self, event)
+                and not getattr(event, "_discord_processing_started", False)):
             return
-        for mid in self._event_message_ids(event):
-            self._clear_marks(event, mid, _OUTCOME_EMOJI.get(outcome))
+        await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)

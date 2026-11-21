@@ -319,7 +319,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots and webhooks (any post carrying a `webhook_id`, such as CI or deploy alerts, counts as a bot even when Discord omits the bot flag). `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
 | `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
-| `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
+| `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (⏳ plus a permanent batch position on receipt; ⏳ clears when the batch closes). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
@@ -348,7 +348,7 @@ For example, bot A sends `<@BOT_B_ID> Here is the review …`, followed immediat
 
 The admission window lasts `max(HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS, HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS)` after the admitted mention (2 seconds with the defaults), and each admitted continuation re-arms it, so a long handoff paced at Discord's send rate arrives whole. Separately, each queued text chunk restarts the batch's quiet timer; a tagged bot batch uses the split quiet period even when its first chunk is short. These settings control receiver batching, not sender pacing. Disabling text batching (`HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS=0`) also disables continuation admission.
 
-This is a short-burst heuristic, not guaranteed multipart delivery. A delayed chunk outside the window needs its own mention under the default policy. Unrelated messages from the same bot and channel inside the window can also be admitted. The exception is not restricted to text: attachments and commands may pass admission, but only text enters this batcher; other message types follow their normal handling. Existing channel restrictions and `DISCORD_ALLOW_BOTS=none` still apply. History/backfill behavior is unchanged. The gateway's bot loop guard remains as a backstop: after 20 bot-authored messages in one channel inside 5 minutes, further bot messages there are dropped for 10 minutes (tunable under `gateway.bot_loop_guard` in `config.yaml`; human messages are never counted).
+This is a short-burst heuristic, not guaranteed multipart delivery. A delayed chunk outside the window needs its own mention under the default policy. Unrelated messages from the same bot and channel inside the window can also be admitted. The exception is not restricted to text: attachments and commands may pass admission, but all non-command text and attachments join the conversation’s fixed batch. The window does not slide; while a turn runs, the next batch’s clock waits for it to finish. Existing channel restrictions and `DISCORD_ALLOW_BOTS=none` still apply. History/backfill behavior is unchanged. The gateway's bot loop guard remains as a backstop: after 20 bot-authored messages in one channel inside 5 minutes, further bot messages there are dropped for 10 minutes (tunable under `gateway.bot_loop_guard` in `config.yaml`; human messages are never counted).
 
 #### Compatibility with trusted relays
 
@@ -375,7 +375,8 @@ discord:
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   auto_thread_archive_duration: 10080 # Auto/handoff thread auto-archive minutes: 60, 1440, 4320 or 10080 (default: 10080)
-  reactions: true                 # Add emoji reactions during processing
+  reactions: true                 # Waiting mark + permanent batch position
+  batch_window_seconds: 30        # Fixed collection window; no environment variable
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -481,9 +482,9 @@ How long an auto-created or handoff thread stays idle before Discord archives it
 **Type:** boolean — **Default:** `true`
 
 Controls whether the bot adds emoji reactions to messages as visual feedback:
-- 👀 added when the bot starts processing your message
-- ✅ added when the response is delivered successfully
-- ❌ added if an error occurs during processing
+- ⏳ and a batch position (1️⃣–🔟) are added on receipt; positions above ten have no keycap.
+- ⏳ clears when the fixed collection window closes; the position remains permanently.
+- Messages dropped before running lose both reactions. No start or result reactions are added.
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
 

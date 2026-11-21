@@ -1356,8 +1356,11 @@ class GatewayInboundMixin(
         # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
         # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
         # A turn a slash command produced (``/queue yes``) is never live typing.
+        from gateway.session_ingress_burst import discord_batch_descriptor
+        collecting = (source.platform == Platform.DISCORD and
+                      discord_batch_descriptor(self._adapter_for_source(source), event) is not None)
         if busy and (await self._route_plaintext_approval_while_busy(event, _quick_key)
-                     or await self._hm_busy_preempt(event, source, _quick_key)):
+                     or (not collecting and await self._hm_busy_preempt(event, source, _quick_key))):
             return True, None
         _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
         if _consumed:

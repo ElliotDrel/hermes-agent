@@ -52,6 +52,7 @@ def join_event(event) -> None:
 
 def payload_message_ids(payload) -> list[str]:
     """Provider message ids of a committed native admission row's payload (empty for any other)."""
+    payload = payload.get('discord_execution', payload)
     event = (payload.get('native_text_v1') or {}).get('event') or {}
     ids = event.get('absorbed_message_ids') or [event.get('message_id')]
     return [str(mid) for mid in ids if mid]
