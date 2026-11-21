@@ -337,6 +337,8 @@ default 30 seconds); later receipts do not extend it. Messages received during
 execution collect in the next batch, whose clock begins after the running turn.
 Ordinary batch members do not steer or interrupt the running turn. Commands and
 blocking approval replies keep their existing bypass, authorization and cancellation behavior.
+Discord dispatch returns the gateway's real admission verdict (`event._gateway_accepted`), so
+missed-message recovery counts a refused message as not dispatched (it always said admitted).
 
 Receipt reactions are ⏳ plus the message's position (1️⃣ through 🔟; no number
 above ten), gated by the existing `discord.reactions` setting. Closing the window

@@ -6440,9 +6440,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         if (self.gateway_runner is None and not recovered and msg_type == MessageType.TEXT
                 and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
-        return True
+            return True
+        await self.handle_message(event)
+        # The base records the gateway's admission verdict; recovery counts only accepted messages.
+        return event._gateway_accepted is True
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a

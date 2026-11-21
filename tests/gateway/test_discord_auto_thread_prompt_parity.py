@@ -53,7 +53,7 @@ async def test_auto_thread_first_turn_pins_the_threads_topic(monkeypatch: pytest
     adapter._text_batch_delay_seconds = 0
     adapter._discord_history_backfill = lambda: False
     adapter._auto_create_thread = AsyncMock(return_value=thread)
-    adapter.handle_message = AsyncMock()
+    adapter.handle_message = AsyncMock(side_effect=lambda event: setattr(event, "_gateway_accepted", True))
 
     async def confirmed_edit(_adapter, _thread_id: int, name: str, expected: str | None) -> bool:
         # The confirmed transport (thread_rename.rename_once) has its own suite; only the edit matters here.

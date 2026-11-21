@@ -282,6 +282,23 @@ async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, mon
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accepted", [True, False], ids=["accepted", "refused"])
+async def test_recovered_dispatch_reports_the_gateways_admission_verdict(adapter, monkeypatch, accepted):
+    """Recovery counts a message as dispatched only when the gateway accepted it: a refused one
+    (draining, capacity, an unresolved identity) must not use up the scan's dispatch budget."""
+    del adapter._handle_message  # the real Discord ingress path, down to the base admission
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    bot_user = adapter._client.user
+
+    async def admit(event):
+        event._gateway_accepted = accepted
+    monkeypatch.setattr(adapter, "handle_message", admit)
+    message = make_message(message_id=5, content=f"<@{bot_user.id}> hi", mentions=[bot_user])
+    message.message_snapshots = []
+    assert await adapter._dispatch_recovered_message(message) is accepted
+
+
 def test_missed_message_backfill_config_stays_per_adapter():
     first_extra = _apply_yaml_config(
         {},
