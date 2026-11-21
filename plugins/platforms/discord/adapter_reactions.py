@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 
 logger = logging.getLogger(__name__)
+
+_DISCORD_EPOCH_MS = 1420070400000
 
 _WAITING = "⏳"
 _WORKING = "👀"
@@ -97,10 +100,13 @@ class DiscordReactionsMixin:
             logger.debug("[%s] No reaction target for message %s", self.name, mid, exc_info=True)
             return None
 
-    def _schedule_reaction(self, mid: str, message: Any, channel_id: str, *ops: tuple[str, str]) -> None:
+    def _schedule_reaction(
+        self, mid: str, message: Any, channel_id: str, *ops: tuple[str, str], receipt: bool = False,
+    ) -> None:
         """Run ``("add" | "remove", emoji)`` calls for one message as a detached task that follows
         that message's earlier calls and gives up after ``_RECEIPT_OP_TIMEOUT``. The target is captured
-        here, because the caller may drop the state it came from before the task runs."""
+        here, because the caller may drop the state it came from before the task runs. A *receipt*
+        logs when its acknowledgement lands."""
         tails = self.__dict__.setdefault("_receipt_tails", {})
         prior = tails.get(mid)
 
@@ -108,7 +114,8 @@ class DiscordReactionsMixin:
             if prior is not None:
                 await asyncio.wait({prior})
             try:
-                await asyncio.wait_for(self._apply_reactions(mid, message, channel_id, ops), self._RECEIPT_OP_TIMEOUT)
+                await asyncio.wait_for(
+                    self._apply_reactions(mid, message, channel_id, ops, receipt), self._RECEIPT_OP_TIMEOUT)
             except Exception as exc:
                 logger.debug("[%s] reaction update for %s abandoned: %r", self.name, mid, exc)
 
@@ -118,13 +125,20 @@ class DiscordReactionsMixin:
         task.add_done_callback(self._background_tasks.discard)
         task.add_done_callback(lambda done: tails.get(mid) is done and tails.pop(mid, None))
 
-    async def _apply_reactions(self, mid: str, message: Any, channel_id: str, ops: tuple[tuple[str, str], ...]) -> None:
+    async def _apply_reactions(
+        self, mid: str, message: Any, channel_id: str, ops: tuple[tuple[str, str], ...], receipt: bool = False,
+    ) -> None:
         if message is None:
             message = await self._partial_message(mid, channel_id)
         if not hasattr(message, "add_reaction"):
             return
         for kind, emoji in ops:
-            await (self._add_reaction if kind == "add" else self._remove_reaction)(message, emoji)
+            landed = await (self._add_reaction if kind == "add" else self._remove_reaction)(message, emoji)
+            if receipt and kind == "add" and landed:
+                # Discord send time is in the snowflake; the gap is delivery + admission + rate limit + REST.
+                sent_ms = (int(mid) >> 22) + _DISCORD_EPOCH_MS
+                logger.info("[%s] receipt ack %s on %s landed %d ms after send",
+                            self.name, emoji, mid, max(0, int(time.time() * 1000) - sent_ms))
 
     async def flush_reactions(self) -> None:
         """Wait for every scheduled reaction call (shutdown and tests; a turn never does)."""
@@ -137,9 +151,13 @@ class DiscordReactionsMixin:
     def _event_message_ids(event: MessageEvent) -> list[str]:
         return event.message_ids() or [f"event-{id(event)}"]
 
-    def _set_mark(self, event: MessageEvent, mid: str, emoji: str, message: Any = None) -> None:
+    def _set_mark(
+        self, event: MessageEvent, mid: str, emoji: str, message: Any = None, *, fresh: bool = False,
+    ) -> None:
         """Show *emoji* on message *mid*, replacing the mark it has (a restored message may carry a
-        waiting mark from before the restart that this process never recorded)."""
+        waiting mark from before the restart that this process never recorded). A *fresh* message,
+        just received live, carries none: its acknowledgement is one reaction call, because Discord
+        rate-limits reactions per channel and a wasted call delays every later ack in a burst."""
         marks = self._receipt_marks()
         held = marks.pop(mid, None)
         if held is not None and held[0] == emoji:
@@ -148,7 +166,7 @@ class DiscordReactionsMixin:
         ops: list[tuple[str, str]] = []
         if held is not None:
             ops.append(("remove", held[0]))
-        elif emoji != _WAITING:
+        elif emoji != _WAITING and not fresh:
             # Unrecorded (restored, evicted past the cap, or a timed-out earlier call): a ⏳ may be showing.
             ops.append(("remove", _WAITING))
         ops.append(("add", emoji))
@@ -158,7 +176,7 @@ class DiscordReactionsMixin:
         marks[mid] = [emoji, message, channel_id]
         while len(marks) > self._RECEIPT_STATE_CAP:
             marks.pop(next(iter(marks)))
-        self._schedule_reaction(mid, message, channel_id, *ops)
+        self._schedule_reaction(mid, message, channel_id, *ops, receipt=fresh)
 
     def _clear_marks(self, event: MessageEvent, mid: str, final: str | None) -> None:
         """Remove the mark of message *mid*, then show *final* (a result) when given."""
@@ -181,7 +199,7 @@ class DiscordReactionsMixin:
             key = self._source_session_key(source)
             busy = key in self._active_sessions or holds_busy_burst(self, key)
             stub = MessageEvent(text="", source=source, raw_message=message, message_id=str(message.id))
-            self._set_mark(stub, str(message.id), _WAITING if busy else _WORKING, message)
+            self._set_mark(stub, str(message.id), _WAITING if busy else _WORKING, message, fresh=True)
             self.__dict__.setdefault("_receipt_undispatched", {})[str(message.id)] = source
         except Exception:
             logger.debug("[%s] receipt acknowledgement skipped", self.name, exc_info=True)

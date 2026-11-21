@@ -167,7 +167,10 @@ async def test_busy_burst_acks_every_message_and_keeps_identity(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_idle_message_is_acknowledged_once(monkeypatch, tmp_path):
+async def test_idle_message_is_acknowledged_once(monkeypatch, tmp_path, caplog):
+    """A live message carries no mark yet: its ack is ONE reaction call (Discord rate-limits them per
+    channel), and its landing is logged."""
+    import logging
     from gateway.platforms.base import SendResult
     from gateway.session import build_session_key
 
@@ -179,9 +182,11 @@ async def test_idle_message_is_acknowledged_once(monkeypatch, tmp_path):
         return 'ack'
     adapter.set_message_handler(handler)
     event = _event(adapter, board, tmp_path, 3001, 'hello')
-    adapter._acknowledge_receipt(event.raw_message, event.source)
-    await adapter.flush_reactions()
-    assert board.shown[3001] == {WORKING}
+    with caplog.at_level(logging.INFO, logger='plugins.platforms.discord.adapter_reactions'):
+        adapter._acknowledge_receipt(event.raw_message, event.source)
+        await adapter.flush_reactions()
+    assert board.calls == [(3001, 'add', WORKING)]
+    assert [r for r in caplog.records if 'receipt ack' in r.getMessage() and '3001' in r.getMessage()]
     await adapter._process_message_background(event, build_session_key(event.source))
     await adapter.flush_reactions()
     assert [c for c in board.calls if c[2] == WORKING and c[1] == 'add'] == [(3001, 'add', WORKING)]

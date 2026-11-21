@@ -336,7 +336,11 @@ as a failed attachment download or mention-only drop, burst commit failure) lose
 through `gateway/receipt_drops.py` (events bind their adapter; marks exist only if
 reactions were enabled when set, so drop paths read no config). A message folded into an
 already running turn (steer) switches ⏳ to 👀 at once. Marks not recorded in memory
-(restart, 1024-cap eviction, a timed-out call) get an idempotent ⏳ removal at start and end.
+(restart, 1024-cap eviction, a timed-out call) get an idempotent ⏳ removal at start and end;
+the receipt ack itself skips that removal (a message just received live carries no mark), so it
+is one reaction call, not two: Discord rate-limits reactions per channel and the wasted call
+delayed every later ack in a burst (2026-11-20). Each receipt ack that lands logs one INFO line,
+`receipt ack <emoji> on <id> landed <N> ms after send` (snowflake send time vs local clock).
 Graceful shutdown waits (5s) for pending reactions before cancelling tasks. The recovery
 column `emoji_ack` now means "the 👀 was scheduled" (the call is detached; its result is
 unknown).
