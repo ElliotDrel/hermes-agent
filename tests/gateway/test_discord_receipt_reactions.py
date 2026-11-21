@@ -652,3 +652,131 @@ async def test_unrelated_turn_cannot_adopt_a_preparing_inputs_working_message(mo
     adopted = start()
     await adopted._start_task
     assert adopted is owned and not adapter._receipt_progress
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reactions', [True, False])
+async def test_guard_releases_reservation_when_plaintext_becomes_command(tmp_path, reactions):
+    from unittest.mock import AsyncMock
+    from gateway.session_ingress_burst import _flush
+    board = Board()
+    adapter = _adapter(board, reactions=reactions)
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter._shared_runtime_owns_input = lambda event: not event.get_command()
+    adapter._dispatch_inline_reply = AsyncMock()
+    event = _event(adapter, board, tmp_path, 9601, 'restart gateway')
+    event.source.chat_type = 'dm'
+    key = adapter._event_session_key(event)
+    adapter._active_sessions[key] = asyncio.Event()
+    try:
+        async def receive():
+            adapter._acknowledge_receipt(event.raw_message, event.source)
+            adapter._bind_receipt(event.raw_message, event)
+            adapter._receipt_dispatched(event.raw_message)
+            await adapter.handle_message(event)
+        await adapter._guard_receipt(event.raw_message, receive)
+        assert event.get_command() == 'restart'
+        holder = adapter._shared_bursts[key]
+        assert not holder.receipts and holder.prepared.is_set(), 'converted commands release their preparation hold'
+        await asyncio.wait_for(_flush(adapter, key, holder), 2)
+        await adapter.flush_reactions()
+        assert board.shown[9601] == set()
+    finally:
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_empty_burst_keeps_its_predecessors_fifo_position(monkeypatch, tmp_path):
+    import gateway.session_ingress_burst as bursts
+    adapter = _adapter(Board(), reactions=False)
+    events = [_event(adapter, Board(), tmp_path, 9700 + i, label) for i, label in enumerate(('A', 'B', 'C'))]
+    key = adapter._event_session_key(events[0])
+    entered, release = asyncio.Event(), asyncio.Event()
+    admitted, callers = [], []
+    async def admit(adapter, event, key, **kwargs):
+        if event.text == 'A':
+            entered.set()
+            await release.wait()
+        admitted.append(event.text)
+        event._gateway_accepted = True
+    monkeypatch.setattr('gateway.session_ingress.dispatch_shared_busy', admit)
+    try:
+        first = bursts.reserve_busy_receipt(adapter, events[0], key)
+        callers.append(asyncio.create_task(bursts.dispatch_busy_burst(adapter, events[0], key)))
+        bursts._flush(adapter, key, first)
+        await asyncio.wait_for(entered.wait(), 2)
+        empty = bursts.reserve_busy_receipt(adapter, events[1], key)
+        bursts.drop_busy_receipts(adapter, events[1].message_ids())
+        middle = bursts._flush(adapter, key, empty)
+        await asyncio.wait({middle}, timeout=2)
+        last = bursts.reserve_busy_receipt(adapter, events[2], key)
+        callers.append(asyncio.create_task(bursts.dispatch_busy_burst(adapter, events[2], key)))
+        tail = bursts._flush(adapter, key, last)
+        await asyncio.wait({tail}, timeout=2)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*callers, middle, tail), 2)
+        assert admitted == ['A', 'C'], 'an empty middle batch must not let C bypass A'
+    finally:
+        release.set()
+        for task in callers:
+            task.cancel()
+        await asyncio.gather(*callers, return_exceptions=True)
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_stale_guard_is_healed_before_receipt_classifies_input(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from gateway.platforms.base import SendResult
+    board = Board()
+    adapter = _adapter(board)
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter._shared_runtime_owns_input = lambda event: True
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id='working'))
+    monkeypatch.setattr('hermes_cli.config.read_raw_config_readonly', lambda: {
+        'display': {'platforms': {'discord': {'progress_compositor': 'single_message'}}}})
+    event = _event(adapter, board, tmp_path, 9801, 'new input')
+    key = adapter._event_session_key(event)
+    adapter._active_sessions[key] = asyncio.Event()
+    exited = asyncio.get_running_loop().create_future()
+    exited.set_result(None)
+    adapter._session_tasks[key] = exited
+    started = []
+    adapter._start_session_processing = lambda event, key: started.append(event) or True
+    try:
+        adapter._acknowledge_receipt(event.raw_message, event.source)
+        adapter._bind_receipt(event.raw_message, event)
+        adapter._receipt_dispatched(event.raw_message)
+        await adapter.handle_message(event)
+        assert event._gateway_accepted is True and started == [event], 'stale guards must not drop fresh input'
+        owned = adapter.take_receipt_progress(key, 1, event.message_ids())
+        assert owned is not None, 'the healed conversation gets idle Working at receipt'
+        await owned._start_task
+        await adapter.flush_reactions()
+        assert board.calls == []
+    finally:
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_empty_holder_reallocates_number_through_the_queue_counter(tmp_path):
+    from gateway.session_ingress_burst import _flush
+    board = Board()
+    adapter = _adapter(board)
+    adapter._shared_runtime_owns_input = lambda event: True
+    events = [_event(adapter, board, tmp_path, mid, 'x') for mid in (9901, 9902, 9903)]
+    key = adapter._event_session_key(events[0])
+    adapter._active_sessions[key] = asyncio.Event()
+    try:
+        adapter._acknowledge_receipt(events[0].raw_message, events[0].source)
+        holder = adapter._shared_bursts[key]
+        adapter.on_messages_dropped(events[0].source, events[0].message_ids())
+        adapter._acknowledge_receipt(events[1].raw_message, events[1].source)
+        _flush(adapter, key, holder)
+        adapter._acknowledge_receipt(events[2].raw_message, events[2].source)
+        await adapter.flush_reactions()
+        assert board.shown[9901] == set()
+        assert board.shown[9902] == {N[0]}
+        assert board.shown[9903] == {'\u23f3', N[1]}, 'distinct nonempty batches must have distinct numbers'
+    finally:
+        await adapter.cancel_background_tasks()

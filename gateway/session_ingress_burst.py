@@ -87,6 +87,8 @@ def drop_busy_receipts(adapter, message_ids):
         burst = adapter.__dict__.get('_shared_burst_receipts', {}).get(mid)
         if burst is not None:
             burst.receipts.pop(mid, None)
+            if not burst.receipts:
+                burst.number = None
             if all(event is not None for event in burst.receipts.values()):
                 burst.prepared.set()
 
@@ -205,6 +207,9 @@ def _flush(adapter, session_key, burst):
 async def _commit(adapter, session_key, burst, previous):
     from gateway.session_ingress import dispatch_shared_busy
     try:
+        # Empty batches still own their predecessor's FIFO position.
+        if previous is not None:
+            await asyncio.wait({previous})
         if burst.prepared is not None:
             await burst.prepared.wait()
             events = list(burst.receipts.values())
@@ -215,8 +220,6 @@ async def _commit(adapter, session_key, burst, previous):
             for event in events[1:]:
                 merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=True)
                 note_busy_merged(burst.head, event)
-        if previous is not None:
-            await asyncio.wait({previous})
         # Durable: this task is what the chat's next burst, a command barrier and /restart wait on, so
         # it ends once the row is committed, not when its FIFO position is fixed behind a capture.
         await dispatch_shared_busy(adapter, burst.head, session_key, durable=True)

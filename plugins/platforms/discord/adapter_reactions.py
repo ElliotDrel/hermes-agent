@@ -171,9 +171,11 @@ class DiscordReactionsMixin:
     def _acknowledge_receipt(self, message: Any, source: Any) -> None:
         """Schedule receipt display: idle Working or the open busy batch's marks. Never raises."""
         try:
+            key = self._source_session_key(source)
+            if key in self._active_sessions:
+                self._heal_stale_session_lock(key)
             self._post_receipt_progress(message, source)
             from gateway.session_ingress_burst import holds_busy_burst, reserve_busy_receipt
-            key = self._source_session_key(source)
             if key not in self._active_sessions and not holds_busy_burst(self, key):
                 return
             mid = str(message.id)
@@ -286,9 +288,14 @@ class DiscordReactionsMixin:
         try:
             return await call()
         finally:
-            if self.__dict__.get("_receipt_undispatched", {}).pop(str(message.id), None) is not None:
-                self.on_messages_dropped(None, [str(message.id)])
-            self.__dict__.get('_shared_burst_receipts', {}).pop(str(message.id), None)
+            mid = str(message.id)
+            undispatched = self.__dict__.get("_receipt_undispatched", {}).pop(mid, None)
+            reservations = self.__dict__.get('_shared_burst_receipts', {})
+            burst = reservations.get(mid)
+            # Plaintext-to-command conversion and other bypasses can dispatch without filling input.
+            if undispatched is not None or (burst is not None and burst.receipts.get(mid) is None):
+                self.on_messages_dropped(None, [mid])
+            reservations.pop(mid, None)
 
     async def _settle_reactions(self, timeout: float = 5.0) -> None:
         """Let scheduled reaction calls finish (bounded) before shutdown cancels background tasks."""
