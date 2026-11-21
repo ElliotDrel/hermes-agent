@@ -227,6 +227,10 @@ async def test_busy_batch_clock_begins_after_turn_and_survives_memory_loss(monke
     await async_wait_until(lambda: not any(live.task and not live.task.done() for live in authority.sessions.values()), timeout=10)
     await async_wait_until(lambda: not adapter._background_tasks, timeout=10)
     assert board.marks([2002, 2003]) == {2002: {'1️⃣'}, 2003: {'2️⃣'}}
+    with authority.db._read_ctx() as conn:
+        left = conn.execute("SELECT key FROM state_meta WHERE key LIKE 'discord-batch:%' "
+                            "OR key LIKE 'discord-progress:%'").fetchall()
+    assert not left, 'a claimed batch leaves no per-batch state behind'
     await asyncio.to_thread(authority.db.close)
 
 

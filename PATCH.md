@@ -362,10 +362,26 @@ and busy-window deadline are kept in the authority's existing state metadata.
 
 Each prepared input commits to the existing durable authority FIFO immediately.
 At claim, contiguous members become one execution snapshot in the head row and
-the absorbed rows are settled in the same transaction. The original input
-fingerprints remain intact for redelivery. Every message ID survives into the
-merged event; Discord replies anchor to the latest. Queue capacity, refusal,
-paused/unknown execution and restart recovery remain owned by the authority.
+the absorbed rows are cancelled in the same transaction; their waiters settle when
+the claim is stamped. The fold is skipped when the claim cannot stamp (a worker
+execution is registered) and never re-runs over an existing snapshot. The batch's
+state-metadata keys are deleted at claim, since the claimed payload carries them.
+The original input fingerprints remain intact for redelivery. Every message ID
+survives into the merged event; Discord replies anchor to the latest. Queue
+capacity, refusal, paused/unknown execution and restart recovery remain owned by
+the authority.
+
+Merged-message identity (carried from the 2026-11-17 port): `MessageEvent.absorbed_message_ids`
+(ordered, deduped, head included, set only when more than one) is appended by
+`absorb_turn_input` and persisted in the durable envelope only when more than one, so single
+messages keep their fingerprint. The model-facing triggering line names the latest id and, only
+for merged turns, appends "(merged N messages)". Processing start and completion write one
+monotonic recovery upsert over every carried id (processing, then failed/cancelled, then
+responded). The reconnect scan skips ids owned by an unresolved envelope, absorbed ids included
+(`receipt_drops.pending_envelope_message_ids`), so only the FIFO runs them.
+`tui_gateway/session_history.py` and desktop `hydration.ts` accept the merge count in their
+legacy-note heal regex. Approval: Elliot, 2026-11-17, T3 session, change-specific manual
+override (protected: merged-message identity and the model-facing triggering line).
 
 Touchpoints: Discord receipt hooks and ingress dispatch; native envelope and
 redelivery reconciliation; session_ingress_burst's Discord claim policy;

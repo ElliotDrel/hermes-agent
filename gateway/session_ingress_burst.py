@@ -369,6 +369,10 @@ def discord_batch_claim_guard(authority, ref, live, first, guard):
         import json
         from copy import deepcopy
         guard(conn)
+        from hermes_state_runtime_workers import worker_states
+        # Fold only when this claim will stamp the head; a re-fold would overwrite the merged snapshot.
+        if worker_states(conn, ref.session_id) or 'discord_execution' in first['payload']:
+            return
         rows = conn.execute("SELECT admission_id,payload_json,status FROM session_admissions "
                             "WHERE target_session_id=? AND status IN ('queued','started','unknown') ORDER BY seq",
                             (ref.session_id,)).fetchall()
@@ -406,8 +410,13 @@ def discord_batch_claim_guard(authority, ref, live, first, guard):
         payload['discord_members'] = [rid for rid, _ in members if rid != first['admission_id']]
         state_key = 'discord-batch:' + ref.session_id + ':' + descriptor['id']
         state = conn.execute('SELECT value FROM state_meta WHERE key=?', (state_key,)).fetchone()
-        if state:
-            payload['discord_progress_id'] = json.loads(state[0]).get('progress_id')
+        posted = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                              ('discord-progress:' + descriptor['id'],)).fetchone()
+        progress_id = (json.loads(state[0]).get('progress_id') if state else None) or (posted[0] if posted else None)
+        if progress_id:
+            payload['discord_progress_id'] = progress_id
+        # The claimed payload now carries everything restart recovery needs from these keys.
+        conn.execute('DELETE FROM state_meta WHERE key IN (?,?)', (state_key, 'discord-progress:' + descriptor['id']))
         conn.execute('UPDATE session_admissions SET payload_json=? WHERE admission_id=?',
                      (json.dumps(payload), first['admission_id']))
         for rid, _ in members:
