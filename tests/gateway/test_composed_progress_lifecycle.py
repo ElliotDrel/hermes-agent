@@ -271,6 +271,33 @@ async def test_delivered_terminal_error_cleans_composed_progress():
     assert adapter.deleted == [{"chat_id": "thread", "message_id": adapter.sent[0]["message_id"]}]
 
 
+@pytest.mark.asyncio
+async def test_delete_slowed_by_rate_limit_sleep_is_confirmed_not_retried(monkeypatch):
+    """discord.py sleeps out an exhausted bucket inside the delete call after the delete landed: the
+    attempt must be allowed to finish (one call, message untracked) instead of being cancelled early
+    and retried behind the same bucket."""
+    from gateway import run_turn_bubble_cleanup as cleanup
+
+    monkeypatch.setattr(cleanup, "_COMPOSED_DELETE_BUDGET_SECONDS", 2.0)
+    monkeypatch.setattr(cleanup, "_COMPOSED_ATTEMPT_TIMEOUT_SECONDS", 0.05, raising=False)
+    adapter = LifecycleAdapter()
+    runner = _make_runner(adapter)
+    ctx, turn = make_context(runner, adapter, _cleanup_progress=True, _cleanup_adapter=adapter)
+    await start_compositor(turn)
+    calls = []
+
+    async def rate_limited_delete(chat_id, message_id):
+        calls.append(message_id)
+        await asyncio.sleep(0.2)  # health: allow HX013 -- the in-call rate-limit sleep IS the case
+        return True
+
+    adapter.delete_message = rate_limited_delete
+    register_bubble_cleanup({"completed": True}, ctx)
+    await adapter.pop_post_delivery_callback("key", generation=1)()
+    assert calls == [adapter.sent[0]["message_id"]]
+    assert ctx._cleanup_msg_ids == []
+
+
 def test_tool_events_keep_useful_preview_and_repeated_calls():
     adapter = LifecycleAdapter()
     runner = _make_runner(adapter)

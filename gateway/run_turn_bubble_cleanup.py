@@ -12,11 +12,12 @@ logger = logging.getLogger("gateway.run")
 # Per-delete bound: the callback runs under the post-delivery timeout (30 s), so one slow delete must
 # not use it up and leave the remaining bubbles undeleted. Also caps the handoff's sender wait.
 DELETE_TIMEOUT_SECONDS = 10.0
-# Single-message progress (HERMES-FORK-017): two attempts per ID inside one shared budget that leaves
-# the adapter's outer callback timeout a second to unwind. Exhaustion retains the message; there is
-# no sweeper or retry service.
+# Single-message progress (HERMES-FORK-017): up to two attempts per ID inside one shared budget that
+# leaves the adapter's outer callback timeout a second to unwind. An attempt may use the whole remaining
+# budget: discord.py sleeps out an exhausted rate-limit bucket inside the call even after the delete
+# landed, so a short per-attempt timeout cancelled successful deletes and the retry queued behind the
+# same bucket. Only a fast refusal is retried. Exhaustion retains the message; there is no sweeper.
 _COMPOSED_DELETE_BUDGET_SECONDS = 25.0
-_COMPOSED_ATTEMPT_TIMEOUT_SECONDS = 5.0
 # Detached deletes never hold the turn, the running-session guard or the result's delivery: they get
 # the initial-send settle wait, the delete budget and a second to unwind, then are cancelled.
 _DETACHED_DELETE_BOUND_SECONDS = 6.0 + _COMPOSED_DELETE_BUDGET_SECONDS + 1.0
@@ -74,7 +75,7 @@ async def _delete_composed(turn_ctx: Any, compositor: Any) -> None:
                 break
             try:
                 if await asyncio.wait_for(
-                    adapter.delete_message(chat_id, mid), min(_COMPOSED_ATTEMPT_TIMEOUT_SECONDS, remaining),
+                    adapter.delete_message(chat_id, mid), remaining,
                 ):
                     tracked[:] = [known for known in tracked if str(known) != mid]
                     break
