@@ -156,6 +156,24 @@ class TestConsolidationProposalSurfaces:
         actions = bg.summarize_background_review_actions(review_messages, [])
         assert any("staged for your approval" in a for a in actions)
 
+    @pytest.mark.parametrize("mode", ["on", "verbose"])
+    def test_gated_save_surfaces_as_awaiting_approval(self, tmp_path, monkeypatch, mode):
+        """With memory.write_approval on, a review save is staged, not written: the chat line must say
+        it awaits approval (and, verbose, what it would save) instead of saying nothing."""
+        import json
+
+        raw = json.dumps({"success": True, "staged": True, "pending_id": "p1",
+                          "message": "Staged for approval (memory.write_approval is on). "
+                                     "Not yet saved — review with /memory pending."})
+        review_messages = [
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "memory", "arguments": json.dumps(
+                {"action": "add", "target": "user", "content": "prefers terse replies"})}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": raw},
+        ]
+        actions = bg.summarize_background_review_actions(review_messages, [], notification_mode=mode)
+        assert any("/memory pending" in a for a in actions)
+        assert any("prefers terse replies" in a for a in actions) is (mode == "verbose")
+
     def test_near_limit_denial_end_to_end(self, tmp_path, monkeypatch):
         """add rejected by the budget -> fork follows the 'consolidate now' hint with a
         patch -> the delete gate stages it -> the proposal surfaces; the store never

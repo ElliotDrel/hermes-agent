@@ -1584,7 +1584,8 @@ def _prepare_target_delivery(
 
     origin = _resolve_origin(job) or {}
     origin_thread = origin.get("thread_id")
-    if origin_thread and not thread_id:
+    # A written platform:chat target that names no thread is a deliberate top-level delivery.
+    if origin_thread and not thread_id and target.get("_resolved_from") != "explicit":
         logger.warning(
             "Job '%s': origin has thread_id=%s but delivery target lost it (deliver=%s, target=%s)",
             job["id"], origin_thread, job.get("deliver", "local"), target)

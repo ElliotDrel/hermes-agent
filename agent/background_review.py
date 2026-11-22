@@ -753,9 +753,18 @@ def _prior_tool_keys(prior_snapshot: list[dict]) -> tuple[set, set]:
 def _action_lines(data: dict, detail: dict, verbose: bool) -> list[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
     if data.get("staged"):
-        # The fork's own review summary is never published back, so an unattended-review
-        # consolidation proposal must surface here or it is silently lost (#105921).
-        return [data["message"]] if data.get("proposal_staged") and data.get("message") else []
+        # The fork's own review summary is never published back, so a staged write (a gated save
+        # or a consolidation proposal) must surface here or it waits unseen in the pending queue.
+        if not data.get("message"):
+            return []
+        lines = [data["message"]]
+        if verbose and detail.get("tool") == "skill_manage" and data.get("gist"):
+            lines.append(str(data["gist"]))
+        elif verbose and detail.get("tool") != "skill_manage":
+            label_key = {"memory": "memory", "user": "user"}.get(data.get("target") or detail.get("target"))
+            if label_key:
+                lines += _verbose_memory_lines(t(f"display.review.label.{label_key}"), detail)
+        return lines
     message = data.get("message", "")
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
