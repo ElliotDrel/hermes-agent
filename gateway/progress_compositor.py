@@ -63,6 +63,7 @@ class ProgressCompositor:
         self._late_send: Optional["asyncio.Future[Any]"] = None
         self._late_text = ""
         self._edit_timeouts = 0
+        self.header_variants: tuple[str, ...] = ()
         self.status_line: Optional[str] = None
         self.activity_items: Deque[str] = deque()
         self.activity_kinds: Deque[str] = deque()
@@ -123,7 +124,7 @@ class ProgressCompositor:
         if getattr(result, "success", False) and getattr(result, "message_id", None):
             self.message_id = str(result.message_id)
             self._last_rendered = initial_text
-            self._dirty = False
+            self._dirty = self._fit_render() != initial_text
         else:
             self.editing_disabled = True
         return result
@@ -188,11 +189,19 @@ class ProgressCompositor:
             session_key=self.session_key, clock=self._clock,
         )
         successor.delivery_checks = self.delivery_checks
+        successor.next_edit_after = self.next_edit_after
         successor.message_id = self.message_id
         successor._start_attempted = True
         successor._last_rendered = self._last_rendered
         successor.publish_status("\u23f3 Working\u2026")
         return successor
+
+    def set_header(self, text: str, *, compact: tuple[str, ...] = ()) -> None:
+        """Publish atomic header variants, ordered from full to smallest."""
+        variants = (text, *compact) if text else ()
+        if variants != self.header_variants:
+            self.header_variants = variants
+            self._dirty = True
 
     def publish_activity(self, text: Any, kind: str = "message") -> None:
         value = str(text or "").strip()
@@ -271,6 +280,24 @@ class ProgressCompositor:
         return self._fit_prefix(status, suffix=summary, limit=budget).lstrip(" ·")
 
     def _fit_render(self) -> str:
+        """Reserve space for a whole header; never clip platform-supplied markup."""
+        if not self.header_variants:
+            return self._fit_body()
+        body = self._fit_body()
+        reserve = min(160, self._text_limit // 4, self._formatted_len(body))
+        header = next((value for value in self.header_variants
+                       if self._formatted_len(value + "\n") + reserve <= self._text_limit), "")
+        if not header:
+            return body
+        limit = self._text_limit
+        try:
+            self._text_limit -= self._formatted_len(header + "\n")
+            body = self._fit_body()
+        finally:
+            self._text_limit = limit
+        return header + "\n" + body
+
+    def _fit_body(self) -> str:
         """Render the newest suffix without changing the canonical log or status."""
         activities = list(self.activity_items)
         rendered = self._compose(self.status_line or "⏳ Working…", activities)

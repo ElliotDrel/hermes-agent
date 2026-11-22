@@ -241,7 +241,15 @@ the hand-off through the existing stop/new/refusal cleanup. Failed or unconfirme
 keeps its existing retention rules. Residual: later progress remains above earlier replies,
 since Discord cannot move the original message.
 
-Discord pre-posts Working at receipt before downloads; only a turn carrying one of its owned input IDs adopts that same message.
+Discord pre-posts Working as a standalone message (never a reply) at receipt before downloads;
+only a turn carrying one of its owned input IDs adopts that same message. A linked, bold
+first-message excerpt heads the progress body, with `+N more` for merged inputs; attachment-only
+inputs show the first filename. A live Queue line shows the queued batch count and up to three
+linked previews with the same keycaps as receipt reactions, plus overflow count. Queue merges,
+drops and pickup update the existing throttled compositor; handoff re-points the header to the
+next batch. Atomic header variants shorten queued excerpts before dropping the Queue line,
+then shorten the active excerpt, so length fitting never cuts a masked link. Discord owns the
+formatting; the core compositor accepts platform-neutral header variants.
 
 Opt-in display.platforms.discord.progress_compositor: single_message (config.yaml only,
 Discord only; a global value never replaces Slack cards or other transports) shows each

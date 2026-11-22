@@ -5,8 +5,11 @@ import asyncio
 import logging
 import time
 from typing import Any
+from types import SimpleNamespace
 
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
+
+from .progress_header import DiscordProgressHeader
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,12 @@ class DiscordReactionsMixin:
 
     _RECEIPT_OP_TIMEOUT = 10.0
     _RECEIPT_STATE_CAP = 1024
+
+    def _progress_header(self, key):
+        return self.__dict__.setdefault("_progress_headers", {}).setdefault(key, DiscordProgressHeader())
+
+    def configure_progress_header(self, compositor, source, message_ids):
+        self._progress_header(compositor.session_key).attach(compositor, message_ids)
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
@@ -185,8 +194,6 @@ class DiscordReactionsMixin:
             stub = MessageEvent(text="", source=source, raw_message=message, message_id=mid)
             burst = reserve_busy_receipt(self, stub, key) if self._shared_runtime_owns_input(stub) else None
             self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
-            if not self._reactions_enabled():
-                return
             queue = self._queues().setdefault(key, [0, set(), None])
             sender = source.user_id_alt or source.user_id
             if burst is not None:
@@ -200,6 +207,9 @@ class DiscordReactionsMixin:
                     queue[2] = [sender, queue[0], set()]
                 queue[2][2].add(mid)
                 number = queue[2][1]
+            self._progress_header(key).remember(message, source, number)
+            if not self._reactions_enabled():
+                return
             emoji = _POSITIONS[number - 1] if number <= len(_POSITIONS) else _BEYOND
             if emoji != _BEYOND:
                 queue[1].add(mid)
@@ -216,6 +226,10 @@ class DiscordReactionsMixin:
             logger.debug("[%s] queue position skipped", self.name, exc_info=True)
 
     def on_busy_burst_closed(self, source: Any, message_ids: list[str]) -> None:
+        key = self._source_session_key(source)
+        queue = self._queues().get(key)
+        if queue and queue[2] and queue[2][2].intersection(message_ids):
+            queue[2] = None
         for mid in message_ids:
             held = self._receipt_marks().get(mid)
             if held is None:
@@ -250,11 +264,14 @@ class DiscordReactionsMixin:
             if not automatic_notices_allowed(source) or resolve_display_setting(
                     read_raw_config_readonly() or {}, "discord", "progress_compositor", "off") != "single_message":
                 return
-            compositor = ProgressCompositor(self, source.chat_id, reply_to=mid,
+            compositor = ProgressCompositor(self, source.chat_id,
                                             metadata={"non_conversational": True}, session_key=key)
-            compositor.start_nowait()
             pending[key] = [compositor, set()]
         pending[key][1].add(mid)
+        header = self._progress_header(key)
+        header.remember(message, source)
+        header.attach(pending[key][0], list(header.active) + ([mid] if mid not in header.active else []))
+        pending[key][0].start_nowait()
         self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
 
     def keep_receipt_progress(self, compositor: Any) -> Any:
@@ -263,6 +280,11 @@ class DiscordReactionsMixin:
         if compositor.handed_off or not ids or not compositor.message_id:
             return None
         successor = compositor.successor()
+        header = self._progress_header(compositor.session_key)
+        header.remove(header.active)
+        queued = header.queued()
+        if queued:
+            header.attach(successor, queued[0][1])
         self.__dict__.setdefault("_receipt_progress", {})[compositor.session_key] = [successor, set(ids)]
         return successor
 
@@ -272,6 +294,7 @@ class DiscordReactionsMixin:
             ids.difference_update(message_ids)
             if not ids:
                 del waiting[key]
+                self._queues().pop(key, None)
 
     def take_receipt_progress(self, session_key: str, generation: Any, message_ids: list[str]) -> Any:
         pending = self.__dict__.get("_receipt_progress", {})
@@ -280,6 +303,7 @@ class DiscordReactionsMixin:
             return None
         del pending[session_key]
         held[0].generation = generation
+        self._progress_header(session_key).attach(held[0], message_ids)
         return held[0]
 
     def _drop_receipt_progress(self, message_ids: list[str]) -> None:
@@ -343,6 +367,11 @@ class DiscordReactionsMixin:
         drop_busy_receipts(self, message_ids)
         self._forget_progress_waiting(message_ids)
         self._drop_receipt_progress(message_ids)
+        headers = self.__dict__.get("_progress_headers", {})
+        for key, header in list(headers.items()):
+            header.remove(message_ids)
+            if not header.messages:
+                headers.pop(key)
         for mid in message_ids:
             self._clear_mark(mid)
 
@@ -350,6 +379,10 @@ class DiscordReactionsMixin:
         """Messages absorbed by a turn that already started are being worked on."""
         self._forget_progress_waiting(message_ids)
         self._drop_receipt_progress(message_ids)
+        key = self._source_session_key(source)
+        header = self._progress_header(key)
+        header.active = list(dict.fromkeys([*header.active, *message_ids]))
+        header.refresh()
         for mid in message_ids:
             self._clear_mark(mid)
 
@@ -358,6 +391,19 @@ class DiscordReactionsMixin:
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Work began on every message the turn carries: remove their numbers and record durable
         handling state (``emoji_ack`` keeps meaning "reactions were enabled")."""
+        key = self._source_session_key(event.source)
+        header = self._progress_header(key)
+        ids = event.message_ids()
+        first = ids[0] if ids else str(event.message_id)
+        if first not in header.messages:
+            raw = event.raw_message
+            if raw is None:
+                raw = SimpleNamespace(id=first, content=event.text, attachments=[], jump_url=None)
+                if not event.text and event.media_filenames:
+                    raw.content = "📎 " + event.media_filenames[0]
+            header.remember(raw, event.source)
+        header.active = ids
+        header.refresh()
         self._forget_progress_waiting(event.message_ids())
         for mid in self._event_message_ids(event):
             self._clear_mark(mid)
@@ -368,4 +414,10 @@ class DiscordReactionsMixin:
         """Record durable state; outcomes get no reaction."""
         self._forget_progress_waiting(event.message_ids())
         self._drop_receipt_progress(event.message_ids())
+        key = self._source_session_key(event.source)
+        header = self.__dict__.get("_progress_headers", {}).get(key)
+        if header is not None:
+            header.remove(event.message_ids())
+            if not header.messages:
+                self._progress_headers.pop(key)
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)

@@ -862,6 +862,9 @@ class GatewayTurnHygieneMixin:
             metadata=_non_conversational_metadata(attempt.meta, platform=source.platform),
             session_key=session_key, generation=run_generation,
         )
+        configure_header = getattr(adapter, "configure_progress_header", None)
+        if callable(configure_header):
+            configure_header(compositor, source, event.message_ids())
         compositor.publish_status("⏳ Working 0m · iteration 0 · compacting context")
         compositor.publish_activity("🗜️ Compacting context — preparing the conversation.")
         self._session_state(session_key).turn.progress_compositor = compositor

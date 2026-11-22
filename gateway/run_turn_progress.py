@@ -1059,6 +1059,9 @@ class GatewayTurnProgressMixin:
             adapter, ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
             session_key=ctx.session_key, generation=ctx.run_generation,
         )
+        configure_header = getattr(adapter, "configure_progress_header", None)
+        if callable(configure_header):
+            configure_header(compositor, ctx.source, ctx.inbound_message_ids)
         ctx.progress_compositor = compositor
         compositor.start_nowait()
         self._track_compositor_id(compositor)
