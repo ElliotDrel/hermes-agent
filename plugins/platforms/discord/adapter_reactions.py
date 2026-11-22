@@ -291,10 +291,17 @@ class DiscordReactionsMixin:
             if ids:
                 continue
             del pending[key]
-            detach_turn_bubble_delete(SimpleNamespace(
+            compositor.closed = True
+            ctx = SimpleNamespace(
                 _cleanup_progress=True, _cleanup_adapter=self, _cleanup_msg_ids=[],
                 progress_compositor_mode="single_message", progress_compositor=compositor,
-                session_key=key, source=SimpleNamespace(chat_id=compositor.chat_id)))
+                session_key=key, source=SimpleNamespace(chat_id=compositor.chat_id))
+            checks = compositor.delivery_checks
+            if checks and not all(check.done() for check in checks):
+                # The delete's bound starts only once the previous reply's delivery is settled.
+                asyncio.gather(*checks).add_done_callback(lambda _done, ctx=ctx: detach_turn_bubble_delete(ctx))
+            else:
+                detach_turn_bubble_delete(ctx)
 
     def _bind_receipt(self, message: Any, event: MessageEvent) -> bool:
         """Let drop paths that hold only *event* clear its marks (``gateway.receipt_drops``)."""

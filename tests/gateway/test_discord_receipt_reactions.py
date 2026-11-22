@@ -898,6 +898,41 @@ async def test_later_waiting_input_keeps_the_working_message_when_an_earlier_one
 
 
 @pytest.mark.asyncio
+async def test_dropped_queue_deletes_working_after_a_slow_previous_delivery(monkeypatch, tmp_path):
+    """Dropping the waiting input while the previous reply is still being delivered must still delete
+    the kept Working message once that delivery is confirmed, however long the delivery took."""
+    from unittest.mock import AsyncMock
+    from gateway import run_turn_bubble_cleanup
+    from gateway.progress_compositor import ProgressCompositor
+
+    monkeypatch.setattr(run_turn_bubble_cleanup, '_DETACHED_DELETE_BOUND_SECONDS', 0.05)
+    adapter = _adapter(Board(), reactions=False)
+    board = Board()
+    adapter._shared_runtime_owns_input = lambda event: True
+    adapter.delete_message = AsyncMock(return_value=True)
+    waiting = _event(adapter, board, tmp_path, 9931, 'x')
+    key = adapter._event_session_key(waiting)
+    try:
+        adapter._active_sessions[key] = asyncio.Event()
+        adapter._acknowledge_receipt(waiting.raw_message, waiting.source)
+        running = ProgressCompositor(adapter, 'room', session_key=key, generation=1)
+        running.message_id = 'working'
+        delivery = asyncio.get_running_loop().create_future()
+        running.delivery_checks.append(delivery)
+        assert adapter.keep_receipt_progress(running) is not None
+        adapter.on_messages_dropped(waiting.source, ['9931'])
+        await asyncio.sleep(0.1)  # health: allow HX013 -- the slow delivery outlasting the bound IS the case
+        adapter.delete_message.assert_not_awaited()
+        delivery.set_result(True)
+        await async_wait_until(lambda: adapter.delete_message.await_count, timeout=5, what='Working deleted')
+        adapter.delete_message.assert_awaited_once_with('room', 'working')
+    finally:
+        from gateway.session_ingress_burst import discard_busy_burst
+        discard_busy_burst(adapter, key)
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
 async def test_committed_discord_queue_reuses_working_through_real_delivery(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
     from gateway.platforms.base import SendResult

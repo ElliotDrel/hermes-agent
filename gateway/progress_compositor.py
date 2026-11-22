@@ -374,7 +374,8 @@ class ProgressCompositor:
         self._edit_timeouts = 0
         if getattr(result, "success", False):
             self._last_rendered = rendered
-            self._dirty = False
+            # State published while this edit was in flight still needs its own edit.
+            self._dirty = self._fit_render() != rendered
             self._backoff_seconds = 1.0
             self.next_edit_after = now + self.EDIT_INTERVAL_SECONDS
             return True

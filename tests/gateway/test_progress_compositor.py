@@ -66,6 +66,34 @@ async def test_all_updates_edit_the_one_owned_message():
 
 
 @pytest.mark.asyncio
+async def test_state_published_during_an_inflight_edit_gets_its_own_edit():
+    """A slow edit that lands after newer progress was published must not mark the message current."""
+    import asyncio
+
+    adapter = CaptureAdapter()
+    compositor = ProgressCompositor(adapter, "thread-1")
+    await compositor.start()
+    gate = asyncio.Event()
+    plain_edit = adapter.edit_message
+
+    async def slow_edit(*args, **kwargs):
+        await gate.wait()
+        return await plain_edit(*args, **kwargs)
+
+    adapter.edit_message = slow_edit
+    compositor.publish_status("⏳ Working…")
+    compositor.publish_activity("old")
+    inflight = asyncio.ensure_future(compositor.flush(force=True))
+    await asyncio.sleep(0)
+    compositor.publish_activity("new progress")
+    gate.set()
+    await inflight
+
+    assert await compositor.flush(force=True) is True
+    assert "new progress" in adapter.edits[-1][2]
+
+
+@pytest.mark.asyncio
 async def test_overflow_keeps_newest_updates_without_continuations():
     adapter = CaptureAdapter()
     compositor = ProgressCompositor(adapter, "thread-1")
