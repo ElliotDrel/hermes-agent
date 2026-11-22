@@ -864,6 +864,40 @@ async def test_queued_turn_reuses_receipt_progress_until_queue_ends(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_later_waiting_input_keeps_the_working_message_when_an_earlier_one_drops(monkeypatch, tmp_path):
+    """A kept Working message belongs to every input waiting on the route, including ones that arrive
+    after it was kept: dropping the earlier waiter must neither delete it nor strand the later one."""
+    from unittest.mock import AsyncMock
+    from gateway.platforms.base import SendResult
+    from gateway.progress_compositor import ProgressCompositor
+
+    adapter = _adapter(Board(), reactions=False)
+    board = Board()
+    adapter._shared_runtime_owns_input = lambda event: True
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id='working'))
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id='working'))
+    adapter.delete_message = AsyncMock(return_value=True)
+    waiting, later = (_event(adapter, board, tmp_path, mid, 'x') for mid in (9921, 9922))
+    key = adapter._event_session_key(waiting)
+    try:
+        adapter._active_sessions[key] = asyncio.Event()  # a turn is running on the route
+        adapter._acknowledge_receipt(waiting.raw_message, waiting.source)
+        running = ProgressCompositor(adapter, 'room', session_key=key, generation=1)
+        running.message_id = 'working'
+        assert adapter.keep_receipt_progress(running) is not None  # the running turn finished
+        adapter._acknowledge_receipt(later.raw_message, later.source)
+        adapter.on_messages_dropped(waiting.source, ['9921'])  # e.g. its attachment download failed
+        await asyncio.sleep(0)
+        adapter.delete_message.assert_not_awaited()
+        adopted = adapter.take_receipt_progress(key, 2, ['9922'])
+        assert adopted is not None and adopted.message_id == 'working'
+    finally:
+        from gateway.session_ingress_burst import discard_busy_burst
+        discard_busy_burst(adapter, key)
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
 async def test_committed_discord_queue_reuses_working_through_real_delivery(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
     from gateway.platforms.base import SendResult

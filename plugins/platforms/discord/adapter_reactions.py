@@ -180,6 +180,8 @@ class DiscordReactionsMixin:
                 return
             mid = str(message.id)
             self.__dict__.setdefault("_progress_waiting", {}).setdefault(key, set()).add(mid)
+            if staged := self.__dict__.get("_receipt_progress", {}).get(key):
+                staged[1].add(mid)  # a later waiting input co-owns the kept Working message
             stub = MessageEvent(text="", source=source, raw_message=message, message_id=mid)
             burst = reserve_busy_receipt(self, stub, key) if self._shared_runtime_owns_input(stub) else None
             self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
