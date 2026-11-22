@@ -230,6 +230,17 @@ v0.23.2 verification: 26 passed across the three account_usage suites.
 
 ## HERMES-FORK-017: One Discord progress message
 
+Approved by Elliot on 2026-11-21 (T3 session): consecutive queued Discord turns in
+single_message mode reuse the same Working message. On completion, waiting
+receipt IDs (held/committing bursts and admitted queued input) stage it through the existing
+receipt-adoption slot; a fresh compositor resets activity to neutral Working and prevents
+late predecessor edits. Each turn reserves its delivery callback before transport awaits,
+so a newer generation cannot replace it; deletion waits for all shared delivery checks.
+The last delivered turn deletes it; dropped queued input clears
+the hand-off through the existing stop/new/refusal cleanup. Failed or unconfirmed delivery
+keeps its existing retention rules. Residual: later progress remains above earlier replies,
+since Discord cannot move the original message.
+
 Discord pre-posts Working at receipt before downloads; only a turn carrying one of its owned input IDs adopts that same message.
 
 Opt-in display.platforms.discord.progress_compositor: single_message (config.yaml only,
@@ -254,14 +265,14 @@ empty delivery and interrupted/cancelled/incomplete turns keep it. Scheduled hea
 show normal progress by default (display.heartbeat_progress, normal per-platform
 overrides) and delete their own progress on completion, including intentional silence;
 false hides execution and pre-agent compression progress, including hold-expiry notices,
-without hiding actionable failures. Each turn deletes only its own ID: two attempts per
+without hiding actionable failures. The final owner deletes only its owned ID: two attempts per
 ID inside one 25-second budget, ID dropped only on transport-confirmed deletion,
 exhaustion retains the message (no sweeper or retry service). A predecessor's compositor
-is closed before a queued successor starts and is never lent to it. Other transports
-retain native rendering. This is presentation-only: progress metadata is
+is closed before a queued successor starts. Other transports retain native rendering. This is presentation-only: progress metadata is
 nonconversational and no model input, history, cache, admission, FIFO, interrupt or
 compression policy changes. Delivery confirmation reaches cleanup through a ContextVar
-set around the unchanged callback firing; no callback fires, orders or times differently.
+set around the existing post-delivery firing sites; callbacks retain their per-turn ownership
+while delivery awaits transport.
 
 Touchpoints: gateway/progress_compositor.py (new); gateway/run_turn_progress.py
 (start_progress_compositor, _composed_status, _send_composed_progress, tool-line,

@@ -56,6 +56,8 @@ class ProgressCompositor:
         self.generation = generation
         self.message_id: Optional[str] = None
         self.closed: bool = False
+        self.handed_off = False
+        self.delivery_checks: list[asyncio.Future[bool]] = []
         self._start_attempted = False
         self._start_task: Optional["asyncio.Future[Optional[SendResult]]"] = None
         self._late_send: Optional["asyncio.Future[Any]"] = None
@@ -176,6 +178,21 @@ class ProgressCompositor:
         except Exception as exc:  # health: allow BLE001 -- best-effort cleanup of a late temporary message
             logger.warning("Late progress message cleanup failed chat=%s category=%s",
                            self.chat_id, type(exc).__name__)
+
+    def successor(self) -> ProgressCompositor:
+        """Transfer the known message to fresh state; the previous turn can never edit it again."""
+        self.closed = True
+        self.handed_off = True
+        successor = ProgressCompositor(
+            self.adapter, self.chat_id, reply_to=self.reply_to, metadata=self.metadata,
+            session_key=self.session_key, clock=self._clock,
+        )
+        successor.delivery_checks = self.delivery_checks
+        successor.message_id = self.message_id
+        successor._start_attempted = True
+        successor._last_rendered = self._last_rendered
+        successor.publish_status("\u23f3 Working\u2026")
+        return successor
 
     def publish_activity(self, text: Any, kind: str = "message") -> None:
         value = str(text or "").strip()

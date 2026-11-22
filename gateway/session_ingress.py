@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
+from gateway.platforms.base_post_delivery import take_turn_post_delivery, turn_run_generation
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
 from gateway.session_producer_lifecycle import (
@@ -540,7 +541,7 @@ async def deliver_response(adapter, event, session_key, response):
     return any(getattr(result, 'success', False) for result in results if result is not None)
 
 
-async def _run_own_post_delivery(adapter, session_key, event, delivered=None):
+async def _run_own_post_delivery(adapter, session_key, event, delivered=None, callback=None):
     """A busy follow-up's observer is its turn's native waiter (``admit_message``), so the drain leaves
     the turn's post-delivery slot (temp-bubble cleanup, background-review release, a deferred /goal
     notice) on the adapter for it (``_take_post_delivery``): run it after the send, as
@@ -548,13 +549,13 @@ async def _run_own_post_delivery(adapter, session_key, event, delivered=None):
     session guard, and an unowned pop could run the callbacks of a turn another task still delivers."""
     from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
     from gateway.platforms.base_post_delivery import (
-        delivery_confirmed, run_post_delivery_callback, turn_run_generation)
+        delivery_confirmed, run_post_delivery_callback)
     generation, pop = turn_run_generation(event), getattr(adapter, 'pop_post_delivery_callback', None)
     if generation is not None and callable(pop):
         token = delivery_confirmed.set(delivered)
         try:
             await run_post_delivery_callback(
-                pop(session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+                callback or pop(session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
         finally:
             delivery_confirmed.reset(token)
 
@@ -581,9 +582,11 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
         # Like the first message's lifecycle, this sender adopts the turn's crash marker and
         # releases it only once the reply is ledgered (the marker moves onto ``event``).
         event._turn_marker_handoff = getattr(adapter, 'gateway_runner', None) is not None
-        delivered = False
+        delivered, owned_callback = False, None
         try:
             response = await adapter._message_handler(event)
+            if turn_run_generation(event) is not None:
+                _, owned_callback = take_turn_post_delivery(adapter, session_key, event, None)
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
@@ -600,7 +603,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)
             await adapter._release_turn_marker(event)
-            await _run_own_post_delivery(adapter, session_key, event, delivered)
+            await _run_own_post_delivery(adapter, session_key, event, delivered, owned_callback)
 
     token, commit_token = busy_acceptance.set(accepted), busy_commit.set(committed)
     try:

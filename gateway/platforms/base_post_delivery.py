@@ -26,6 +26,14 @@ def turn_run_generation(event: Any) -> int | None:
     return generation if isinstance(generation, int) and not isinstance(generation, bool) else None
 
 
+def take_turn_post_delivery(adapter: Any, session_key: str, event: Any, interrupt_event: Any) -> tuple[Any, Any]:
+    """Reserve this turn's callback before delivery awaits let a newer generation replace its slot."""
+    generation = turn_run_generation(event)
+    if generation is None:
+        generation = getattr(interrupt_event, "_hermes_run_generation", None)
+    return generation, adapter.pop_post_delivery_callback(session_key, generation=generation)
+
+
 async def run_post_delivery_callback(callback: Any, timeout: float) -> None:
     """Run *callback* (a no-op when None): bounded, errors swallowed, so a stuck or failing callback
     never holds up the session whose reply it follows."""

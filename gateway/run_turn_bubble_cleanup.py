@@ -56,6 +56,10 @@ async def _delete_composed(turn_ctx: Any, compositor: Any) -> None:
     transport-confirmed deletion; exhaustion retains it."""
     adapter, chat_id, session_key = turn_ctx._cleanup_adapter, turn_ctx.source.chat_id, turn_ctx.session_key
     tracked = turn_ctx._cleanup_msg_ids
+    # A dropped waiting successor still owes its predecessor's delivery confirmation.
+    if compositor.delivery_checks and not all(await asyncio.gather(
+            *(asyncio.shield(check) for check in compositor.delivery_checks))):
+        return
     # Freeze the message (and learn its ID if the initial send was still in flight) before deleting.
     await compositor.settle()
     if compositor.message_id and compositor.message_id not in tracked:
@@ -161,10 +165,29 @@ def register_bubble_cleanup(response: Any, turn_ctx: TurnContext) -> None:
         if response.get("interrupted") or response.get("cancelled") or response.get("completed", True) is False:
             return
 
+        delivery_check = asyncio.get_running_loop().create_future()
+        compositor.delivery_checks.append(delivery_check)
+        keep_receipt = getattr(adapter, "keep_receipt_progress", None)
+        # A native waiter may deliver after the authority already starts the next turn.
+        # Stage ownership now; only the delivery callback may authorize deletion.
+        staged = keep_receipt(compositor) if callable(keep_receipt) else None
+
         async def _cleanup_composed() -> None:
-            if delivery_confirmed.get() is False:
+            confirmed = delivery_confirmed.get() is not False
+            delivery_check.set_result(confirmed)
+            if not confirmed:
                 logger.debug("Retaining temp progress for session %s: final delivery unconfirmed", session_key)
                 return
+            if compositor.handed_off:
+                if staged is not None and staged.generation is None:
+                    await staged.flush(force=True)
+                return
+            if callable(keep_receipt):
+                await compositor.settle()
+                held = keep_receipt(compositor)
+                if held:
+                    await held.flush(force=True)
+                    return
             await _delete_composed(turn_ctx, compositor)
 
         adapter.register_post_delivery_callback(session_key, _cleanup_composed, generation=turn_ctx.run_generation)

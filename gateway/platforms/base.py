@@ -440,7 +440,7 @@ if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
-from gateway.platforms.base_post_delivery import delivery_confirmed, run_post_delivery_callback
+from gateway.platforms.base_post_delivery import delivery_confirmed, run_post_delivery_callback, take_turn_post_delivery
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
 from gateway.platforms.base_exec_approval import (
@@ -4312,7 +4312,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract), _IMAGE_EXTS)  # #74547
 
     async def _fire_post_delivery_callback(
-        self, session_key: str, generation: int | None, *, delivered: bool | None = None,
+        self, session_key: str, generation: int | None, *, delivered: bool | None = None, callback=None,
     ) -> None:
         """Run the turn's post-delivery slot; ``generation`` is read as its handler returns (#100061).
 
@@ -4320,7 +4320,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         callbacks that must keep temporary progress when nothing reached the chat."""
         token = delivery_confirmed.set(delivered)
         try:
-            await run_post_delivery_callback(self.pop_post_delivery_callback(
+            await run_post_delivery_callback(callback or self.pop_post_delivery_callback(
                 session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
         finally:
             delivery_confirmed.reset(token)
@@ -4365,12 +4365,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
             self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)
         typing_task = self._start_typing_refresh(event, interrupt_event, _typing_metadata)
-        generation = None
+        generation, owned_callback = None, None
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
-            generation = getattr(interrupt_event, "_hermes_run_generation", None)
+            generation, owned_callback = take_turn_post_delivery(self, session_key, event, interrupt_event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4431,7 +4431,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
-            # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
@@ -4450,8 +4449,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
                 await self._fire_post_delivery_callback(  # done before the follow-up starts
-                    session_key, generation,
+                    session_key, generation, callback=owned_callback,
                     delivered=delivery_succeeded or bool(getattr(event, "_streamed_final_response", None)))
+                owned_callback = None
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4474,7 +4474,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
             await self._fire_post_delivery_callback(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None) if generation is None else generation,
-                delivered=delivery_succeeded or bool(getattr(event, "_streamed_final_response", None)))
+                callback=owned_callback, delivered=delivery_succeeded or bool(getattr(event, "_streamed_final_response", None)))
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1, event=event)
             # Flush any timer that missed the in-band drain, then reconcile ownership.

@@ -780,3 +780,175 @@ async def test_empty_holder_reallocates_number_through_the_queue_counter(tmp_pat
         assert board.shown[9903] == {'\u23f3', N[1]}, 'distinct nonempty batches must have distinct numbers'
     finally:
         await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drop_queue", [False, True])
+async def test_queued_turn_reuses_receipt_progress_until_queue_ends(monkeypatch, tmp_path, drop_queue):
+    from unittest.mock import AsyncMock
+    from gateway.platforms.base import SendResult
+    from gateway.run_turn_bubble_cleanup import register_bubble_cleanup, settle_detached_deletes
+    from gateway.run_turn_progress import GatewayTurnProgressMixin
+    from gateway.session_ingress_burst import discard_busy_burst
+
+    monkeypatch.setattr('hermes_cli.config.read_raw_config_readonly', lambda: {
+        'display': {'platforms': {'discord': {'progress_compositor': 'single_message'}}}})
+    adapter = _adapter(Board(), reactions=False)
+    board = Board()
+    adapter._shared_runtime_owns_input = lambda event: True
+    operations = []
+
+    async def send(chat_id, content, **kwargs):
+        operations.append(('send', content))
+        return SendResult(success=True, message_id='working')
+
+    async def edit(chat_id, message_id, content, **kwargs):
+        operations.append(('edit', content))
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.send = send
+    adapter.edit_message = edit
+    adapter.delete_message = AsyncMock(return_value=True)
+    first = _event(adapter, board, tmp_path, 9911, 'first')
+    second = _event(adapter, board, tmp_path, 9912, 'second')
+    key = adapter._event_session_key(first)
+
+    def start(event, generation):
+        ctx = SimpleNamespace(progress_compositor=None, session_key=key, run_generation=generation,
+                              source=event.source, inbound_message_ids=event.message_ids(),
+                              _progress_reply_to=event.message_id, _progress_metadata={},
+                              _cleanup_progress=True, _cleanup_adapter=adapter, _cleanup_msg_ids=[],
+                              progress_compositor_mode='single_message')
+        turn = SimpleNamespace(_ctx=ctx, _runner=SimpleNamespace(
+            _session_state=lambda key: SimpleNamespace(turn=SimpleNamespace(progress_compositor=None)),
+            _delivery_adapter_for=lambda source: adapter), _track_compositor_id=lambda c: None)
+        GatewayTurnProgressMixin.start_progress_compositor(turn)
+        return ctx
+
+    try:
+        adapter._acknowledge_receipt(first.raw_message, first.source)
+        ctx = start(first, 1)
+        await ctx.progress_compositor._start_task
+        ctx.progress_compositor.publish_activity('first progress')
+        await ctx.progress_compositor.flush(force=True)
+        adapter._active_sessions[key] = asyncio.Event()
+        adapter._acknowledge_receipt(second.raw_message, second.source)
+        register_bubble_cleanup({'completed': True}, ctx)
+        operations.append(('reply', 'first'))
+        await adapter.pop_post_delivery_callback(key, generation=1)()
+        assert adapter.delete_message.await_count == 0, 'queued work must keep the same Working message'
+        assert adapter.take_receipt_progress(key, 99, ['slash-command']) is None
+        if drop_queue:
+            discard_busy_burst(adapter, key)
+            await settle_detached_deletes()
+        else:
+            successor = start(second, 2)
+            assert successor.progress_compositor.message_id == 'working'
+            successor.progress_compositor.publish_activity('second progress')
+            await successor.progress_compositor.flush(force=True)
+            # The previous compositor is frozen even if a late producer tries to update it.
+            ctx.progress_compositor.publish_activity('stale')
+            await ctx.progress_compositor.flush(force=True)
+            discard_busy_burst(adapter, key)
+            register_bubble_cleanup({'completed': True}, successor)
+            operations.append(('reply', 'second'))
+            await adapter.pop_post_delivery_callback(key, generation=2)()
+            assert any(op == 'edit' and 'second progress' in text for op, text in operations)
+            assert not any(op == 'edit' and 'stale' in text for op, text in operations)
+        assert sum(op == 'send' for op, _ in operations) == 1
+        adapter.delete_message.assert_awaited_once_with('room', 'working')
+        assert not adapter._receipt_progress
+    finally:
+        discard_busy_burst(adapter, key)
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_committed_discord_queue_reuses_working_through_real_delivery(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from gateway.platforms.base import SendResult
+    from gateway.run_turn_bubble_cleanup import register_bubble_cleanup
+    from gateway.run_turn_progress import GatewayTurnProgressMixin
+    from gateway.session_results import execution_result
+
+    monkeypatch.setattr('hermes_cli.config.read_raw_config_readonly', lambda: {
+        'display': {'platforms': {'discord': {'progress_compositor': 'single_message'}}}})
+    board = Board()
+    runner, adapter, authority = await _owner(monkeypatch, tmp_path, board, reactions=False)
+    adapter._busy_text_debounce_seconds = adapter._busy_text_hard_cap_seconds = 0.03
+    entered, finish = asyncio.Event(), asyncio.Event()
+    second_entered, finish_second = asyncio.Event(), asyncio.Event()
+    sends, edits, turns = [], [], []
+
+    async def send(chat_id, content, **kwargs):
+        sends.append(content)
+        return SendResult(success=True, message_id=str(len(sends)))
+
+    async def edit(chat_id, message_id, content, **kwargs):
+        edits.append((message_id, content))
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.send = send
+    adapter.edit_message = edit
+    async def delete(chat_id, message_id):
+        assert sends[-1] == 'answer three'
+        return True
+
+    adapter.delete_message = AsyncMock(side_effect=delete)
+
+    async def turn(event, source, quick_key, generation):
+        key = adapter._event_session_key(event)
+        event._hermes_run_generation = generation
+        runner._bind_adapter_run_generation(adapter, key, generation)
+        ctx = SimpleNamespace(progress_compositor=None, session_key=key, run_generation=generation,
+                              source=event.source, inbound_message_ids=event.message_ids(),
+                              _progress_reply_to=event.message_id, _progress_metadata={},
+                              _cleanup_progress=True, _cleanup_adapter=adapter, _cleanup_msg_ids=[],
+                              progress_compositor_mode='single_message')
+        consumer = SimpleNamespace(_ctx=ctx, _runner=SimpleNamespace(
+            _session_state=lambda key: SimpleNamespace(turn=SimpleNamespace(progress_compositor=None)),
+            _delivery_adapter_for=lambda source: adapter), _track_compositor_id=lambda c: None)
+        compositor = GatewayTurnProgressMixin.start_progress_compositor(consumer)
+        if compositor._start_task:
+            await compositor._start_task
+        turns.append(compositor.message_id)
+        compositor.publish_activity(event.text)
+        await compositor.flush(force=True)
+        if len(turns) == 1:
+            entered.set()
+            await finish.wait()
+        elif len(turns) == 2:
+            second_entered.set()
+            await finish_second.wait()
+        result = {'final_response': 'answer ' + event.text, 'messages': []}
+        execution_result.get()['result'] = result
+        register_bubble_cleanup(result, ctx)
+        return result['final_response']
+
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    try:
+        await (await _receive(adapter, _event(adapter, board, tmp_path, 9921, 'one')))
+        await asyncio.wait_for(entered.wait(), 10)
+        await (await _receive(adapter, _event(adapter, board, tmp_path, 9922, 'two')))
+        await async_wait_until(lambda: not adapter.__dict__.get('_shared_burst_commits'),
+                               timeout=10, what='second input committed')
+        finish.set()
+        await asyncio.wait_for(second_entered.wait(), 10)
+        key = adapter._event_session_key(_event(adapter, board, tmp_path, 9923, 'three'))
+        await async_wait_until(lambda: key not in adapter._active_sessions, timeout=10,
+                               what='original adapter guard released')
+        await (await _receive(adapter, _event(adapter, board, tmp_path, 9923, 'three')))
+        finish_second.set()
+        await async_wait_until(lambda: len(turns) == 3 and adapter.delete_message.await_count == 1,
+                               timeout=10, what='last reply and progress deletion')
+        assert turns == ['1', '1', '1']
+        assert sum('Working' in text for text in sends) == 1
+        assert any(mid == '1' and 'one' in text for mid, text in edits)
+        assert any(mid == '1' and 'two' in text for mid, text in edits)
+        adapter.delete_message.assert_awaited_once_with('room', '1')
+        assert not adapter._receipt_progress and not adapter._progress_waiting
+    finally:
+        finish.set()
+        finish_second.set()
+        await adapter.cancel_background_tasks()
+        await asyncio.to_thread(authority.db.close)

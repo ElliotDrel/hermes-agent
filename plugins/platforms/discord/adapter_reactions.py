@@ -175,10 +175,11 @@ class DiscordReactionsMixin:
             if key in self._active_sessions:
                 self._heal_stale_session_lock(key)
             self._post_receipt_progress(message, source)
-            from gateway.session_ingress_burst import holds_busy_burst, reserve_busy_receipt
-            if key not in self._active_sessions and not holds_busy_burst(self, key):
+            from gateway.session_ingress_burst import reserve_busy_receipt
+            if not self._receipt_session_busy(key):
                 return
             mid = str(message.id)
+            self.__dict__.setdefault("_progress_waiting", {}).setdefault(key, set()).add(mid)
             stub = MessageEvent(text="", source=source, raw_message=message, message_id=mid)
             burst = reserve_busy_receipt(self, stub, key) if self._shared_runtime_owns_input(stub) else None
             self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
@@ -225,11 +226,17 @@ class DiscordReactionsMixin:
             if queue and queue[2] and mid in queue[2][2]:
                 queue[2] = None
 
+    def _receipt_session_busy(self, key: str) -> bool:
+        """Queued-turn observers can be running after the original adapter guard is released."""
+        from gateway.session_ingress_burst import holds_busy_burst
+        runner = self.gateway_runner
+        return (key in self._active_sessions or holds_busy_burst(self, key)
+                or (runner is not None and runner._is_session_running(key)))
+
     def _post_receipt_progress(self, message: Any, source: Any) -> None:
         """Start the existing compositor before downloads; same-session text chunks share it."""
-        from gateway.session_ingress_burst import holds_busy_burst
         key = self._source_session_key(source)
-        if key in self._active_sessions or holds_busy_burst(self, key):
+        if self._receipt_session_busy(key):
             return
         pending = self.__dict__.setdefault("_receipt_progress", {})
         mid = str(message.id)
@@ -247,6 +254,22 @@ class DiscordReactionsMixin:
             pending[key] = [compositor, set()]
         pending[key][1].add(mid)
         self.__dict__.setdefault("_receipt_undispatched", {})[mid] = source
+
+    def keep_receipt_progress(self, compositor: Any) -> Any:
+        """Lend a delivered turn's message only to inputs already waiting on this route."""
+        ids = self.__dict__.get("_progress_waiting", {}).get(compositor.session_key)
+        if compositor.handed_off or not ids or not compositor.message_id:
+            return None
+        successor = compositor.successor()
+        self.__dict__.setdefault("_receipt_progress", {})[compositor.session_key] = [successor, set(ids)]
+        return successor
+
+    def _forget_progress_waiting(self, message_ids: list[str]) -> None:
+        waiting = self.__dict__.get("_progress_waiting", {})
+        for key, ids in list(waiting.items()):
+            ids.difference_update(message_ids)
+            if not ids:
+                del waiting[key]
 
     def take_receipt_progress(self, session_key: str, generation: Any, message_ids: list[str]) -> Any:
         pending = self.__dict__.get("_receipt_progress", {})
@@ -309,12 +332,15 @@ class DiscordReactionsMixin:
         Reads no config: drop paths run outside the message's profile scope."""
         from gateway.session_ingress_burst import drop_busy_receipts
         drop_busy_receipts(self, message_ids)
+        self._forget_progress_waiting(message_ids)
         self._drop_receipt_progress(message_ids)
         for mid in message_ids:
             self._clear_mark(mid)
 
     def on_messages_joined_turn(self, source: Any, message_ids: list[str]) -> None:
         """Messages absorbed by a turn that already started are being worked on."""
+        self._forget_progress_waiting(message_ids)
+        self._drop_receipt_progress(message_ids)
         for mid in message_ids:
             self._clear_mark(mid)
 
@@ -323,6 +349,7 @@ class DiscordReactionsMixin:
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Work began on every message the turn carries: remove their numbers and record durable
         handling state (``emoji_ack`` keeps meaning "reactions were enabled")."""
+        self._forget_progress_waiting(event.message_ids())
         for mid in self._event_message_ids(event):
             self._clear_mark(mid)
         await asyncio.to_thread(self._record_discord_processing_start, event,
@@ -330,5 +357,6 @@ class DiscordReactionsMixin:
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Record durable state; outcomes get no reaction."""
+        self._forget_progress_waiting(event.message_ids())
         self._drop_receipt_progress(event.message_ids())
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
